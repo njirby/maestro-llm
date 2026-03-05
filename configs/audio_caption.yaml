@@ -1,0 +1,23 @@
+data:
+  audio_dir: ./data/audio
+  prepared_dir: ./data/prepared/musiccaps_v1
+  use_prepared: true
+  require_prepared: true
+  dataset_limit: null        # set to small number for smoke tests, e.g. 16
+
+model:
+  clap_model_id: laion/larger_clap_general
+  qwen_model_id: Qwen/Qwen3.5-9B
+  clap_dim: 512
+  qwen_hidden_dim: null  # optional override; auto-resolved from model config when null
+
+training:
+  output_dir: ./outputs/audio_caption
+  num_train_epochs: 5
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 1.5e-3
+  max_length: 256
+  logging_steps: 10
+  dataloader_num_workers: 0  # collator does heavy CPU work; keep deterministic for smoke runs
+  gradient_checkpointing: false

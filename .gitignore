@@ -1,0 +1,12 @@
+data/
+outputs/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+.claude/
+*.egg-info/
+.DS_Store
+*.pt
+*.safetensors
