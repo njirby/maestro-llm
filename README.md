@@ -17,7 +17,7 @@ The goal is an agent that feels like a skilled collaborator — one who can be t
 The system is built on five pillars:
 
 **Hands — REAPER control**
-Full programmatic control of REAPER via reapy and ReaScript (Lua/Python). Every action a human can perform in the DAW is available as a tool call: create and delete tracks, insert and edit MIDI, load and configure plugins, set FX parameters, manage routing and sends, write automation, render regions, import audio. No wrapping layer — direct ReaScript API access at full speed.
+Full programmatic control of REAPER via dynamically generated Lua scripts. The agent writes Lua scripts on the fly and executes them against a running REAPER session via subprocess. Every action a human can perform in the DAW is available as a tool call: create and delete tracks, insert and edit MIDI, load and configure plugins, set FX parameters, manage routing and sends, write automation, render regions, import audio. Direct ReaScript Lua API access — no intermediate abstraction layer.
 
 **Ears — Qwen3 Omni**
 Qwen3 Omni is the agent's perception model. It accepts raw audio input natively and produces text descriptions, comparisons, and judgments. It serves three roles: captioning (what does this sound like?), comparison (how do these two sounds differ?), and judging (does this output match the target?). The listen tool — which renders a region and passes it to Qwen3 Omni — is the agent's first action in almost every trajectory.
@@ -55,6 +55,40 @@ listen()  →  "cleaner, transients back, still slightly bright"
 set_param(fx=0, param="HF_shelf", val=-1.5)
 listen()  →  "matches target character"
 ```
+
+---
+
+## DAW Scripting Approach
+
+The agent controls REAPER by generating and executing Lua scripts. Lua is REAPER's first-class scripting language — it runs directly from the command line, has clean API semantics, and is well-documented with an active community. Python ReaScripts are deliberately avoided: they cannot be executed headlessly from the command line and require a Lua wrapper and in-process Python initialization to run at all.
+
+**Pattern for a new project (no REAPER open):**
+```python
+import subprocess
+
+subprocess.run([
+    "reaper", "-nosplash", "-newinst", "-new",
+    "/tmp/generated_script.lua",
+    "-close:nosave:exit"
+])
+```
+
+**Pattern for a live session (REAPER already open with project loaded):**
+```python
+subprocess.run(["reaper", "/tmp/generated_script.lua"])
+# REAPER detects the existing instance and runs the script inside it
+```
+
+**Getting data back to Python:**
+Lua scripts write output (render paths, parameter values, project state) to a temp JSON file. Python reads it after the subprocess returns:
+```lua
+-- at end of generated script
+local f = io.open("/tmp/reaper_out.json", "w")
+f:write('{"render_path": "' .. render_path .. '", "track_count": ' .. track_count .. '}')
+f:close()
+```
+
+**Headless note:** REAPER has no true headless mode. On Linux, it runs on a virtual display (Xvfb on `:1`). The UI exists but is invisible. This means blocking dialogs (e.g. unsaved project prompts) will silently hang — generated scripts must be self-contained and use `Main_SaveProjectEx(project, path, 0)` rather than `Main_SaveProject` to avoid triggering save dialogs.
 
 ---
 
@@ -103,6 +137,29 @@ The agent grounds lyric suggestions in the current project state (tempo, key, mo
 **The core insight**: completed songs with stems provide free ground truth for musical coherence training. Remove a track, and the correct answer is the original track. The reward is verifiable without human annotation.
 
 **Datasets**: Slakh2100 (2100 songs, MIDI + audio, CC BY 4.0), MUSDB18 (150 songs with stems), MedleyDB (122 professional recordings), Lakh MIDI Dataset (176k MIDI files).
+
+**Data pipeline in this repo**: build a unified local manifest for stem/MIDI corpora with:
+```
+python scripts/build_phase1_manifest.py \
+  --config configs/phase1_data_sources.yaml \
+  --out-dir data/prepared/phase1
+```
+Edit `configs/phase1_data_sources.yaml` to point at your local dataset roots.
+
+**Tokenized Lua tuple generation (current)**: for MIDI-only corpora we generate `(midi_clip, lua_script, wav)` tuples with:
+```
+python scripts/generate_reaper_tuples.py \
+  --source slakh2100 \
+  --workers 16 \
+  --out data/processed/reaper_tuples
+```
+- Clip windows are deterministic, sequential, non-overlapping, and bar-aligned (4/4 assumption in the current generator).
+- Only notes fully contained in each clip window are kept; selected notes are re-offset to clip-local `t=0`.
+- WAV audio is rendered with Vita (`maestro/render/vital.py`) for fast local data generation.
+- Lua scripts are emitted as a transcription-style target using rhythmic tokens (not raw ms durations), e.g.:
+  - `n("C4", m(12,3,"8t"), "q.", 90)`
+- `m(bar, beat, offset_token)` + duration token are converted to PPQ ticks inside Lua before `MIDI_InsertNote`.
+- This representation is intentionally easier to model, but timing is quantized and therefore not sample-exact vs. original human performance.
 
 **Perturbation types** (each generates distinct training examples from a single song):
 
@@ -255,6 +312,21 @@ Agent identifies gap in REAPER
 
 **Current limitation**: continuation uses repaint rather than mask-aware training. Coherence can drift over sections longer than ~30 seconds.
 
+### Local Toy Runner (in this repo)
+
+Use the script below to run a small scenario suite against `acestep-v15-sft` (text2music + cover + repaint):
+
+```bash
+# install ACE-Step runtime in this repo venv
+.venv/bin/python -m pip install -e /tmp/ACE-Step-1.5 --no-deps
+.venv/bin/python -m pip install "transformers>=4.51,<4.58" diffusers loguru vector-quantize-pytorch torchaudio==2.10.0+cu128 hf_transfer --extra-index-url https://download.pytorch.org/whl/cu128
+
+# run toy scenarios
+.venv/bin/python scripts/run_acestep_toy.py --device cuda --duration 10 --inference-steps 12 --audio-format wav --seed 1234
+```
+
+Outputs are written to `outputs/acestep_toy/<timestamp>/` with a `summary.json` manifest and per-scenario WAV files.
+
 ---
 
 ## Implementation Phases
@@ -263,7 +335,7 @@ Sequenced to get real producer feedback as early as possible. Each phase produce
 
 | Phase | Work | Deliverable |
 |---|---|---|
-| 0 — Foundation | reapy bridge, tool library, Qwen3 listen, session templates, CLAP sample indexer | Usable tool, first producer feedback |
+| 0 — Foundation | Lua scripting layer, tool library, Qwen3 listen, session templates, CLAP sample indexer | Usable tool, first producer feedback |
 | 1 — Plugin play sessions | Automated parameter sweeping, skill library bootstrap | Agent knows its plugins |
 | 2 — SFT + first model | Stem perturbation pipeline, teacher trajectories, fine-tune Qwen2.5-14/32B | First trained agent in producers' hands |
 | 3 — RLVR | REAPER-bench tasks, Agent-RLVR loop, unknown plugin exploration RL | Reliable execution, learns any new plugin |
@@ -276,7 +348,7 @@ Sequenced to get real producer feedback as early as possible. Each phase produce
 
 | Component | Technology | Purpose |
 |---|---|---|
-| REAPER control | reapy + ReaScript (Lua/Python) | Full DAW manipulation |
+| REAPER control | ReaScript Lua (subprocess) | Full DAW manipulation |
 | Audio perception | Qwen3 Omni | Listen, caption, compare, judge |
 | Audio generation | ACE-Step 1.5 (acestep-v15-sft) | Continuation, inpainting, NL-conditioned generation |
 | Source separation | Demucs | Isolate stems from mixed audio |
