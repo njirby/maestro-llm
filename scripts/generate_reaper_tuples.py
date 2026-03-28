@@ -1,10 +1,11 @@
 """
-Generate (midi, lua, wav) training tuples from a MIDI dataset using clip extraction.
+Generate (midi, lua, audio) training tuples from a MIDI dataset using clip extraction.
 
 Each MIDI track is sliced into sequential non-overlapping clips aligned to full bars.
 Clip length is deterministic per source/track/clip and constrained to ~15s–2min.
 Only complete notes (both start AND end within the clip window) are included —
-no partial notes cut off at boundaries. WAV rendering uses Vita (no REAPER).
+no partial notes cut off at boundaries. Audio rendering uses Vita (no REAPER).
+Output audio is MP3 and trailing silence is trimmed.
 The Lua script is the training target: notes re-offset to t=0.
 
 Long tracks yield multiple clips; short tracks yield one or zero.
@@ -22,6 +23,7 @@ import json
 import math
 import os
 import signal
+import subprocess
 import sys
 import time
 import warnings
@@ -50,7 +52,13 @@ MIN_NOTES  = 4
 MIN_CLIP_S = 15.0
 MAX_CLIP_S = 120.0
 SAMPLE_RATE = 44100
-TAIL_S = 2.0
+SYNTH_TAIL_S = 2.0        # extra render buffer to capture release tails
+LUA_TAIL_S = 0.25         # nominal Lua tail (min_duration_s can extend this)
+TRIM_THRESHOLD = 5e-4     # absolute amplitude threshold for trailing silence trim
+TRIM_KEEP_TAIL_S = 0.25   # keep this much tail after last active sample
+MIN_OUTPUT_S = 1.0
+OUTPUT_AUDIO_EXT = ".mp3"
+MP3_BITRATE = os.environ.get("TUPLE_MP3_BITRATE", "192k")
 
 # ---------------------------------------------------------------------------
 # Clip extraction
@@ -120,13 +128,65 @@ def _extract_clips(notes, rel: str, track_idx: int, bpm: float):
     return clips
 
 
-def _pad_audio_to_duration(audio: np.ndarray, sample_rate: int, min_duration_s: float) -> np.ndarray:
-    """Right-pad stereo audio with silence up to min_duration_s."""
-    target_samples = int(max(0.0, float(min_duration_s)) * sample_rate)
-    if audio.shape[1] >= target_samples:
+def _trim_trailing_silence(
+    audio: np.ndarray,
+    sample_rate: int,
+    threshold: float = TRIM_THRESHOLD,
+    keep_tail_s: float = TRIM_KEEP_TAIL_S,
+    min_duration_s: float = MIN_OUTPUT_S,
+) -> np.ndarray:
+    """Trim trailing silence while preserving a short natural release tail."""
+    if audio.ndim != 2 or audio.shape[1] == 0:
         return audio
-    pad = target_samples - audio.shape[1]
-    return np.pad(audio, ((0, 0), (0, pad)), mode="constant")
+
+    activity = np.max(np.abs(audio), axis=0)
+    active = np.flatnonzero(activity >= max(0.0, float(threshold)))
+    keep_tail = int(max(0.0, float(keep_tail_s)) * sample_rate)
+    min_samples = max(1, int(max(0.0, float(min_duration_s)) * sample_rate))
+
+    if active.size == 0:
+        end = min(audio.shape[1], min_samples)
+    else:
+        end = min(audio.shape[1], int(active[-1]) + 1 + keep_tail)
+        end = max(end, min_samples)
+
+    return audio[:, :end]
+
+
+def _write_mp3(audio: np.ndarray, sample_rate: int, out_path: str, bitrate: str = MP3_BITRATE) -> None:
+    """
+    Encode stereo float audio to MP3 via ffmpeg without temporary files.
+    """
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # ffmpeg expects interleaved little-endian PCM on stdin.
+    pcm = np.clip(audio.T, -1.0, 1.0)
+    pcm_i16 = (pcm * 32767.0).astype(np.int16, copy=False)
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "s16le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(audio.shape[0]),
+            "-i",
+            "pipe:0",
+            "-codec:a",
+            "libmp3lame",
+            "-b:a",
+            str(bitrate),
+            str(out),
+        ],
+        input=pcm_i16.tobytes(),
+        check=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +198,7 @@ _vital_instance = None
 
 def _render_midi_file(args: tuple) -> tuple[list[dict], int]:
     """
-    Process one MIDI file: extract clips from all usable tracks, render WAV/MIDI/Lua.
+    Process one MIDI file: extract clips from all usable tracks, render MP3/MIDI/Lua.
 
     Returns (entries, error_count).
     """
@@ -176,23 +236,26 @@ def _render_midi_file(args: tuple) -> tuple[list[dict], int]:
         for clip in clips:
             ci = clip["clip_idx"]
             tid = f"{source_name}_{file_hash}_t{track_idx}_c{ci}"
-            render_dur_s = float(clip["clip_dur_s"]) + TAIL_S
+            note_end_s = max((n.end for n in clip["notes"]), default=0.0)
+            estimated_render_dur_s = note_end_s + LUA_TAIL_S
 
             midi_out = str(Path(midis_dir) / f"{tid}.mid")
             lua_out  = str(Path(luas_dir)  / f"{tid}.lua")
-            wav_out  = str(Path(wavs_dir)  / f"{tid}.wav")
+            audio_out = str(Path(wavs_dir) / f"{tid}{OUTPUT_AUDIO_EXT}")
             rpp_out  = str(Path(rpps_dir)  / f"{tid}.rpp")
 
-            if Path(wav_out).exists() and not overwrite:
+            if Path(audio_out).exists() and not overwrite:
                 entries.append({
                     "id": tid, "source": source_name, "source_path": rel,
                     "track_name": track_name, "track_idx": track_idx,
                     "clip_idx": ci, "clip_start_s": clip["clip_start_s"],
                     "clip_dur_s": clip["clip_dur_s"], "bpm": bpm,
                     "clip_start_bar": clip["clip_start_bar"], "clip_bars": clip["clip_bars"],
-                    "render_dur_s": render_dur_s,
-                    "tail_s": TAIL_S, "wav_engine": "vital",
-                    "midi": midi_out, "lua": lua_out, "wav": wav_out, "wav_ok": True,
+                    "render_dur_s": estimated_render_dur_s,
+                    "tail_s": LUA_TAIL_S,
+                    "audio_format": "mp3",
+                    "wav_engine": "vital",
+                    "midi": midi_out, "lua": lua_out, "wav": audio_out, "wav_ok": True,
                 })
                 continue
 
@@ -206,21 +269,28 @@ def _render_midi_file(args: tuple) -> tuple[list[dict], int]:
                 new_pm.instruments.append(new_inst)
                 new_pm.write(midi_out)
 
-                # Write Lua script (notes already at t=0)
-                lua_src = generate_lua(
-                    notes=notes, bpm=bpm,
-                    wav_path=wav_out, rpp_path=rpp_out, track_name=track_name,
-                    tail_s=TAIL_S, min_duration_s=render_dur_s,
-                )
-                Path(lua_out).write_text(lua_src)
-
-                # Render WAV via Vita
+                # Render audio via Vita
                 if _vital_instance is None:
                     _vital_instance = _load_vital()
 
-                audio = _render_note_list(_vital_instance, notes, SAMPLE_RATE, TAIL_S)
-                audio = _pad_audio_to_duration(audio, SAMPLE_RATE, render_dur_s)
-                sf.write(wav_out, audio.T, SAMPLE_RATE, subtype="PCM_24")
+                audio = _render_note_list(_vital_instance, notes, SAMPLE_RATE, SYNTH_TAIL_S)
+                audio = _trim_trailing_silence(
+                    audio,
+                    SAMPLE_RATE,
+                    threshold=TRIM_THRESHOLD,
+                    keep_tail_s=TRIM_KEEP_TAIL_S,
+                    min_duration_s=MIN_OUTPUT_S,
+                )
+                render_dur_s = audio.shape[1] / SAMPLE_RATE
+                _write_mp3(audio, SAMPLE_RATE, audio_out, bitrate=MP3_BITRATE)
+
+                # Write Lua script (notes already at t=0)
+                lua_src = generate_lua(
+                    notes=notes, bpm=bpm,
+                    wav_path=audio_out, rpp_path=rpp_out, track_name=track_name,
+                    tail_s=LUA_TAIL_S, min_duration_s=render_dur_s,
+                )
+                Path(lua_out).write_text(lua_src)
 
                 entries.append({
                     "id": tid, "source": source_name, "source_path": rel,
@@ -229,10 +299,12 @@ def _render_midi_file(args: tuple) -> tuple[list[dict], int]:
                     "clip_dur_s": clip["clip_dur_s"], "bpm": bpm,
                     "clip_start_bar": clip["clip_start_bar"], "clip_bars": clip["clip_bars"],
                     "render_dur_s": render_dur_s,
-                    "tail_s": TAIL_S, "wav_engine": "vital",
-                    "midi": midi_out, "lua": lua_out, "wav": wav_out, "wav_ok": True,
+                    "tail_s": LUA_TAIL_S,
+                    "audio_format": "mp3",
+                    "wav_engine": "vital",
+                    "midi": midi_out, "lua": lua_out, "wav": audio_out, "wav_ok": True,
                 })
-            except Exception as exc:
+            except Exception:
                 errors += 1
                 entries.append({
                     "id": tid, "source": source_name, "source_path": rel,
@@ -240,8 +312,10 @@ def _render_midi_file(args: tuple) -> tuple[list[dict], int]:
                     "clip_idx": ci, "clip_start_s": clip["clip_start_s"],
                     "clip_dur_s": clip["clip_dur_s"], "bpm": bpm,
                     "clip_start_bar": clip["clip_start_bar"], "clip_bars": clip["clip_bars"],
-                    "render_dur_s": render_dur_s,
-                    "tail_s": TAIL_S, "wav_engine": "vital",
+                    "render_dur_s": estimated_render_dur_s,
+                    "tail_s": LUA_TAIL_S,
+                    "audio_format": "mp3",
+                    "wav_engine": "vital",
                     "midi": midi_out, "lua": lua_out, "wav": None, "wav_ok": False,
                 })
 
@@ -307,7 +381,7 @@ def main():
         if n % 500 == 0 or n == 1:
             elapsed = time.time() - start
             rate = rendered / elapsed if elapsed > 0 else 0
-            print(f"  [{rendered} clips] {rate:.1f} WAV/s", flush=True)
+            print(f"  [{rendered} clips] {rate:.1f} clips/s", flush=True)
 
     try:
         with ProcessPoolExecutor(max_workers=args.workers, initializer=_worker_init) as ex:

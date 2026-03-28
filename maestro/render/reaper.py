@@ -56,6 +56,129 @@ def _nearest_token(value: float, tokens: list[tuple[str, float]]) -> tuple[str, 
     return best_tok, best_val
 
 
+def _build_expr_candidates(
+    tokens: list[tuple[str, float]],
+    max_terms: int,
+    allow_empty: bool = False,
+    max_value: float | None = None,
+) -> list[tuple[str, float, int]]:
+    """
+    Build token-sum expression candidates like "q.+t" up to max_terms tokens.
+    """
+    # Sort by descending value so expressions naturally read large->small.
+    sorted_tokens = sorted(tokens, key=lambda x: (-x[1], len(x[0]), x[0]))
+    nonzero = [(tok, val) for tok, val in sorted_tokens if val > 0.0]
+    zero = [(tok, val) for tok, val in sorted_tokens if val == 0.0]
+    out: list[tuple[str, float, int]] = []
+
+    if allow_empty:
+        out.append(("", 0.0, 0))
+    for tok, val in zero:
+        if (max_value is None) or (val <= max_value + 1e-12):
+            out.append((tok, val, 1))
+
+    # 1-term expressions
+    if max_terms >= 1:
+        for tok, val in nonzero:
+            if (max_value is None) or (val <= max_value + 1e-12):
+                out.append((tok, val, 1))
+
+    # 2-term expressions
+    if max_terms >= 2:
+        for i, (t1, v1) in enumerate(nonzero):
+            for j in range(i, len(nonzero)):
+                t2, v2 = nonzero[j]
+                total = v1 + v2
+                if (max_value is not None) and (total > max_value + 1e-12):
+                    continue
+                out.append((f"{t1}+{t2}", total, 2))
+
+    # 3-term expressions
+    if max_terms >= 3:
+        for i, (t1, v1) in enumerate(nonzero):
+            for j in range(i, len(nonzero)):
+                t2, v2 = nonzero[j]
+                for k in range(j, len(nonzero)):
+                    t3, v3 = nonzero[k]
+                    total = v1 + v2 + v3
+                    if (max_value is not None) and (total > max_value + 1e-12):
+                        continue
+                    out.append((f"{t1}+{t2}+{t3}", total, 3))
+
+    return out
+
+
+_OFFSET_EXPR_CANDIDATES = _build_expr_candidates(
+    _OFFSET_TOKENS,
+    max_terms=2,
+    allow_empty=False,
+    max_value=1.0 - 1e-12,  # offset must stay within the current beat
+)
+_DURATION_REMAINDER_CANDIDATES = _build_expr_candidates(
+    [(tok, val) for tok, val in _RHYTHM_TOKENS if tok != "w"],
+    max_terms=3,
+    allow_empty=True,
+    max_value=4.0 + 1e-12,
+)
+
+
+def _quantize_start_with_carry(start_beats: float) -> tuple[float, str]:
+    """
+    Quantize start time to the nearest representable lattice point using
+    (integer beat + offset token), allowing carry to the next beat.
+    """
+    base = int(math.floor(start_beats))
+    best_q = 0.0
+    best_tok = "0"
+    best_err = float("inf")
+
+    for beat_base in range(max(0, base - 1), base + 2):
+        for tok, off_val, terms in _OFFSET_EXPR_CANDIDATES:
+            q = float(beat_base) + off_val
+            err = abs(start_beats - q)
+            if (err < best_err) or (err == best_err and len(tok) < len(best_tok)):
+                best_q = q
+                best_tok = tok
+                best_err = err
+
+    return best_q, best_tok
+
+
+def _quantize_duration_expression(dur_beats: float) -> str:
+    """
+    Quantize duration into a token expression, allowing long notes by combining
+    whole-note tokens with one remainder token (e.g. "w+q.").
+    """
+    dur_beats = max(0.0, float(dur_beats))
+    whole = 4.0
+    base_w = int(math.floor(dur_beats / whole))
+
+    best_expr = "t"
+    best_err = float("inf")
+    best_count = float("inf")
+
+    for k in range(max(0, base_w - 2), base_w + 3):
+        base_val = whole * k
+        for rem_expr, rem_val, rem_terms in _DURATION_REMAINDER_CANDIDATES:
+            if k == 0 and rem_terms == 0:
+                continue  # avoid zero-length note expressions
+            total = base_val + rem_val
+            err = abs(dur_beats - total)
+            count = k + rem_terms
+
+            parts = (["w"] * k) + ([rem_expr] if rem_expr else [])
+            expr = "+".join(parts)
+
+            if (err < best_err) or (err == best_err and count < best_count) or (
+                err == best_err and count == best_count and len(expr) < len(best_expr)
+            ):
+                best_expr = expr
+                best_err = err
+                best_count = count
+
+    return best_expr
+
+
 def generate_lua(
     notes,
     bpm: float,
@@ -108,17 +231,14 @@ def generate_lua(
         p_str = f'"{_pitch_name(n.pitch)}"'
 
         start_beats = max(0.0, float(n.start) * (float(bpm) / 60.0))
-        start_floor = math.floor(start_beats)
-        frac = start_beats - start_floor
-        off_tok, off_val = _nearest_token(frac, _OFFSET_TOKENS)
-        q_start_beats = start_floor + off_val
+        q_start_beats, off_tok = _quantize_start_with_carry(start_beats)
 
         bar = int(q_start_beats // ts) + 1
         beat_pos = q_start_beats % ts
         beat = int(math.floor(beat_pos)) + 1
 
         dur_beats = max(0.0, float(n.end - n.start) * (float(bpm) / 60.0))
-        dur_tok, _ = _nearest_token(dur_beats, _RHYTHM_TOKENS)
+        dur_tok = _quantize_duration_expression(dur_beats)
         v     = max(1, min(127, int(n.velocity)))
         note_lines.append(f'n({p_str},m({bar},{beat},"{off_tok}"),"{dur_tok}",{v})')
     note_block = "\n".join(note_lines)
@@ -136,9 +256,16 @@ local TOK={{
   qt=(2/3), ["e."]=(3/4), q=1, ["q."]=(3/2), h=2, ["h."]=3, w=4
 }}
 local function B(tok)
+  if tok == nil then return 0 end
   local v = TOK[tok]
-  if v == nil then error("Unknown rhythm token: " .. tostring(tok)) end
-  return v
+  if v ~= nil then return v end
+  local sum = 0
+  for part in tostring(tok):gmatch("[^%+]+") do
+    local p = TOK[part]
+    if p == nil then error("Unknown rhythm token: " .. tostring(part)) end
+    sum = sum + p
+  end
+  return sum
 end
 local function m(bar,beat,offset_tok)
   return (((bar-1)*ts) + ((beat or 1)-1) + B(offset_tok or "0")) * ppb
