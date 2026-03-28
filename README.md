@@ -146,7 +146,7 @@ python scripts/build_phase1_manifest.py \
 ```
 Edit `configs/phase1_data_sources.yaml` to point at your local dataset roots.
 
-**Tokenized Lua tuple generation (current)**: for MIDI-only corpora we generate `(midi_clip, lua_script, wav)` tuples with:
+**Tokenized Lua tuple generation (current)**: for MIDI-only corpora we generate `(midi_clip, lua_script, audio)` tuples with:
 ```
 python scripts/generate_reaper_tuples.py \
   --source slakh2100 \
@@ -155,11 +155,78 @@ python scripts/generate_reaper_tuples.py \
 ```
 - Clip windows are deterministic, sequential, non-overlapping, and bar-aligned (4/4 assumption in the current generator).
 - Only notes fully contained in each clip window are kept; selected notes are re-offset to clip-local `t=0`.
-- WAV audio is rendered with Vita (`maestro/render/vital.py`) for fast local data generation.
+- Audio is rendered with Vita (`maestro/render/vital.py`) for fast local data generation and encoded as MP3.
+- Trailing silence is trimmed (short release tail kept) so output duration tracks note activity instead of full clip-window length.
 - Lua scripts are emitted as a transcription-style target using rhythmic tokens (not raw ms durations), e.g.:
   - `n("C4", m(12,3,"8t"), "q.", 90)`
 - `m(bar, beat, offset_token)` + duration token are converted to PPQ ticks inside Lua before `MIDI_InsertNote`.
 - This representation is intentionally easier to model, but timing is quantized and therefore not sample-exact vs. original human performance.
+
+**Qwen2.5-Omni MP3→Lua SFT prep (new)**:
+1. Save your exact user prompt text (same string for every sample), e.g.:
+```
+mkdir -p data/prompts
+cat > data/prompts/omni_lua_user_prompt.txt << 'EOF'
+Listen to this mp3 file and create a REAPER project with this melody using the synth "Vital" on its default preset. Return only Lua code.
+EOF
+```
+2. Build multimodal JSONL from tuple audio+lua pairs:
+```
+python3 scripts/build_omni_lua_sft_dataset.py \
+  --audio-dir data/processed/reaper_tuples_lakh/wavs \
+  --lua-dir data/processed/reaper_tuples_lakh/luas \
+  --prompt-file data/prompts/omni_lua_user_prompt.txt \
+  --out-dir data/prepared/omni_lua_sft \
+  --val-ratio 0.1 \
+  --require-lua-markers
+```
+3. Preprocessing smoke test:
+```
+python3 scripts/smoke_test_omni_lua_dataset.py \
+  --dataset-dir data/prepared/omni_lua_sft \
+  --split train \
+  --max-rows 256 \
+  --require-lua-markers \
+  --report-out outputs/omni_lua_sft_preprocess_smoke.json
+```
+4. Install MS-Swift + Omni dependencies:
+```
+bash scripts/setup_ms_swift_omni.sh
+```
+5. Training smoke test / dry run:
+```
+python3 scripts/smoke_test_qwen25_omni_lora_setup.py \
+  --dataset-dir data/prepared/omni_lua_sft \
+  --max-rows 64 \
+  --report-out outputs/qwen25_omni_lora_setup_smoke.json
+
+python3 scripts/train_qwen25_omni_lora.py \
+  --profile smoke \
+  --dataset-dir data/prepared/omni_lua_sft \
+  --dry-run
+```
+Notes:
+- Multi-GPU runs use `configs/deepspeed_zero3.json` by default.
+- That config intentionally includes both DeepSpeed `optimizer` and `scheduler` blocks to avoid HF/DeepSpeed LR scheduler group mismatches in the current stack.
+
+6. Launch training:
+```
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_qwen25_omni_lora.sh smoke
+bash scripts/train_qwen25_omni_lora.sh full
+bash scripts/train_qwen25_omni_lora.sh oom_fallback
+```
+7. Optional 4-GPU runtime smoke (1 train step):
+```
+CUDA_VISIBLE_DEVICES=0,1,2,3 python3 scripts/train_qwen25_omni_lora.py \
+  --profile smoke \
+  --dataset-dir data/prepared/omni_lua_sft \
+  --nproc-per-node 4 \
+  --enable-audio-output 0 \
+  --max_steps 1 \
+  --eval_steps 1 \
+  --save_steps 1 \
+  --logging_steps 1
+```
 
 **Perturbation types** (each generates distinct training examples from a single song):
 
@@ -179,6 +246,30 @@ python scripts/generate_reaper_tuples.py \
 The synthetic conversation seeding is deliberate: the agent does not know what was removed. It reasons from the audio, exactly as a real producer would. This prevents pattern-matching ("bass is missing, add bass") and trains genuine audio reasoning.
 
 **What SFT produces**: an agent that handles common repair tasks, writes musically coherent MIDI, makes reasonable instrumentation choices, and knows when to reach for ACE-Step vs. a VSTi.
+
+#### Phase 1 Next Milestone — MP3 -> Vital Parameter Reconstruction
+
+The MP3->Lua melody transcription POC is the first half of Phase 1. The next step is timbre reconstruction:
+
+- Input: an MP3 of a monophonic/polyphonic synth melody rendered with Vital.
+- Task: infer Vital parameter values that recreate the source synth sound (in-distribution Vital setting recovery).
+- Output target: deterministic Lua that sets Vital parameters (and, when needed, inserts the melody) so rendering reproduces the source sound.
+
+Planned data format (supervised):
+- `user`: "Listen to this mp3 and recreate this melody with Vital default preset. Return only Lua."
+- `assistant`: Lua containing a compact Vital parameter block + note events.
+- Ground truth includes both rendered MP3 and exact Vital parameter state used to generate it.
+
+Training/eval plan for this milestone:
+- Keep representation token-efficient and deterministic (stable function names/order, no unused metadata).
+- Start with a bounded Vital parameter subset + fixed ranges, then expand coverage.
+- Evaluate both:
+  - Parameter accuracy (for parameters with direct ground truth)
+  - Rendered-audio similarity (CLAP/correlation metrics on generated render vs. target MP3)
+- Add smoke tests that run a small batch end-to-end: predict Lua -> render with Vita -> compute similarity -> report failures.
+
+Success criterion for closing Phase 1:
+- Model can recover melody structure and produce Vital settings that render perceptually close matches on held-out in-distribution examples.
 
 ---
 

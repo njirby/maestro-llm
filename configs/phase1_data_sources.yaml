@@ -1,0 +1,99 @@
+# Phase 1 SFT data sources (one entry per unique dataset).
+#
+# This file doubles as documentation and machine config.
+# The manifest builder currently reads:
+# - name, kind, root, split (optional), recursive, min_stems
+# Extra keys (url/description/expected_layout/notes) are ignored by code.
+#
+# kind:
+# - multitrack: scans directories for audio stems (+ optional MIDI)
+# - midi_only: scans MIDI files only
+#
+# split is optional. If omitted, rows use split="unspecified".
+
+sources:
+  - name: slakh2100
+    kind: multitrack
+    root: /mnt/datasets/slakh2100
+    recursive: true
+    min_stems: 2
+    url: https://www.slakh.com/
+    description: >
+      Synthetic multitrack dataset with aligned MIDI + rendered audio stems.
+      Strong baseline for Phase 1 perturbation generation because alignment is
+      usually cleaner than real-session corpora.
+    expected_layout: >
+      Root contains split/song subdirectories with many audio files and often MIDI.
+      Recursive scan should traverse all songs regardless of split folder names.
+    notes: >
+      If you want explicit train/val/test downstream, derive split from song path
+      or add a post-processing step instead of splitting here.
+
+  - name: cambridge_mt
+    kind: multitrack
+    root: /mnt/datasets/cambridge-mt
+    recursive: true
+    min_stems: 2
+    url: https://cambridge-mt.com/ms/mtk/
+    description: >
+      Cambridge Mixing Secrets multitrack sessions. Real-world stems with richer
+      performance/mix artifacts than synthetic datasets.
+    expected_layout: >
+      Project/session folders containing per-track audio files with heterogeneous
+      naming conventions; recursive scanning is recommended.
+    notes: >
+      High value for realism in arrangement and mix reconstruction perturbations.
+
+  - name: musdb18_hq
+    kind: multitrack
+    root: /mnt/datasets/musdb18hq
+    recursive: true
+    min_stems: 2
+    url: https://sigsep.github.io/datasets/musdb.html
+    description: >
+      MUSDB18-HQ source-separation dataset with consistent, high-quality stems.
+    expected_layout: >
+      Usually train/test folders with song subdirectories including mixture and
+      canonical stems (vocals/drums/bass/other).
+    notes: >
+      Lower stem granularity than deep multitrack corpora, but very consistent.
+
+  - name: medleydb
+    kind: multitrack
+    root: /mnt/datasets/medleydb
+    recursive: true
+    min_stems: 2
+    url: https://medleydb.weebly.com/
+    description: >
+      Professionally recorded multitracks with broad instrumentation diversity.
+    expected_layout: >
+      Track folders containing isolated stems and metadata files; internal folder
+      structure can vary, so recursive scanning is recommended.
+    notes: >
+      Useful for harder instrument-role and arrangement reconstruction examples.
+
+  - name: moisesdb
+    kind: multitrack
+    root: /mnt/datasets/moisesdb
+    recursive: true
+    min_stems: 2
+    url: https://github.com/moises-ai/moises-db
+    description: >
+      Multitrack corpus with finer stem hierarchy than classic 4-stem datasets.
+    expected_layout: >
+      Song/session directories with grouped or individual instrument stems.
+    notes: >
+      Prioritize for detailed remove-track and role-preserving perturbations.
+
+  - name: lakh_midi
+    kind: midi_only
+    root: /mnt/datasets/lakh-midi
+    recursive: true
+    url: https://colinraffel.com/projects/lmd/
+    description: >
+      Large-scale MIDI-only corpus. No stems by default, but ideal as input to a
+      rendering pipeline (e.g., FluidSynth) for scale-out synthetic stems.
+    expected_layout: >
+      Nested folders containing .mid/.midi files.
+    notes: >
+      Treat manifest rows from this source as render queue inputs.
