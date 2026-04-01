@@ -1,0 +1,13 @@
+source .venv/bin/activate && python scripts/render_vital_wavs.py \
+    --num-wavs 32000 \
+    --num-midi 8000 \
+    --jobs 48 \
+    --jitter 0.1 \
+    --transpose-range 3 \
+    --transpose-prob 0.5 \
+    --seed 20260315 \
+    --output-dir outputs/vital_renders_32k_rand \
+    --midi-dir data/raw/phase1_sources/midi/cymatics_orchid_stems_pt2 \
+    --midi-dir data/raw/phase1_sources/midi/hyperbits_producer_creators_toolkit \
+    --midi-dir data/raw/phase1_sources/midi/melodic_mind \
+    --overwrite

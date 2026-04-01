@@ -1,0 +1,42 @@
+data:
+  audio_dir: ./data/audio
+  prepared_dir: ./data/prepared/musiccaps_v1
+  use_prepared: true
+  require_prepared: true
+  dataset_limit: null
+
+model:
+  clap_model_id: laion/larger_clap_general
+  qwen_model_id: Qwen/Qwen3.5-4B
+  clap_dim: 512
+  qwen_hidden_dim: null
+  train_clap_encoder: true
+  train_projection: true
+  freeze_llm: true
+  clap_device: cuda
+
+training:
+  output_dir: ./outputs/audio_caption_qwen4b_encoder_unfrozen
+  num_train_epochs: 100
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 2
+  learning_rate: 2.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_length: 256
+  logging_steps: 4
+  dataloader_num_workers: 0
+  gradient_checkpointing: false
+  validation_split_ratio: 0.1
+  data_split_seed: 42
+  eval_strategy: epoch
+  eval_steps: null
+  per_device_eval_batch_size: null
+  save_strategy: epoch
+  save_steps: null
+  save_total_limit: null
+  save_safetensors: true
+  save_only_model: false
+  resume_from_checkpoint: null
+  overwrite_output_dir: false

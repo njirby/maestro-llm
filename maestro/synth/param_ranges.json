@@ -1,0 +1,4664 @@
+{
+  "beats_per_minute": {
+    "min": 0.3333333432674408,
+    "max": 5.0,
+    "default": 2.0,
+    "discrete": false
+  },
+  "bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "chorus_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 60.0,
+    "discrete": false
+  },
+  "chorus_delay_1": {
+    "min": -10.0,
+    "max": -5.64385986328125,
+    "default": -9.0,
+    "discrete": false
+  },
+  "chorus_delay_2": {
+    "min": -10.0,
+    "max": -5.64385986328125,
+    "default": -7.0,
+    "discrete": false
+  },
+  "chorus_dry_wet": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "chorus_feedback": {
+    "min": -0.949999988079071,
+    "max": 0.949999988079071,
+    "default": 0.4000000059604645,
+    "discrete": false
+  },
+  "chorus_frequency": {
+    "min": -6.0,
+    "max": 3.0,
+    "default": -3.0,
+    "discrete": false
+  },
+  "chorus_mod_depth": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "chorus_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "chorus_spread": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "chorus_sync": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "chorus_tempo": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 4.0,
+    "discrete": true
+  },
+  "chorus_voices": {
+    "min": 1.0,
+    "max": 4.0,
+    "default": 4.0,
+    "discrete": true
+  },
+  "compressor_attack": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "compressor_band_gain": {
+    "min": -30.0,
+    "max": 30.0,
+    "default": 11.699999809265137,
+    "discrete": false
+  },
+  "compressor_band_lower_ratio": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.800000011920929,
+    "discrete": false
+  },
+  "compressor_band_lower_threshold": {
+    "min": -80.0,
+    "max": 0.0,
+    "default": -36.0,
+    "discrete": false
+  },
+  "compressor_band_upper_ratio": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.8569999933242798,
+    "discrete": false
+  },
+  "compressor_band_upper_threshold": {
+    "min": -80.0,
+    "max": 0.0,
+    "default": -25.0,
+    "discrete": false
+  },
+  "compressor_enabled_bands": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "compressor_high_gain": {
+    "min": -30.0,
+    "max": 30.0,
+    "default": 16.299999237060547,
+    "discrete": false
+  },
+  "compressor_high_lower_ratio": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.800000011920929,
+    "discrete": false
+  },
+  "compressor_high_lower_threshold": {
+    "min": -80.0,
+    "max": 0.0,
+    "default": -35.0,
+    "discrete": false
+  },
+  "compressor_high_upper_ratio": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "compressor_high_upper_threshold": {
+    "min": -80.0,
+    "max": 0.0,
+    "default": -30.0,
+    "discrete": false
+  },
+  "compressor_low_gain": {
+    "min": -30.0,
+    "max": 30.0,
+    "default": 16.299999237060547,
+    "discrete": false
+  },
+  "compressor_low_lower_ratio": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.800000011920929,
+    "discrete": false
+  },
+  "compressor_low_lower_threshold": {
+    "min": -80.0,
+    "max": 0.0,
+    "default": -35.0,
+    "discrete": false
+  },
+  "compressor_low_upper_ratio": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.8999999761581421,
+    "discrete": false
+  },
+  "compressor_low_upper_threshold": {
+    "min": -80.0,
+    "max": 0.0,
+    "default": -28.0,
+    "discrete": false
+  },
+  "compressor_mix": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "compressor_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "compressor_release": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "delay_aux_frequency": {
+    "min": -2.0,
+    "max": 9.0,
+    "default": 2.0,
+    "discrete": false
+  },
+  "delay_aux_sync": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "delay_aux_tempo": {
+    "min": 4.0,
+    "max": 12.0,
+    "default": 9.0,
+    "discrete": true
+  },
+  "delay_dry_wet": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.33340001106262207,
+    "discrete": false
+  },
+  "delay_feedback": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "delay_filter_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 60.0,
+    "discrete": false
+  },
+  "delay_filter_spread": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "delay_frequency": {
+    "min": -2.0,
+    "max": 9.0,
+    "default": 2.0,
+    "discrete": false
+  },
+  "delay_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "delay_style": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "delay_sync": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "delay_tempo": {
+    "min": 4.0,
+    "max": 12.0,
+    "default": 9.0,
+    "discrete": true
+  },
+  "distortion_drive": {
+    "min": -30.0,
+    "max": 30.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "distortion_filter_blend": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "distortion_filter_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 80.0,
+    "discrete": false
+  },
+  "distortion_filter_order": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "distortion_filter_resonance": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "distortion_mix": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "distortion_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "distortion_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "effect_chain_order": {
+    "min": 0.0,
+    "max": 362879.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "env_1_attack": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.14949999749660492,
+    "discrete": false
+  },
+  "env_1_attack_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_1_decay": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_1_decay_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_1_delay": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_1_hold": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_1_release": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.5475999712944031,
+    "discrete": false
+  },
+  "env_1_release_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_1_sustain": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_2_attack": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.14949999749660492,
+    "discrete": false
+  },
+  "env_2_attack_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_2_decay": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_2_decay_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_2_delay": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_2_hold": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_2_release": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.5475999712944031,
+    "discrete": false
+  },
+  "env_2_release_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_2_sustain": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_3_attack": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.14949999749660492,
+    "discrete": false
+  },
+  "env_3_attack_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_3_decay": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_3_decay_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_3_delay": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_3_hold": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_3_release": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.5475999712944031,
+    "discrete": false
+  },
+  "env_3_release_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_3_sustain": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_4_attack": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.14949999749660492,
+    "discrete": false
+  },
+  "env_4_attack_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_4_decay": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_4_decay_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_4_delay": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_4_hold": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_4_release": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.5475999712944031,
+    "discrete": false
+  },
+  "env_4_release_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_4_sustain": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_5_attack": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.14949999749660492,
+    "discrete": false
+  },
+  "env_5_attack_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_5_decay": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_5_decay_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_5_delay": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_5_hold": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_5_release": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.5475999712944031,
+    "discrete": false
+  },
+  "env_5_release_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_5_sustain": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_6_attack": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.14949999749660492,
+    "discrete": false
+  },
+  "env_6_attack_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_6_decay": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 1.0,
+    "discrete": false
+  },
+  "env_6_decay_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_6_delay": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_6_hold": {
+    "min": 0.0,
+    "max": 1.4142135381698608,
+    "default": 0.0,
+    "discrete": false
+  },
+  "env_6_release": {
+    "min": 0.0,
+    "max": 2.378420114517212,
+    "default": 0.5475999712944031,
+    "discrete": false
+  },
+  "env_6_release_power": {
+    "min": -20.0,
+    "max": 20.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "env_6_sustain": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "eq_band_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 80.0,
+    "discrete": false
+  },
+  "eq_band_gain": {
+    "min": -15.0,
+    "max": 15.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "eq_band_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "eq_band_resonance": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.447299987077713,
+    "discrete": false
+  },
+  "eq_high_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 100.0,
+    "discrete": false
+  },
+  "eq_high_gain": {
+    "min": -15.0,
+    "max": 15.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "eq_high_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "eq_high_resonance": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.31630000472068787,
+    "discrete": false
+  },
+  "eq_low_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 40.0,
+    "discrete": false
+  },
+  "eq_low_gain": {
+    "min": -15.0,
+    "max": 15.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "eq_low_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "eq_low_resonance": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.31630000472068787,
+    "discrete": false
+  },
+  "eq_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_1_blend": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_1_blend_transpose": {
+    "min": 0.0,
+    "max": 84.0,
+    "default": 42.0,
+    "discrete": false
+  },
+  "filter_1_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 60.0,
+    "discrete": false
+  },
+  "filter_1_drive": {
+    "min": 0.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_1_filter_input": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_1_formant_resonance": {
+    "min": 0.30000001192092896,
+    "max": 1.0,
+    "default": 0.8500000238418579,
+    "discrete": false
+  },
+  "filter_1_formant_spread": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_1_formant_transpose": {
+    "min": -12.0,
+    "max": 12.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_1_formant_x": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_1_formant_y": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_1_keytrack": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_1_mix": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "filter_1_model": {
+    "min": 0.0,
+    "max": 7.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_1_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_1_resonance": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_1_style": {
+    "min": 0.0,
+    "max": 9.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_2_blend": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_2_blend_transpose": {
+    "min": 0.0,
+    "max": 84.0,
+    "default": 42.0,
+    "discrete": false
+  },
+  "filter_2_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 60.0,
+    "discrete": false
+  },
+  "filter_2_drive": {
+    "min": 0.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_2_filter_input": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_2_formant_resonance": {
+    "min": 0.30000001192092896,
+    "max": 1.0,
+    "default": 0.8500000238418579,
+    "discrete": false
+  },
+  "filter_2_formant_spread": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_2_formant_transpose": {
+    "min": -12.0,
+    "max": 12.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_2_formant_x": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_2_formant_y": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_2_keytrack": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_2_mix": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "filter_2_model": {
+    "min": 0.0,
+    "max": 7.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_2_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_2_resonance": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_2_style": {
+    "min": 0.0,
+    "max": 9.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_fx_blend": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_fx_blend_transpose": {
+    "min": 0.0,
+    "max": 84.0,
+    "default": 42.0,
+    "discrete": false
+  },
+  "filter_fx_cutoff": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 60.0,
+    "discrete": false
+  },
+  "filter_fx_drive": {
+    "min": 0.0,
+    "max": 20.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_fx_formant_resonance": {
+    "min": 0.30000001192092896,
+    "max": 1.0,
+    "default": 0.8500000238418579,
+    "discrete": false
+  },
+  "filter_fx_formant_spread": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_fx_formant_transpose": {
+    "min": -12.0,
+    "max": 12.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_fx_formant_x": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_fx_formant_y": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_fx_keytrack": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "filter_fx_mix": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "filter_fx_model": {
+    "min": 0.0,
+    "max": 7.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_fx_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "filter_fx_resonance": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "filter_fx_style": {
+    "min": 0.0,
+    "max": 9.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "flanger_center": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 64.0,
+    "discrete": false
+  },
+  "flanger_dry_wet": {
+    "min": 0.0,
+    "max": 0.5,
+    "default": 0.5,
+    "discrete": false
+  },
+  "flanger_feedback": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "flanger_frequency": {
+    "min": -5.0,
+    "max": 2.0,
+    "default": 2.0,
+    "discrete": false
+  },
+  "flanger_mod_depth": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "flanger_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "flanger_phase_offset": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.3333333432674408,
+    "discrete": false
+  },
+  "flanger_sync": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "flanger_tempo": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 4.0,
+    "discrete": true
+  },
+  "legato": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_1_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_1_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_1_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_1_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_1_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_1_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_1_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_1_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_1_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_1_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_1_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_1_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "lfo_2_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_2_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_2_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_2_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_2_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_2_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_2_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_2_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_2_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_2_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_2_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_2_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "lfo_3_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_3_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_3_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_3_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_3_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_3_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_3_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_3_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_3_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_3_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_3_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_3_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "lfo_4_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_4_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_4_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_4_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_4_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_4_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_4_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_4_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_4_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_4_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_4_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_4_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "lfo_5_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_5_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_5_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_5_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_5_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_5_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_5_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_5_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_5_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_5_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_5_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_5_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "lfo_6_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_6_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_6_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_6_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_6_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_6_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_6_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_6_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_6_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_6_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_6_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_6_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "lfo_7_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_7_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_7_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_7_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_7_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_7_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_7_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_7_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_7_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_7_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_7_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_7_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "lfo_8_delay_time": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_8_fade_time": {
+    "min": 0.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_8_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "lfo_8_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "lfo_8_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_8_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_8_smooth_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_8_smooth_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -7.5,
+    "discrete": false
+  },
+  "lfo_8_stereo": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "lfo_8_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "lfo_8_sync_type": {
+    "min": 0.0,
+    "max": 5.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "lfo_8_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 7.0,
+    "discrete": true
+  },
+  "macro_control_1": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "macro_control_2": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "macro_control_3": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "macro_control_4": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "mod_wheel": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_10_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_10_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_10_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_10_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_10_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_11_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_11_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_11_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_11_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_11_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_12_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_12_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_12_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_12_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_12_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_13_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_13_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_13_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_13_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_13_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_14_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_14_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_14_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_14_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_14_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_15_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_15_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_15_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_15_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_15_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_16_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_16_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_16_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_16_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_16_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_17_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_17_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_17_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_17_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_17_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_18_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_18_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_18_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_18_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_18_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_19_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_19_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_19_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_19_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_19_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_1_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_1_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_1_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_1_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_1_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_20_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_20_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_20_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_20_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_20_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_21_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_21_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_21_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_21_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_21_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_22_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_22_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_22_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_22_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_22_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_23_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_23_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_23_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_23_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_23_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_24_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_24_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_24_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_24_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_24_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_25_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_25_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_25_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_25_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_25_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_26_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_26_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_26_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_26_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_26_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_27_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_27_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_27_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_27_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_27_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_28_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_28_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_28_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_28_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_28_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_29_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_29_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_29_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_29_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_29_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_2_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_2_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_2_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_2_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_2_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_30_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_30_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_30_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_30_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_30_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_31_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_31_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_31_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_31_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_31_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_32_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_32_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_32_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_32_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_32_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_33_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_33_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_33_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_33_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_33_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_34_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_34_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_34_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_34_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_34_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_35_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_35_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_35_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_35_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_35_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_36_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_36_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_36_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_36_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_36_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_37_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_37_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_37_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_37_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_37_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_38_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_38_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_38_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_38_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_38_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_39_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_39_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_39_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_39_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_39_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_3_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_3_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_3_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_3_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_3_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_40_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_40_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_40_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_40_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_40_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_41_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_41_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_41_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_41_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_41_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_42_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_42_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_42_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_42_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_42_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_43_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_43_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_43_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_43_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_43_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_44_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_44_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_44_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_44_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_44_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_45_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_45_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_45_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_45_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_45_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_46_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_46_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_46_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_46_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_46_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_47_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_47_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_47_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_47_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_47_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_48_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_48_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_48_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_48_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_48_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_49_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_49_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_49_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_49_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_49_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_4_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_4_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_4_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_4_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_4_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_50_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_50_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_50_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_50_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_50_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_51_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_51_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_51_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_51_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_51_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_52_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_52_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_52_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_52_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_52_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_53_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_53_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_53_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_53_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_53_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_54_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_54_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_54_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_54_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_54_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_55_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_55_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_55_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_55_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_55_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_56_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_56_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_56_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_56_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_56_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_57_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_57_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_57_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_57_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_57_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_58_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_58_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_58_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_58_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_58_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_59_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_59_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_59_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_59_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_59_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_5_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_5_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_5_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_5_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_5_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_60_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_60_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_60_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_60_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_60_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_61_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_61_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_61_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_61_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_61_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_62_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_62_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_62_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_62_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_62_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_63_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_63_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_63_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_63_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_63_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_64_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_64_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_64_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_64_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_64_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_6_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_6_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_6_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_6_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_6_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_7_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_7_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_7_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_7_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_7_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_8_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_8_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_8_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_8_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_8_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_9_amount": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_9_bipolar": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_9_bypass": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "modulation_9_power": {
+    "min": -10.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "modulation_9_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "mpe_enabled": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_destination": {
+    "min": 0.0,
+    "max": 14.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_detune_power": {
+    "min": -5.0,
+    "max": 5.0,
+    "default": 1.5,
+    "discrete": false
+  },
+  "osc_1_detune_range": {
+    "min": 0.0,
+    "max": 48.0,
+    "default": 2.0,
+    "discrete": false
+  },
+  "osc_1_distortion_amount": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_1_distortion_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_1_distortion_spread": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_1_distortion_type": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_frame_spread": {
+    "min": -128.0,
+    "max": 128.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_1_level": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.7071067690849304,
+    "discrete": false
+  },
+  "osc_1_midi_track": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_1_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_1_pan": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_1_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_1_random_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "osc_1_smooth_interpolation": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_spectral_morph_amount": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_1_spectral_morph_spread": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_1_spectral_morph_type": {
+    "min": 0.0,
+    "max": 11.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_spectral_unison": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_1_stack_style": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_stereo_spread": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "osc_1_transpose": {
+    "min": -48.0,
+    "max": 48.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_transpose_quantize": {
+    "min": 0.0,
+    "max": 8191.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_1_unison_blend": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.800000011920929,
+    "discrete": false
+  },
+  "osc_1_unison_detune": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 4.4721360206604,
+    "discrete": false
+  },
+  "osc_1_unison_stack_type": {
+    "min": 0.0,
+    "max": 7.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_1_unison_voices": {
+    "min": 1.0,
+    "max": 16.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_1_view_2d": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_1_wave_frame": {
+    "min": 0.0,
+    "max": 256.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_2_destination": {
+    "min": 0.0,
+    "max": 14.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_2_detune_power": {
+    "min": -5.0,
+    "max": 5.0,
+    "default": 1.5,
+    "discrete": false
+  },
+  "osc_2_detune_range": {
+    "min": 0.0,
+    "max": 48.0,
+    "default": 2.0,
+    "discrete": false
+  },
+  "osc_2_distortion_amount": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_2_distortion_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_2_distortion_spread": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_2_distortion_type": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_frame_spread": {
+    "min": -128.0,
+    "max": 128.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_2_level": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.7071067690849304,
+    "discrete": false
+  },
+  "osc_2_midi_track": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_2_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_pan": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_2_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_2_random_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "osc_2_smooth_interpolation": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_spectral_morph_amount": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_2_spectral_morph_spread": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_2_spectral_morph_type": {
+    "min": 0.0,
+    "max": 11.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_spectral_unison": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_2_stack_style": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_stereo_spread": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "osc_2_transpose": {
+    "min": -48.0,
+    "max": 48.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_transpose_quantize": {
+    "min": 0.0,
+    "max": 8191.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_2_unison_blend": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.800000011920929,
+    "discrete": false
+  },
+  "osc_2_unison_detune": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 4.4721360206604,
+    "discrete": false
+  },
+  "osc_2_unison_stack_type": {
+    "min": 0.0,
+    "max": 7.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_2_unison_voices": {
+    "min": 1.0,
+    "max": 16.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_2_view_2d": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_2_wave_frame": {
+    "min": 0.0,
+    "max": 256.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_3_destination": {
+    "min": 0.0,
+    "max": 14.0,
+    "default": 3.0,
+    "discrete": true
+  },
+  "osc_3_detune_power": {
+    "min": -5.0,
+    "max": 5.0,
+    "default": 1.5,
+    "discrete": false
+  },
+  "osc_3_detune_range": {
+    "min": 0.0,
+    "max": 48.0,
+    "default": 2.0,
+    "discrete": false
+  },
+  "osc_3_distortion_amount": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_3_distortion_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_3_distortion_spread": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_3_distortion_type": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_frame_spread": {
+    "min": -128.0,
+    "max": 128.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_3_level": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.7071067690849304,
+    "discrete": false
+  },
+  "osc_3_midi_track": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_3_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_pan": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_3_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_3_random_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "osc_3_smooth_interpolation": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_spectral_morph_amount": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "osc_3_spectral_morph_spread": {
+    "min": -0.5,
+    "max": 0.5,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_3_spectral_morph_type": {
+    "min": 0.0,
+    "max": 11.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_spectral_unison": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_3_stack_style": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_stereo_spread": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "osc_3_transpose": {
+    "min": -48.0,
+    "max": 48.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_transpose_quantize": {
+    "min": 0.0,
+    "max": 8191.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "osc_3_unison_blend": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.800000011920929,
+    "discrete": false
+  },
+  "osc_3_unison_detune": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 4.4721360206604,
+    "discrete": false
+  },
+  "osc_3_unison_stack_type": {
+    "min": 0.0,
+    "max": 7.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "osc_3_unison_voices": {
+    "min": 1.0,
+    "max": 16.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_3_view_2d": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "osc_3_wave_frame": {
+    "min": 0.0,
+    "max": 256.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "oversampling": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "phaser_blend": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "phaser_center": {
+    "min": 8.0,
+    "max": 136.0,
+    "default": 80.0,
+    "discrete": false
+  },
+  "phaser_dry_wet": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "phaser_feedback": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "phaser_frequency": {
+    "min": -5.0,
+    "max": 2.0,
+    "default": -3.0,
+    "discrete": false
+  },
+  "phaser_mod_depth": {
+    "min": 0.0,
+    "max": 48.0,
+    "default": 24.0,
+    "discrete": false
+  },
+  "phaser_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "phaser_phase_offset": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.3333333432674408,
+    "discrete": false
+  },
+  "phaser_sync": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "phaser_tempo": {
+    "min": 0.0,
+    "max": 10.0,
+    "default": 3.0,
+    "discrete": true
+  },
+  "pitch_bend_range": {
+    "min": 0.0,
+    "max": 48.0,
+    "default": 2.0,
+    "discrete": true
+  },
+  "pitch_wheel": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "polyphony": {
+    "min": 1.0,
+    "max": 32.0,
+    "default": 8.0,
+    "discrete": true
+  },
+  "portamento_force": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "portamento_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "portamento_scale": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "portamento_slope": {
+    "min": -8.0,
+    "max": 8.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "portamento_time": {
+    "min": -10.0,
+    "max": 4.0,
+    "default": -10.0,
+    "discrete": false
+  },
+  "random_1_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "random_1_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "random_1_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "random_1_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_1_style": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_1_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "random_1_sync_type": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_1_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 8.0,
+    "discrete": true
+  },
+  "random_2_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "random_2_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "random_2_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "random_2_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_2_style": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_2_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "random_2_sync_type": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_2_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 8.0,
+    "discrete": true
+  },
+  "random_3_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "random_3_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "random_3_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "random_3_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_3_style": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_3_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "random_3_sync_type": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_3_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 8.0,
+    "discrete": true
+  },
+  "random_4_frequency": {
+    "min": -7.0,
+    "max": 9.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "random_4_keytrack_transpose": {
+    "min": -60.0,
+    "max": 36.0,
+    "default": -12.0,
+    "discrete": true
+  },
+  "random_4_keytrack_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "random_4_stereo": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_4_style": {
+    "min": 0.0,
+    "max": 3.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_4_sync": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "random_4_sync_type": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "random_4_tempo": {
+    "min": 0.0,
+    "max": 12.0,
+    "default": 8.0,
+    "discrete": true
+  },
+  "reverb_chorus_amount": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.22360700368881226,
+    "discrete": false
+  },
+  "reverb_chorus_frequency": {
+    "min": -8.0,
+    "max": 3.0,
+    "default": -2.0,
+    "discrete": false
+  },
+  "reverb_decay_time": {
+    "min": -6.0,
+    "max": 6.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "reverb_delay": {
+    "min": 0.0,
+    "max": 0.30000001192092896,
+    "default": 0.0,
+    "discrete": false
+  },
+  "reverb_dry_wet": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.25,
+    "discrete": false
+  },
+  "reverb_feedback": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.7,
+    "discrete": false
+  },
+  "reverb_high_shelf_cutoff": {
+    "min": 0.0,
+    "max": 128.0,
+    "default": 90.0,
+    "discrete": false
+  },
+  "reverb_high_shelf_gain": {
+    "min": -6.0,
+    "max": 0.0,
+    "default": -1.0,
+    "discrete": false
+  },
+  "reverb_low_shelf_cutoff": {
+    "min": 0.0,
+    "max": 128.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "reverb_low_shelf_gain": {
+    "min": -6.0,
+    "max": 0.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "reverb_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "reverb_pre_high_cutoff": {
+    "min": 0.0,
+    "max": 128.0,
+    "default": 110.0,
+    "discrete": false
+  },
+  "reverb_pre_low_cutoff": {
+    "min": 0.0,
+    "max": 128.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "reverb_size": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.5,
+    "discrete": false
+  },
+  "sample_bounce": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "sample_destination": {
+    "min": 0.0,
+    "max": 14.0,
+    "default": 3.0,
+    "discrete": true
+  },
+  "sample_keytrack": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "sample_level": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.7071067690849304,
+    "discrete": false
+  },
+  "sample_loop": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": true
+  },
+  "sample_on": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "sample_pan": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "sample_random_phase": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "sample_transpose": {
+    "min": -48.0,
+    "max": 48.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "sample_transpose_quantize": {
+    "min": 0.0,
+    "max": 8191.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "sample_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "stereo_mode": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "stereo_routing": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "velocity_track": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "view_spectrogram": {
+    "min": 0.0,
+    "max": 2.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "voice_amplitude": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 1.0,
+    "discrete": false
+  },
+  "voice_override": {
+    "min": 0.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "voice_priority": {
+    "min": 0.0,
+    "max": 4.0,
+    "default": 4.0,
+    "discrete": true
+  },
+  "voice_transpose": {
+    "min": -48.0,
+    "max": 48.0,
+    "default": 0.0,
+    "discrete": true
+  },
+  "voice_tune": {
+    "min": -1.0,
+    "max": 1.0,
+    "default": 0.0,
+    "discrete": false
+  },
+  "volume": {
+    "min": 0.0,
+    "max": 7399.4404296875,
+    "default": 5473.04052734375,
+    "discrete": false
+  }
+}

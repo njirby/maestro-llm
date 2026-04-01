@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
 """
-Launch LoRA SFT for Qwen2.5-Omni-7B via MS-Swift.
+Launch LoRA SFT for Qwen2.5-Omni via MS-Swift.
 
 Profiles:
-  - smoke: short sanity run
-  - full: normal training defaults
-  - oom_fallback: reduced memory footprint defaults
+  - smoke:         short sanity run (120 steps, 7B default)
+  - full:          normal 1-epoch training (7B default)
+  - oom_fallback:  reduced memory footprint (7B, gradient accum 16)
+
+Model notes:
+  - Qwen2.5-Omni-7B  requires 4×24GB with DeepSpeed ZeRO-3 for packing
+  - Qwen2.5-Omni-3B  fits on 1×24GB at max_length≤5120; use for packing tests
+
+Sequence packing (packing=true):
+  - Requires --attn_impl flash_attn (enforced by ms-swift)
+  - packing_length defaults to max_length; set max_length large enough that
+    2 typical samples fit (max_length ≥ 2 × avg_sample_tokens)
+  - Swift drops samples that exceed max_length rather than truncating them
+    (truncation breaks packing alignment); expect filtered dataset < full size
+  - With these samples (~2500 token average): max_length=5120 packs ~2 per step
 
 Usage:
     python scripts/train_qwen25_omni_lora.py --profile smoke --dry-run
     python scripts/train_qwen25_omni_lora.py --profile full
+    # single-card packing test on 3B:
+    CUDA_VISIBLE_DEVICES=0 python scripts/test_packing_multimodal.py
 """
 
 from __future__ import annotations
@@ -45,7 +59,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--model",
         default="Qwen/Qwen2.5-Omni-7B",
-        help="Model ID or local model path.",
+        help="Model ID or local model path. Use Qwen/Qwen2.5-Omni-3B for single-card packing tests.",
     )
     parser.add_argument(
         "--dataset-dir",
@@ -142,6 +156,7 @@ def _profile_args(profile: str) -> dict[str, str]:
             "learning_rate": "1e-4",
             "max_length": "8192",
             "packing": "true",
+            "attn_impl": "flash_attn",
             "logging_steps": "5",
             "save_steps": "60",
             "eval_steps": "30",
@@ -155,6 +170,8 @@ def _profile_args(profile: str) -> dict[str, str]:
             "gradient_accumulation_steps": "16",
             "learning_rate": "8e-5",
             "max_length": "6144",
+            "packing": "true",
+            "attn_impl": "flash_attn",
             "logging_steps": "20",
             "save_steps": "200",
             "eval_steps": "100",
@@ -167,6 +184,8 @@ def _profile_args(profile: str) -> dict[str, str]:
         "gradient_accumulation_steps": "8",
         "learning_rate": "1e-4",
         "max_length": "8192",
+        "packing": "true",
+        "attn_impl": "flash_attn",
         "logging_steps": "20",
         "save_steps": "200",
         "eval_steps": "100",

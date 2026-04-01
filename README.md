@@ -1,490 +1,377 @@
 # Maestro-LLM
 
-An AI music production agent that collaborates with producers across the full REAPER DAW workflow. It controls the DAW programmatically, perceives and evaluates audio natively, learns the sonic behavior of any plugin, generates audio for gaps in an arrangement, and improves continuously through a combined SFT and RL training pipeline.
+Training data pipeline for an LLM that acts as a **terminal coding agent for music production**. The agent's job: given a target synthesizer sound, iteratively recreate it by writing and executing Python reapy code against a live REAPER DAW session.
 
 ---
 
-## Vision
+## What the Agent Does
 
-Most AI music tools generate audio in isolation — they produce a stem, a loop, or a preset, and hand it back to the producer to integrate manually. Maestro-LLM is designed differently: it sits inside the production session, perceives the full context of what is already there, and acts directly on the DAW to move the work forward.
+The agent runs from a terminal. It has a live REAPER session with a Vital synthesizer on the first track. The agent can see neither the target preset nor the REAPER GUI.
 
-The goal is an agent that feels like a skilled collaborator — one who can be told "the verse feels empty" or "that reverb tail is way too long" or "make this sound more like a Fender Rhodes" and actually do something useful in response, not just describe what to do.
+```
+listen to reference audio
+→ reason: what differs? which params to change?
+→ search: enumerate fx.params filtered by keyword to find current values + param names
+→ set: write Python (reapy) to set specific params by display name
+→ listen to result → iterate
+```
+
+Each bash tool call is real, executable Python against the reapy API — no fictional CLI wrappers or custom helper classes.
 
 ---
 
-## System Architecture
+## Agent → REAPER Interface
 
-The system is built on five pillars:
+The agent communicates with a live REAPER session via **reapy** — a Python library that installs a TCP server inside REAPER's defer loop, enabling full bidirectional ReaScript API access from any external Python process.
 
-**Hands — REAPER control**
-Full programmatic control of REAPER via dynamically generated Lua scripts. The agent writes Lua scripts on the fly and executes them against a running REAPER session via subprocess. Every action a human can perform in the DAW is available as a tool call: create and delete tracks, insert and edit MIDI, load and configure plugins, set FX parameters, manage routing and sends, write automation, render regions, import audio. Direct ReaScript Lua API access — no intermediate abstraction layer.
+### IPC mechanisms
 
-**Ears — Qwen3 Omni**
-Qwen3 Omni is the agent's perception model. It accepts raw audio input natively and produces text descriptions, comparisons, and judgments. It serves three roles: captioning (what does this sound like?), comparison (how do these two sounds differ?), and judging (does this output match the target?). The listen tool — which renders a region and passes it to Qwen3 Omni — is the agent's first action in almost every trajectory.
+| Mechanism | Direction | Latency | Full API | Notes |
+|---|---|---|---|---|
+| **reapy** (TCP defer loop) | Bidirectional RPC | ~5–30ms/call | Yes (Python) | **Primary choice** |
+| `reaper -nonewinst script.lua` | → REAPER (one-shot) | ~100–500ms | Yes (Lua) | No return value to shell without a file |
+| HTTP web interface | Bidirectional (poll) | ~5–50ms | Actions + fixed cmds only | No arbitrary Lua/Python |
+| File-bridge (MCP pattern) | Bidirectional (poll) | ~50–200ms | Yes (Lua) | Used by total-reaper-mcp |
 
-**Memory — Skill library, project memory, sample index**
-- Skill library: a vector database of (plugin, parameter state, audio embedding, caption) tuples accumulated through plugin play sessions and production use. Enables semantic retrieval of known sounds by text description or audio similarity.
-- Project memory: per-session episodic memory of creative decisions, rejected approaches, reference directions, and producer preferences. Persists across sessions.
-- Sample index: CLAP embeddings of the producer's full local sample library, enabling text-to-sample and audio-to-audio search.
+### reapy setup (one-time)
 
-**Learning — SFT + RL pipeline**
-A four-phase training pipeline detailed below. The core idea: SFT on stem-perturbation trajectories teaches the agent what good production looks like; RL on verifiable and aesthetic rewards teaches it to generalize and improve beyond the training distribution.
-
-**Generation — ACE-Step 1.5**
-ACE-Step 1.5 (`acestep-v15-sft`) runs locally and handles audio gaps that plugins cannot fill: continuation, inpainting, instrument replacement, and NL-conditioned generation. The agent decides when to reach for ACE-Step vs. a VSTi based on what the skill library can cover.
-
----
-
-## The Core Loop
-
-```
-listen (Qwen3 Omni)
-    → reason (LLM + skill library + project memory)
-    → act (REAPER tools + ACE-Step)
-    → evaluate (CLAP + Audiobox Aesthetics + Qwen3 judge)
-    → learn
+```bash
+pip install python-reapy
+python -c "import reapy; reapy.configure_reaper()"
+# Restart REAPER — the reapy server script starts automatically
 ```
 
-**Listen is always first.** Before any parameter change, plugin load, or MIDI edit, the agent renders a preview and listens. It calls listen again after significant actions to verify direction. A typical trajectory interleaves listen calls throughout:
+### How the agent writes code
 
-```
-listen()  →  "dense low-mids, reverb tail swamping the transients"
-inspect_fx_chain(track="lead")  →  finds reverb with decay=4.2s
-set_param(fx=2, param="Decay", val=1.8)
-listen()  →  "cleaner, transients back, still slightly bright"
-set_param(fx=0, param="HF_shelf", val=-1.5)
-listen()  →  "matches target character"
-```
+**Search turn** — find params by keyword, see current normalized values:
 
----
-
-## DAW Scripting Approach
-
-The agent controls REAPER by generating and executing Lua scripts. Lua is REAPER's first-class scripting language — it runs directly from the command line, has clean API semantics, and is well-documented with an active community. Python ReaScripts are deliberately avoided: they cannot be executed headlessly from the command line and require a Lua wrapper and in-process Python initialization to run at all.
-
-**Pattern for a new project (no REAPER open):**
 ```python
-import subprocess
-
-subprocess.run([
-    "reaper", "-nosplash", "-newinst", "-new",
-    "/tmp/generated_script.lua",
-    "-close:nosave:exit"
-])
+import reapy
+with reapy.inside_reaper():
+    fx = reapy.Project().tracks[0].fxs[0]
+    hits = [(p.name, round(p.normalized, 4)) for p in fx.params
+            if 'filter 1' in p.name.lower()]
+    for name, val in hits:
+        print(f"{name}: {val:.4f}")
 ```
 
-**Pattern for a live session (REAPER already open with project loaded):**
+```
+Filter 1 Blend: 0.5000
+Filter 1 Cutoff: 0.4063
+Filter 1 Resonance: 0.4000
+Filter 1 Style: 0.0000
+```
+
+**Set turn** — set params by exact display name, normalized [0, 1]:
+
 ```python
-subprocess.run(["reaper", "/tmp/generated_script.lua"])
-# REAPER detects the existing instance and runs the script inside it
+import reapy
+with reapy.inside_reaper():
+    fx = reapy.Project().tracks[0].fxs[0]
+    fx.params["Filter 1 Cutoff"].value = 0.719
+    fx.params["Filter 1 Resonance"].value = 0.620
+    fx.params["Oscillator 1 Level"].value = 0.778
+    print("Done")
 ```
 
-**Getting data back to Python:**
-Lua scripts write output (render paths, parameter values, project state) to a temp JSON file. Python reads it after the subprocess returns:
-```lua
--- at end of generated script
-local f = io.open("/tmp/reaper_out.json", "w")
-f:write('{"render_path": "' .. render_path .. '", "track_count": ' .. track_count .. '}')
-f:close()
+**Listen turn** — render and play back:
+
+```bash
+python scripts/reaper_render_probe.py && aplay /tmp/probe.wav
 ```
 
-**Headless note:** REAPER has no true headless mode. On Linux, it runs on a virtual display (Xvfb on `:1`). The UI exists but is invisible. This means blocking dialogs (e.g. unsaved project prompts) will silently hang — generated scripts must be self-contained and use `Main_SaveProjectEx(project, path, 0)` rather than `Main_SaveProject` to avoid triggering save dialogs.
+The search-before-set pattern keeps context lean: instead of dumping all ~800 parameters, the model searches by keyword (~5–20 results) and uses the exact display names it sees in the output.
 
 ---
 
-## Features
+## Training Data Pipeline (Offline)
 
-### 1. Compose and Add Tracks
-The agent reads the current project state (tempo, key, chord progression, existing instruments) and composes new parts that fit. It creates tracks, loads appropriate VSTi instruments using the skill library, writes MIDI, and routes correctly. Key and chord analysis run programmatically (Essentia) before any MIDI is written, constraining composition to the correct harmonic context.
+Generating SFT data does not require REAPER or a GPU. The pipeline uses **vita** — Python bindings for the Vital synthesis engine — to render audio directly.
 
-### 2. Plugin Skill Exploration
-Every installed plugin gets an unsupervised play session before production use. The agent systematically sweeps parameters, renders audio at each setting, captions with Qwen3 Omni, and embeds with CLAP. The resulting skill library maps the full sonic space of each plugin. During production, the agent retrieves skills by semantic text query ("warm analog pad with slow attack") or audio-to-audio similarity. Skills are versioned by plugin version and refreshed on update.
+```
+preset_gen.py       →  target Vital preset (6 archetypes)
+path_gen.py         →  N-step parameter path: default → target
+demo_iter_examples.py  →  renders all clips + builds agentic tool-call conversations
+```
 
-### 3. EQ and Audio Analysis
-Two-track approach:
-- **Programmatic (fast, precise)**: librosa and Essentia measure frequency balance, LUFS, dynamic range, spectral correlation, clipping, and phase issues. These run without any LLM.
-- **Perceptual (slower, higher-level)**: Qwen3 Omni describes the audio holistically. Reliable for obvious problems and high-level character; less reliable for subtle engineering issues.
+### Generate demo examples
 
-Music theory verification tools (key detection, chord analysis, out-of-key note detection, voice leading checks) run before rendering to catch compositional errors early.
+```bash
+python scripts/demo_iter_examples.py
+```
 
-### 4. Stylistic Recommendations
-The agent renders a section, passes it to Qwen3 Omni, and cross-references the description with its knowledge of arrangement, genre, and production conventions. Recommendations cover arrangement density, instrumentation gaps, mix balance, automation shape, and dynamic variation across the song arc. Can be triggered on demand or run automatically at project save.
+Produces under `outputs/iter_demo/{archetype}/`:
+- `{id}_gt.wav` — ground truth (target preset, probe notes)
+- `{id}_default.wav` — default Vital preset baseline
+- `{id}_step{N}.wav` — cumulative preset after step N
+- `{id}_target.vital` — target preset JSON
+- `{id}_step{N}.vital` — cumulative preset JSON at each step
+- `{id}_conversation.json` — full agentic tool-call conversation
+- `demo_train.jsonl` — combined ms-swift JSONL
 
-### 5. Melody Replication
-Pipeline: Demucs source separation → BasicPitch (Spotify) audio-to-MIDI → key/tempo analysis → skill library lookup for closest timbre → MIDI import into REAPER → render → CLAP comparison to original → iterate. Works reliably for simple monophonic melodies. Complex polyphony and dense percussion reduce accuracy. Timbre match quality improves as the skill library grows.
+All clips (GT, default, per-step) use the same note sequence so release and length are directly comparable across the conversation.
 
-### 6. Song Continuation and Inpainting
-ACE-Step 1.5 handles sections that need audio generation: continuation from an existing arrangement, filling a specific gap (a 4-bar guitar solo slot), or replacing an analog instrument with generated audio. The agent renders surrounding context, passes it with a natural language prompt to ACE-Step, and imports the result as a REAPER audio item. Best for sections under ~30 seconds.
+### Verify preset fidelity
 
-### 7. Take Selection
-The agent generates N takes (via parameter variation or ACE-Step sampling), embeds all of them with CLAP, and ranks by combined score: similarity to target embedding, Audiobox production quality, and fit with the surrounding mix evaluated in context. Qwen3 Omni handles comparative judgment for aesthetic criteria ("which sounds most energetic?").
+```bash
+python scripts/verify_preset_path.py --archetype lead --seed 42
+python scripts/verify_preset_path.py --archetype bass --seed 7 --verbose
+```
 
-### 8. Sample Search
-One-time CLAP indexing of the producer's full local sample library into a ChromaDB vector store. At production time: text query ("snappy rimshot, 180ms decay") or audio query (hum, reference clip) returns nearest neighbors by embedding similarity. External fallback: Freesound API (~600k sounds, programmatic semantic search). Final fallback: text web search to Splice, Looperman, or similar.
+Categorises every parameter by why it differs between target and final cumulative preset:
 
-### 9. Session Organization
-The agent sets up project structure from a natural language description: create standard track layouts, configure routing (drum bus, master bus, FX returns, parallel compression), assign colors and names by category, set tempo and key markers, configure render settings. No ML required — pure ReaScript. One of the highest immediate-value features for day-to-day workflow.
+```
+Summary: 165 exact | 0 noisy | 462 below_thresh | 0 untracked | 0 missing
+```
 
-### 10. Lyric Co-creation
-The agent grounds lyric suggestions in the current project state (tempo, key, mood, track names, arrangement density) rather than generating generically. Covers rhyme scheme analysis, syllable/meter fitting to a detected melody, theme development, genre-specific vocabulary, and line-by-line alternatives. With ACE-Step's lyric conditioning, generated lyrics can feed directly into vocal generation.
+- **exact** — tracked and set correctly (within 0.01 norm)
+- **noisy** — tracked but drifted across steps (should be 0 after final-step convergence)
+- **below_thresh** — |target − init| ≤ 0.05 norm, intentionally skipped
+- **untracked** — not in `param_ranges.json`
+- **missing** — in target but absent from final cumulative
+
+### Build full dataset (requires Omni at localhost:8000)
+
+```bash
+python scripts/build_iter_sft_dataset.py \
+    --manifest outputs/iter_sft/manifest.jsonl \
+    --omni-server http://localhost:8000 \
+    --output data/prepared/iter_sft/train.jsonl \
+    --concurrency 8
+```
+
+### Train
+
+```bash
+# Single-card packing test (3B model, 1×24GB)
+CUDA_VISIBLE_DEVICES=0 python scripts/test_packing_multimodal.py
+
+# Full training (7B, 4×24GB with DeepSpeed ZeRO-3)
+bash scripts/train_qwen25_omni_lora.sh full
+
+# Smoke run (dry run, no GPU needed)
+python scripts/train_qwen25_omni_lora.py --profile smoke --dry-run
+```
+
+Always train inside tmux — bare SSH runs orphan processes and can OOM the machine.
 
 ---
 
-## Training Pipeline
+## Vital Synthetic Preset Pipeline
 
-### Phase 1 — Supervised Fine-Tuning on Stem Perturbations
+Generates musically diverse Vital presets for training data at scale.
 
-**The core insight**: completed songs with stems provide free ground truth for musical coherence training. Remove a track, and the correct answer is the original track. The reward is verifiable without human annotation.
+### Archetypes
 
-**Datasets**: Slakh2100 (2100 songs, MIDI + audio, CC BY 4.0), MUSDB18 (150 songs with stems), MedleyDB (122 professional recordings), Lakh MIDI Dataset (176k MIDI files).
+| Archetype | Character | Envelope | Filter bias |
+|---|---|---|---|
+| `bass` | Sub/mid bass | Fast attack, medium release | Low cutoff (~400 Hz) |
+| `lead` | Monophonic lead | Fast attack, medium-long release | Mid-high cutoff |
+| `pad` | Sustained texture | Slow attack (≥0.5s), long release | Low-mid + resonance |
+| `keys` | Piano/EP/organ | Medium attack, medium decay | Bright |
+| `pluck` | Plucked transient | Very fast attack, short decay | Bandpass |
+| `sequence` | Rhythmic/arpeggio | Short attack, varied decay | Sweeping |
 
-**Data pipeline in this repo**: build a unified local manifest for stem/MIDI corpora with:
+### Wavetable Library
+
+568 unique, deduplicated wavetables extracted from `.vitaltable` files and embedded wavetables in the real preset corpus. Build once:
+
+```bash
+python -m maestro.synth.wavetable_lib \
+  --vital-dir /path/to/.vitaltable/files \
+  --presets-dir ~/Downloads/vital_presets \
+  --output data/wavetable_lib.json
 ```
-python scripts/build_phase1_manifest.py \
-  --config configs/phase1_data_sources.yaml \
-  --out-dir data/prepared/phase1
-```
-Edit `configs/phase1_data_sources.yaml` to point at your local dataset roots.
 
-**Tokenized Lua tuple generation (current)**: for MIDI-only corpora we generate `(midi_clip, lua_script, audio)` tuples with:
+### Quality
+
+- Audibility rate: ~92–94% overall; pluck ~83–96% (probe gate catches silent presets at render time)
+- CLAP diversity: **0.524 overall** vs real preset corpus 0.477 — generator exceeds real preset diversity
+- Archetype signature routes guaranteed: `env_2→filter` for bass/pluck, `lfo→wave_frame` for pad
+
+### Key constraints
+
+- Only ONE `vita.Synth()` per process — creating multiple causes a segfault
+- `maestro/synth/preset_gen.py` never creates a Synth internally — it returns dicts only
+- All 777 Vital control parameters are bounded in `maestro/synth/param_ranges.json`
+
+### Throughput (Threadripper PRO 7965WX, 48 logical CPUs)
+
+| Workers | WAV/s | ETA for 1M renders |
+|---|---|---|
+| 8 | 1.8 | ~6.5 days |
+| 16 | 3.1 | ~3.7 days |
+| **24** | **3.9** | **~3 days** |
+| 32 | 3.5 | ~3.3 days |
+
+24 workers is the sweet spot. Performance drops at 32 due to NUMA boundary effects.
+
+---
+
+## Iterative Parameter Path Generation
+
+`maestro/synth/path_gen.py` generates N-step parameter paths from Vital's default preset to a generated target. Each path is used to create one multi-turn training conversation.
+
+**N is determined by the number of changed parameters** (normalized diff > 0.05):
+
+| Changed params | N iterations |
+|---|---|
+| ≤56 | 8 |
+| ≤72 | 10 |
+| ≤96 | 13 |
+| ≤120 | 17 |
+| >120 | 20 |
+
+**Param priority ordering** ensures the model learns to fix oscillators before envelopes before modulation routing — mirroring how a skilled sound designer approaches the problem.
+
+**Noise and mistake injection**: 35% of params in each step get Gaussian noise (σ=0.08 norm), 25% of paths get a deliberate mistake step to teach error recovery.
+
+**Final-step convergence**: the last cumulative preset is silently snapped to exactly the target so all final audio clips match the GT.
+
+### Conversation structure
+
+Each conversation follows this pattern:
+
 ```
+user:       <audio> [GT clip]  "Recreate this {archetype} sound in Vital."
+assistant:  → bash: render default preset (baseline listen)
+tool:       <audio> [default clip]
+
+# Per iteration (N times):
+assistant:  [reasoning] → bash: search for keyword params
+tool:       Param Name 1: 0.4063\nParam Name 2: 0.4000\n...
+assistant:  [observation] → bash: set params by display name
+tool:       Done
+assistant:  [listen text] → bash: render probe
+tool:       <audio> [step N clip]
+
+assistant:  "Recreation complete."
+```
+
+Total audio in conversation: 2 + N clips (GT + default + N step renders).
+
+---
+
+## Offline Lua Tuple Pipeline (Prior SFT Stage)
+
+An earlier pipeline — still working — builds `(audio, Lua)` pairs for teaching the model to transcribe audio into REAPER Lua scripts that recreate a melody. This is a distinct task from the iterative sound recreation pipeline above.
+
+### Generate tuples
+
+```bash
 python scripts/generate_reaper_tuples.py \
   --source slakh2100 \
   --workers 16 \
   --out data/processed/reaper_tuples
 ```
-- Clip windows are deterministic, sequential, non-overlapping, and bar-aligned (4/4 assumption in the current generator).
-- Only notes fully contained in each clip window are kept; selected notes are re-offset to clip-local `t=0`.
-- Audio is rendered with Vita (`maestro/render/vital.py`) for fast local data generation and encoded as MP3.
-- Trailing silence is trimmed (short release tail kept) so output duration tracks note activity instead of full clip-window length.
-- Lua scripts are emitted as a transcription-style target using rhythmic tokens (not raw ms durations), e.g.:
-  - `n("C4", m(12,3,"8t"), "q.", 90)`
-- `m(bar, beat, offset_token)` + duration token are converted to PPQ ticks inside Lua before `MIDI_InsertNote`.
-- This representation is intentionally easier to model, but timing is quantized and therefore not sample-exact vs. original human performance.
 
-**Qwen2.5-Omni MP3→Lua SFT prep (new)**:
-1. Save your exact user prompt text (same string for every sample), e.g.:
-```
-mkdir -p data/prompts
-cat > data/prompts/omni_lua_user_prompt.txt << 'EOF'
-Listen to this mp3 file and create a REAPER project with this melody using the synth "Vital" on its default preset. Return only Lua code.
-EOF
-```
-2. Build multimodal JSONL from tuple audio+lua pairs:
-```
-python3 scripts/build_omni_lua_sft_dataset.py \
-  --audio-dir data/processed/reaper_tuples_lakh/wavs \
-  --lua-dir data/processed/reaper_tuples_lakh/luas \
-  --prompt-file data/prompts/omni_lua_user_prompt.txt \
-  --out-dir data/prepared/omni_lua_sft \
-  --val-ratio 0.1 \
-  --require-lua-markers
-```
-3. Preprocessing smoke test:
-```
-python3 scripts/smoke_test_omni_lua_dataset.py \
-  --dataset-dir data/prepared/omni_lua_sft \
-  --split train \
-  --max-rows 256 \
-  --require-lua-markers \
-  --report-out outputs/omni_lua_sft_preprocess_smoke.json
-```
-4. Install MS-Swift + Omni dependencies:
-```
-bash scripts/setup_ms_swift_omni.sh
-```
-5. Training smoke test / dry run:
-```
-python3 scripts/smoke_test_qwen25_omni_lora_setup.py \
-  --dataset-dir data/prepared/omni_lua_sft \
-  --max-rows 64 \
-  --report-out outputs/qwen25_omni_lora_setup_smoke.json
-
-python3 scripts/train_qwen25_omni_lora.py \
-  --profile smoke \
-  --dataset-dir data/prepared/omni_lua_sft \
-  --dry-run
-```
-Notes:
-- Multi-GPU runs use `configs/deepspeed_zero3.json` by default.
-- That config intentionally includes both DeepSpeed `optimizer` and `scheduler` blocks to avoid HF/DeepSpeed LR scheduler group mismatches in the current stack.
-
-6. Launch training:
-```
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/train_qwen25_omni_lora.sh smoke
-bash scripts/train_qwen25_omni_lora.sh full
-bash scripts/train_qwen25_omni_lora.sh oom_fallback
-```
-7. Optional 4-GPU runtime smoke (1 train step):
-```
-CUDA_VISIBLE_DEVICES=0,1,2,3 python3 scripts/train_qwen25_omni_lora.py \
-  --profile smoke \
-  --dataset-dir data/prepared/omni_lua_sft \
-  --nproc-per-node 4 \
-  --enable-audio-output 0 \
-  --max_steps 1 \
-  --eval_steps 1 \
-  --save_steps 1 \
-  --logging_steps 1
-```
-
-**Perturbation types** (each generates distinct training examples from a single song):
-
-| Perturbation | What the agent learns |
-|---|---|
-| Remove entire track | Instrumentation recommendation |
-| Remove a section | Arrangement continuation |
-| Remove automation | Dynamic/expression reasoning |
-| Swap instrument timbre | Timbre/role matching |
-| Remove FX processing | Mixing chain suggestion |
-| Quantize MIDI too hard | Groove and humanization |
-| Remove harmony parts | Harmonic voicing |
-| Remove a full song section | Song structure and form |
-
-**Trajectory generation**: A teacher model (Claude Opus or GPT-4o) generates ideal agent trajectories for each perturbed arrangement. Every trajectory starts with a listen call. Listen calls appear throughout, interleaved with tool calls. Qwen3 Omni captions and verifies output quality. CLAP similarity to the ground truth stem filters for quality. Only high-scoring trajectories enter the training set.
-
-The synthetic conversation seeding is deliberate: the agent does not know what was removed. It reasons from the audio, exactly as a real producer would. This prevents pattern-matching ("bass is missing, add bass") and trains genuine audio reasoning.
-
-**What SFT produces**: an agent that handles common repair tasks, writes musically coherent MIDI, makes reasonable instrumentation choices, and knows when to reach for ACE-Step vs. a VSTi.
-
-#### Phase 1 Next Milestone — MP3 -> Vital Parameter Reconstruction
-
-The MP3->Lua melody transcription POC is the first half of Phase 1. The next step is timbre reconstruction:
-
-- Input: an MP3 of a monophonic/polyphonic synth melody rendered with Vital.
-- Task: infer Vital parameter values that recreate the source synth sound (in-distribution Vital setting recovery).
-- Output target: deterministic Lua that sets Vital parameters (and, when needed, inserts the melody) so rendering reproduces the source sound.
-
-Planned data format (supervised):
-- `user`: "Listen to this mp3 and recreate this melody with Vital default preset. Return only Lua."
-- `assistant`: Lua containing a compact Vital parameter block + note events.
-- Ground truth includes both rendered MP3 and exact Vital parameter state used to generate it.
-
-Training/eval plan for this milestone:
-- Keep representation token-efficient and deterministic (stable function names/order, no unused metadata).
-- Start with a bounded Vital parameter subset + fixed ranges, then expand coverage.
-- Evaluate both:
-  - Parameter accuracy (for parameters with direct ground truth)
-  - Rendered-audio similarity (CLAP/correlation metrics on generated render vs. target MP3)
-- Add smoke tests that run a small batch end-to-end: predict Lua -> render with Vita -> compute similarity -> report failures.
-
-Success criterion for closing Phase 1:
-- Model can recover melody structure and produce Vital settings that render perceptually close matches on held-out in-distribution examples.
+Note representation: `n("C4", m(12,3,"8t"), "q.", 90)` — bar/beat/offset tokens, duration tokens.
 
 ---
 
-### Phase 2 — RLVR on Tool Mastery (REAPER-bench)
+## Audio Token Budget
 
-SFT teaches the agent what good trajectories look like. RLVR teaches it to produce good trajectories it has never seen.
-
-**REAPER-bench**: a held-out set of production tasks with verifiable outcomes. Examples:
-- "Create a track named Bass at index 2" → verify `GetTrackName(GetTrack(0,2)) == "Bass"`
-- "Set reverb decay to 2.1s on the master bus reverb return" → verify parameter value
-- "Render bars 9–17 to /tmp/preview.wav" → verify file exists and duration matches
-
-Reward: binary (did the expected state change happen?) plus guidance hints when the agent fails — following the Agent-RLVR approach that doubled SWE-bench performance.
-
-**Unknown plugin exploration** is trained here by holding out a set of plugins from the skill library. The agent must figure them out from scratch:
-- Enumerate parameters with `GetParamName`
-- Hypothesize what each parameter does based on name and range
-- Probe one parameter at a time, listen, assess direction
-- Commit or revert based on whether it moved toward the target
-
-Reward: CLAP similarity to target + bonus for converging under N steps - penalty for random parameter flailing. This trains a systematic exploration meta-skill that transfers to any new plugin encountered in production.
+- ~94.5 audio tokens/second (Qwen2.5-Omni, empirically measured)
+- ~6,000 tokens/minute
+- 30s clip = ~2,835 audio tokens
+- At `max_length=8192`: fits roughly 2 × 30s clips + text overhead
 
 ---
 
-### Phase 3 — Aesthetic RL
+## MS-Swift Training Notes
 
-**Sound design training**: Given a target sound (audio clip or text description), the agent manipulates plugin parameters and FX chains to match it.
+- Requires `--attn_impl flash_attn` when packing is enabled (hard error otherwise)
+- `packing_length` defaults to `max_length` — set `max_length ≥ 2× avg sample tokens` for packing to combine samples
+- Samples exceeding `max_length` are **dropped** (not truncated) when packing is enabled
+- 3B fits on 1×24GB at `max_length≤5120`; 7B needs 4-GPU DeepSpeed ZeRO-3
+- Confirmed 2x step reduction: 16 samples → 8 steps/epoch at `max_length=5120`
 
-Ground truth is generated two ways:
-1. **Synthetic**: sweep own plugins across parameter space → render → Qwen3 Omni captions each sound. Triplet: `(plugin_state, audio, caption)`. Agent is trained to invert this mapping.
-2. **Real-world**: Qwen3 Omni captions external audio (from any source). Agent approximates the sound with available plugins. Same Qwen3 instance judges the match.
-
-**Critical design decision — loss in audio space, not parameter space**:
-
-```
-WRONG:  L = ||param_agent - param_ground_truth||²
-RIGHT:  L = 1 - CLAP_similarity(audio_agent, audio_target)
-           + (1 - Qwen3_judge_score(caption_agent, caption_target))
-```
-
-Two different parameter configurations that produce perceptually identical sounds should receive equal reward. Constraining to parameter space breaks cross-plugin generalization entirely.
-
-For MIDI: note accuracy, timing error, and velocity MAE are verifiable and used directly.
-
-**Composite reward**:
-```
-reward = α * CLAP_similarity(output, target)
-       + β * Audiobox_production_quality(output)
-       + γ * Qwen3_judge_score(caption(output), caption(target))
-       + δ * verifiable_tool_reward(api_calls_succeeded)
-```
-
-Qwen3 judge reasoning ("the output is too bright, the filter cutoff needs to come down") is fed back as guidance, not just the scalar score. This produces richer learning signal and faster convergence.
+DeepSpeed config: `configs/deepspeed_zero3.json` — includes both `optimizer` and `scheduler` blocks to avoid HF/DeepSpeed LR scheduler group mismatches.
 
 ---
 
-### Phase 4 — ACE-Step Fine-Tuning
-
-By Phase 4, the system has real conversation-conditioned trajectories from production sessions. ACE-Step is fine-tuned on:
-- **Input**: surrounding arrangement audio + producer conversation context + gap duration/position
-- **Target**: the ground truth stem (from stem perturbation dataset) or producer-approved generation
-
-The conversation context gives ACE-Step richer conditioning than bare genre tags — it knows the harmonic context, the arrangement role, the stylistic direction, and what the producer specifically asked for.
-
----
-
-## Skill Library
-
-The skill library is the agent's long-term memory for plugin knowledge — the key component that separates competent from expert behavior.
-
-**Structure per entry**:
-```json
-{
-  "plugin": "Valhalla Shimmer v1.5.1",
-  "param_state": {"Size": 0.87, "Feedback": 0.62, "Mix": 0.40},
-  "audio_embedding": [...],
-  "caption": "Long diffuse shimmer, floats behind the mix, infinite-feeling sustain",
-  "tags": ["ambient", "pads", "long-tail", "shimmer"],
-  "discovered": "2025-09-12",
-  "plugin_version": "1.5.1"
-}
-```
-
-**Bootstrap**: Before first production use, the agent runs unsupervised play sessions with every installed plugin. Systematic parameter sweeping, one parameter varied at a time, Qwen3 Omni captions each rendered sound, CLAP embeds it. Runs in the background once per plugin install.
-
-**Retrieval**: Semantic text query → CLAP text embedding → nearest neighbor search. Or: audio clip → CLAP audio embedding → audio-to-audio search. ChromaDB handles both.
-
-**Growth**: Every time the agent explores an unknown plugin during RL or production use, discovered mappings are saved automatically. Unknown plugins become known plugins over time.
-
-**Versioning**: Skills are tagged with plugin version. On plugin update, affected skills are flagged for re-verification.
-
----
-
-## Sample Search
-
-```
-Producer: "I need a rimshot that's tighter than what I have"
-
-1. Embed query text via CLAP → search local library → top-5 candidates
-   OR: render reference sound → embed audio → audio-to-audio search
-
-2. Agent listens to each candidate (quick preview render in context)
-
-3. Selects best fit → imports into REAPER at correct position and tempo
-
-4. If nothing fits locally → Freesound API (~600k sounds, semantic search)
-
-5. If still nothing → web search to Splice / Looperman
-```
-
-One-time indexing pass on the full local library. Incremental re-indexing when new samples are added. No manual tagging required.
-
----
-
-## ACE-Step Integration
-
-ACE-Step 1.5 (`acestep-v15-sft`) runs locally — no API cost, no internet required after download.
-
-**Use cases**: continuation, inpainting, instrument replacement, NL-conditioned generation.
-
-**Workflow**:
-```
-Agent identifies gap in REAPER
-    → renders surrounding context to WAV
-    → passes (context_audio, NL_prompt, duration) to ACE-Step
-    → ACE-Step generates fill
-    → agent imports result as audio item at correct position
-    → renders combined result in context
-    → Qwen3 Omni evaluates fit → iterate if needed
-```
-
-**Current limitation**: continuation uses repaint rather than mask-aware training. Coherence can drift over sections longer than ~30 seconds.
-
-### Local Toy Runner (in this repo)
-
-Use the script below to run a small scenario suite against `acestep-v15-sft` (text2music + cover + repaint):
+## Environment Setup
 
 ```bash
-# install ACE-Step runtime in this repo venv
-.venv/bin/python -m pip install -e /tmp/ACE-Step-1.5 --no-deps
-.venv/bin/python -m pip install "transformers>=4.51,<4.58" diffusers loguru vector-quantize-pytorch torchaudio==2.10.0+cu128 hf_transfer --extra-index-url https://download.pytorch.org/whl/cu128
+# Python venv
+source .venv/bin/activate
+pip install -e ".[test]"
 
-# run toy scenarios
-.venv/bin/python scripts/run_acestep_toy.py --device cuda --duration 10 --inference-steps 12 --audio-format wav --seed 1234
+# MS-Swift + Omni dependencies
+bash scripts/setup_ms_swift_omni.sh
+
+# Serve Omni locally (for JSONL assembly and inference)
+bash scripts/serve_qwen3_omni.sh
 ```
 
-Outputs are written to `outputs/acestep_toy/<timestamp>/` with a `summary.json` manifest and per-scenario WAV files.
+Venv: `/home/nate/Documents/maestro-llm/.venv`
 
 ---
 
-## Implementation Phases
+## Repository Layout
 
-Sequenced to get real producer feedback as early as possible. Each phase produces something useful and generates the infrastructure the next phase needs.
+```
+maestro/
+  render/
+    vital.py          # vita bindings: render, trim silence, probe audibility
+    reaper.py         # Lua script generation + headless subprocess execution
+  reaper/
+    vital_tools.py    # VitalController: high-level Vital VST access via reapy (utility, not training data)
+  synth/
+    preset_gen.py     # Synthetic Vital preset generation (6 archetypes)
+    path_gen.py       # N-step parameter paths, snippet generation, fidelity diff
+    wavetable_lib.py  # 568-wavetable library builder and loader
+    init_preset.json  # Vital default preset (used as path start point)
+    param_ranges.json # Bounds for all 777 Vital parameters
+  data/
+    phase1.py         # Manifest utilities for stem/MIDI corpora
 
-| Phase | Work | Deliverable |
-|---|---|---|
-| 0 — Foundation | Lua scripting layer, tool library, Qwen3 listen, session templates, CLAP sample indexer | Usable tool, first producer feedback |
-| 1 — Plugin play sessions | Automated parameter sweeping, skill library bootstrap | Agent knows its plugins |
-| 2 — SFT + first model | Stem perturbation pipeline, teacher trajectories, fine-tune Qwen2.5-14/32B | First trained agent in producers' hands |
-| 3 — RLVR | REAPER-bench tasks, Agent-RLVR loop, unknown plugin exploration RL | Reliable execution, learns any new plugin |
-| 4 — Aesthetic RL | CLAP + Audiobox + Qwen3 reward, DPO on preference data | Aesthetic taste, per-producer personalization |
-| 5 — ACE-Step fine-tuning | Conversation-conditioned trajectory fine-tuning | Tailored audio generation |
+scripts/
+  demo_iter_examples.py       # Generate demo conversations + render all audio
+  verify_preset_path.py       # Diagnostic: compare target vs final cumulative preset
+  build_iter_sft_dataset.py   # Assemble multi-turn JSONL with Omni commentary
+  reaper_render_probe.py      # Standalone: render REAPER track to /tmp/probe.wav
+  render_vital_wavs.py        # General-purpose preset render script
+  check_preset_diversity.py   # CLAP diversity audit
+  benchmark_render.py         # Worker sweep benchmarks
+  train_qwen25_omni_lora.py   # MS-Swift LoRA training launcher
 
----
+tests/
+  test_path_gen_snippets.py   # Unit tests: display names, search/set snippets
+  test_pipeline_v2.py         # Structural invariants: reapy API, no fictional CLI
+  test_demo_iter.py           # Conversation builder tests
+  test_reapy_live.py          # Live REAPER integration tests (--reaper flag)
 
-## Key Technologies
-
-| Component | Technology | Purpose |
-|---|---|---|
-| REAPER control | ReaScript Lua (subprocess) | Full DAW manipulation |
-| Audio perception | Qwen3 Omni | Listen, caption, compare, judge |
-| Audio generation | ACE-Step 1.5 (acestep-v15-sft) | Continuation, inpainting, NL-conditioned generation |
-| Source separation | Demucs | Isolate stems from mixed audio |
-| Audio-to-MIDI | BasicPitch (Spotify) | Melody transcription |
-| Audio quality reward | Meta Audiobox Aesthetics | Production quality reward model |
-| Audio-text embedding | LAION CLAP | Similarity search, reward signal, sample indexing |
-| Music theory tools | Essentia + music21 | Key/chord detection, note verification, voice leading |
-| Sample search | ChromaDB/FAISS + Freesound API | Local + external sample retrieval |
-| RL framework | verl / OpenRLHF (GRPO) | Agent RL training |
-| SFT training | Hugging Face TRL SFTTrainer | Supervised fine-tuning on trajectories |
-| Stem datasets | Slakh2100, MUSDB18, MedleyDB | SFT data source |
-| Vector memory | ChromaDB | Skill library, project memory, sample index |
-
----
-
-## Safety and State Management
-
-- Destructive operations (delete track, bounce in place, clear automation, overwrite recordings) always require explicit confirmation
-- Agent snapshots project state before any exploration session or multi-step editing pass
-- Agent maintains its own undo stack above REAPER's native undo, scoped to agent-initiated changes
-- When skill library coverage is low for a requested task, agent surfaces this rather than acting with false confidence
+configs/
+  deepspeed_zero3.json
+```
 
 ---
 
-## Open Problems
+## What Exists vs. What Is Planned
 
-**Musical coherence at the macro level**: The stem perturbation approach trains coherence within an arrangement. Reasoning about song-level arc — how tension and release should evolve over 3 minutes — requires longer-horizon trajectory data that is harder to collect synthetically.
+**Implemented and working:**
+- Synthetic preset generator (`preset_gen.py`) with 6 archetypes
+- Wavetable library builder and loader
+- N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
+- Search-before-set snippet generation: synthetic reapy search/set code for each iteration
+- Preset fidelity diagnostic (`verify_preset_path.py`) categorising diffs by root cause
+- Demo conversation builder (`demo_iter_examples.py`) with matching note sequences across all clips
+- Multi-turn JSONL assembler (`build_iter_sft_dataset.py`) with Omni commentary
+- Lua tuple pipeline for melody transcription SFT data
+- MS-Swift LoRA training scripts for Qwen2.5-Omni
 
-**Perceptual subtlety**: Qwen3 Omni handles high-level audio description well. Precise mix engineering feedback ("the 400Hz region is masking the kick's fundamental") is less reliable. Programmatic measurement tools partially compensate but the gap between LLM perception and trained-ear perception remains real.
-
-**ACE-Step long-form coherence**: Sections longer than ~30 seconds can drift stylistically. Mask-aware training (not yet released) would address this.
-
-**Timbre matching ceiling**: Melody replication quality is bounded by skill library coverage. Coverage improves over time but starts sparse.
-
-**Copyright boundaries**: Melody replication and sample approximation raise copyright questions the system does not currently reason about. Originality divergence modes and license-awareness for sample retrieval are needed before broad deployment.
+**Planned / not yet implemented:**
+- Agent inference loop (the trained model running against a live REAPER session)
+- REAPER-bench for RLVR
+- RL training stage
 
 ---
 
 ## Related Work
 
+- [DAWZY (Elkins et al., NeurIPS 2025)](https://arxiv.org/abs/2512.03289) — LLM-based natural language control of REAPER
 - [Voyager (Wang et al., 2023)](https://arxiv.org/abs/2305.16291) — skill library accumulation for open-ended embodied agents
 - [Agent-RLVR (Scale AI, 2025)](https://arxiv.org/abs/2506.11425) — RLVR with guidance hints for software engineering agents
-- [DAWZY (Elkins et al., NeurIPS 2025)](https://arxiv.org/abs/2512.03289) — LLM-based natural language control of REAPER
-- [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) — audio generation with continuation and inpainting
-- [Meta Audiobox Aesthetics](https://arxiv.org/abs/2502.05139) — production quality reward model
 - [LAION CLAP](https://github.com/LAION-AI/CLAP) — contrastive language-audio pretraining
-- [BasicPitch (Spotify)](https://basicpitch.spotify.com) — audio-to-MIDI transcription
-- [Slakh2100](http://www.slakh.com) — synthesized multi-track dataset for source separation
+- [vita Python bindings](https://github.com/andrewjjenkins/vita) — direct C++ Vital engine access (offline rendering)

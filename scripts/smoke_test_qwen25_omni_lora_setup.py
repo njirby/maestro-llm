@@ -131,6 +131,7 @@ def main() -> None:
     launcher_has_deepspeed_arg = "--deepspeed" in run.stdout
     launcher_has_max_length_8192 = "--max_length 8192" in run.stdout
     launcher_has_packing_true = "--packing true" in run.stdout
+    launcher_has_attn_impl_flash = "--attn_impl flash_attn" in run.stdout
 
     invalid_ds_cmd = [
         sys.executable,
@@ -165,6 +166,7 @@ def main() -> None:
         "launcher_has_deepspeed_arg": launcher_has_deepspeed_arg,
         "launcher_has_max_length_8192": launcher_has_max_length_8192,
         "launcher_has_packing_true": launcher_has_packing_true,
+        "launcher_has_attn_impl_flash": launcher_has_attn_impl_flash,
         "launcher_invalid_deepspeed_guard_ok": invalid_ds_guard_ok,
         "launcher_returncode": run.returncode,
         "launcher_stdout_tail": launcher_stdout[-20:],
@@ -182,6 +184,7 @@ def main() -> None:
             and launcher_has_deepspeed_arg
             and launcher_has_max_length_8192
             and launcher_has_packing_true
+            and launcher_has_attn_impl_flash
             and invalid_ds_guard_ok
         ),
     }

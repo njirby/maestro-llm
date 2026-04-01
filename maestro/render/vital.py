@@ -18,6 +18,46 @@ SAMPLE_RATE = 44100
 # MIDI extraction
 # ---------------------------------------------------------------------------
 
+MAX_CLIP_S = 30.0    # 30s cap — ~3,000 audio tokens, fits comfortably in 4k context
+MIN_NOTES = 4        # skip clips with too few notes
+
+
+def clip_notes(notes, max_duration_s: float = MAX_CLIP_S):
+    """
+    Given a list of pretty_midi.Note objects (arbitrary start times), return a
+    cleaned clip suitable for rendering:
+
+    1. Window starts at the first note's start — eliminates leading silence.
+    2. Window is capped at max_duration_s from that start.
+    3. Only notes fully contained in [window_start, window_end] are kept —
+       no partial notes cut off at the boundary.
+    4. All note times are re-offset to t=0 relative to window_start.
+
+    Returns the re-offset note list, or an empty list if fewer than MIN_NOTES
+    complete notes fit in the window.
+    """
+    if not notes:
+        return []
+
+    notes = sorted(notes, key=lambda n: n.start)
+    window_start = notes[0].start
+    window_end = window_start + max_duration_s
+
+    contained = [n for n in notes if n.start >= window_start and n.end <= window_end]
+    if len(contained) < MIN_NOTES:
+        return []
+
+    return [
+        pretty_midi.Note(
+            velocity=n.velocity,
+            pitch=n.pitch,
+            start=n.start - window_start,
+            end=n.end - window_start,
+        )
+        for n in contained
+    ]
+
+
 def extract_track(midi_path: str, rng: random.Random):
     """
     Parse a MIDI file and select one random non-drum track.
@@ -25,6 +65,9 @@ def extract_track(midi_path: str, rng: random.Random):
     Returns:
         (notes, track_idx, track_name, program, duration_s)
         or (None, None, None, None, None) if no usable melodic tracks.
+
+    Notes are NOT clipped or re-offset here; call clip_notes() on the result
+    before rendering to apply the 2-minute cap and eliminate leading silence.
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -157,6 +200,37 @@ def constrain_random_preset_for_audibility(synth: _vita.Synth) -> None:
     _set_floor("filter_fx_cutoff", 0.08)
 
 
+def probe_audibility(
+    synth: _vita.Synth,
+    probe_notes: tuple = (48, 60, 72),
+    velocity: float = 0.8,
+    note_dur: float = 0.3,
+    tail_s: float = 0.15,
+    min_peak: float = 0.005,
+    required_passing: int = 2,
+) -> dict:
+    """
+    Render three probe notes at different pitches and return audibility stats.
+
+    A preset passes if at least `required_passing` of the probe notes exceed
+    `min_peak` amplitude.  Using multiple pitches catches filter sweeps and
+    LFO phase issues that a single note might miss.
+
+    Returns:
+        dict with 'peaks' (list of floats), 'pass' (bool), 'max_peak' (float).
+    """
+    peaks = []
+    for note in probe_notes:
+        audio = render_probe_note(synth, note, velocity, note_dur, tail_s)
+        peaks.append(float(abs(audio).max()) if audio.size else 0.0)
+    passing = sum(1 for p in peaks if p >= min_peak)
+    return {
+        "peaks": peaks,
+        "pass": passing >= required_passing,
+        "max_peak": max(peaks) if peaks else 0.0,
+    }
+
+
 def render_probe_note(
     synth: _vita.Synth,
     midi_note: int,
@@ -183,6 +257,43 @@ def render_probe_note(
 # Note helpers
 # ---------------------------------------------------------------------------
 
+def make_gt_notes() -> list:
+    """4 major triads spanning C2-C5, each held 2.5s. Total ~10s GT reference clip."""
+    notes = []
+    roots = [36, 48, 60, 72]  # C2, C3, C4, C5
+    intervals = [0, 4, 7]     # root, major third, fifth
+    for i, root in enumerate(roots):
+        start = i * 2.5
+        end = start + 2.5
+        for interval in intervals:
+            pitch = max(0, min(127, root + interval))
+            notes.append(pretty_midi.Note(velocity=90, pitch=pitch, start=start, end=end))
+    return notes
+
+
+PROBE_NOTE_DURATION = {
+    "pad":      1.5,   # 3 notes × 1.7s spacing + 1.0s tail ≈ 5.2s total
+    "keys":     1.2,   # 3 notes × 1.4s spacing + 1.0s tail ≈ 4.8s total
+    "bass":     1.2,
+    "lead":     1.2,
+    "pluck":    1.0,   # fast attack/decay — 3 notes × 1.2s + 1.0s tail ≈ 4.6s total
+    "sequence": 1.0,
+}
+PROBE_TAIL_PAD = 1.0  # extra tail after last note
+
+
+def make_probe_notes(archetype: str = "bass") -> list:
+    """3 held notes at C3/C4/C5 for per-iteration probing. Duration is archetype-aware."""
+    note_dur = PROBE_NOTE_DURATION.get(archetype, 2.5)
+    pitches = [48, 60, 72]  # C3, C4, C5
+    notes = []
+    for i, pitch in enumerate(pitches):
+        start = i * (note_dur + 0.2)
+        end = start + note_dur
+        notes.append(pretty_midi.Note(velocity=85, pitch=pitch, start=start, end=end))
+    return notes
+
+
 def transpose_notes(notes, semitones: int) -> list:
     """Return a new list of notes with pitches shifted by semitones, clamped to [0, 127]."""
     result = []
@@ -202,6 +313,50 @@ def transpose_notes(notes, semitones: int) -> list:
 # ---------------------------------------------------------------------------
 
 NOTE_TAIL_S = 0.15   # short tail per note (release ring); full tail_s added at end
+
+# Silence trimming defaults — same thresholds as generate_reaper_tuples.py
+TRIM_THRESHOLD = 5e-4   # absolute amplitude floor (~-66 dBFS)
+TRIM_KEEP_TAIL_S = 0.25  # keep this much after the last active sample
+TRIM_MIN_DURATION_S = 1.0  # never trim below this duration
+
+
+def trim_silence(
+    audio: np.ndarray,
+    sample_rate: int,
+    threshold: float = TRIM_THRESHOLD,
+    keep_tail_s: float = TRIM_KEEP_TAIL_S,
+    min_duration_s: float = TRIM_MIN_DURATION_S,
+) -> np.ndarray:
+    """
+    Trim leading and trailing silence from a stereo (2, N) audio array.
+
+    Leading silence: any samples before the first frame exceeding threshold are
+    removed entirely (no leading keep — the note should start promptly).
+    Trailing silence: kept for keep_tail_s after the last active frame.
+    Result is never shorter than min_duration_s.
+    """
+    if audio.ndim != 2 or audio.shape[1] == 0:
+        return audio
+
+    activity = np.max(np.abs(audio), axis=0)
+    active = np.flatnonzero(activity >= threshold)
+
+    min_samples = max(1, int(min_duration_s * sample_rate))
+
+    if active.size == 0:
+        # fully silent — return minimum length of zeros
+        return audio[:, :min(audio.shape[1], min_samples)]
+
+    keep_tail = int(keep_tail_s * sample_rate)
+    start = int(active[0])
+    end = min(audio.shape[1], int(active[-1]) + 1 + keep_tail)
+
+    trimmed = audio[:, start:end]
+    if trimmed.shape[1] < min_samples:
+        # pad with zeros to reach minimum duration rather than skip the sample
+        pad = np.zeros((2, min_samples - trimmed.shape[1]), dtype=audio.dtype)
+        trimmed = np.concatenate([trimmed, pad], axis=1)
+    return trimmed
 
 
 def _render_note_list(synth: _vita.Synth, notes, sample_rate: int, tail_s: float) -> np.ndarray:
