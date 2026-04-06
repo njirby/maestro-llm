@@ -64,14 +64,23 @@ def _build_rank_labels(
     return ranking_ids, selected_ids, gt_ids, score_map
 
 
-def _build_audition_bundle_tool_command(candidate_assets: list[dict[str, str]]) -> str:
-    payload = {"candidates": candidate_assets}
+def _build_audition_bundle_tool_command(
+    candidate_assets: list[dict[str, str]], target_audio_path: str
+) -> str:
+    payload = {"candidates": candidate_assets, "target": target_audio_path}
     return (
         "python - <<'PY'\n"
-        "import json\n"
+        "import json, numpy as np\n"
         "from pathlib import Path\n"
         "import soundfile as sf\n"
         f"payload = json.loads('''{json.dumps(payload, ensure_ascii=False)}''')\n"
+        "def _cos(a, b):\n"
+        "    m = min(len(a), len(b))\n"
+        "    if m <= 0: return 0.0\n"
+        "    aa, bb = a[:m], b[:m]\n"
+        "    return float(np.dot(aa, bb) / (np.linalg.norm(aa) * np.linalg.norm(bb) + 1e-12))\n"
+        "tgt, _ = sf.read(payload['target'], always_2d=True)\n"
+        "tgt = tgt.mean(axis=1).astype(np.float32)\n"
         "bundle = []\n"
         "for c in payload['candidates']:\n"
         "    p = c['audio_path']\n"
@@ -84,9 +93,12 @@ def _build_audition_bundle_tool_command(candidate_assets: list[dict[str, str]]) 
         "    if item['exists']:\n"
         "        try:\n"
         "            x, sr = sf.read(p, always_2d=True)\n"
+        "            x = x.mean(axis=1).astype(np.float32)\n"
         "            item['duration_s'] = round(float(len(x) / max(1, sr)), 4)\n"
+        "            item['cosine_vs_target'] = round(_cos(x, tgt), 4)\n"
         "        except Exception:\n"
         "            item['duration_s'] = None\n"
+        "            item['cosine_vs_target'] = None\n"
         "    bundle.append(item)\n"
         "print(json.dumps({'audition_bundle': bundle}, ensure_ascii=False))\n"
         "PY"
@@ -225,30 +237,40 @@ def main() -> None:
             tool_call_payload = json.dumps(
                 {
                     "name": "bash",
-                    "arguments": {"command": _build_audition_bundle_tool_command(candidate_assets)},
+                    "arguments": {"command": _build_audition_bundle_tool_command(candidate_assets, str(target_audio_path))},
                     "id": tool_call_id,
                 },
                 ensure_ascii=False,
             )
-            tool_response_payload = json.dumps({"audition_candidates": candidate_assets}, ensure_ascii=False)
+            # Single tool_response with all candidate audio previews bundled.
+            # Each entry carries one <audio> tag; MS-Swift matches them to the audios list in order.
+            audition_results = [
+                {
+                    "candidate_id": c["candidate_id"],
+                    "wavetable_name": c["wavetable_name"],
+                    "audio_preview": "<audio>",
+                    "cosine_vs_target": round(float(clap_scores.get(c["wavetable_name"], 0.0)), 4),
+                }
+                for c in candidate_assets
+            ]
+            tool_response_payload = json.dumps(
+                {"audition_results": audition_results}, ensure_ascii=False
+            )
             messages.append({"role": "tool_call", "content": tool_call_payload})
             messages.append({"role": "tool_response", "content": tool_response_payload})
 
-            for c in candidate_assets:
-                messages.append(
-                    {
-                        "role": "tool_response",
-                        "content": json.dumps(
-                            {
-                                "candidate_id": c["candidate_id"],
-                                "wavetable_name": c["wavetable_name"],
-                                "audio_preview": "<audio>",
-                            },
-                            ensure_ascii=False,
-                        ),
-                    }
-                )
-
+            # Build a score-informed reason referencing the actual CLAP scores so the
+            # model learns to ground rankings in audible similarity values.
+            top_scored = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)
+            score_summary = ", ".join(f"{cid} ({s:.3f})" for cid, s in top_scored[:4])
+            gt_note = (
+                f" GT candidate: {gt_ids[0]}." if gt_ids else ""
+            )
+            rank_reason = (
+                f"Ranked by CLAP similarity to target. "
+                f"Top scores: {score_summary}.{gt_note} "
+                f"Selected top {len(selected_ids)}."
+            )
             messages.append(
                 {
                     "role": "assistant",
@@ -256,9 +278,7 @@ def main() -> None:
                         {
                             "ranking": ranking_ids,
                             "selected": selected_ids,
-                            "reason": (
-                                "Ranked by source plausibility from target/current mismatch and candidate audition."
-                            ),
+                            "reason": rank_reason,
                         },
                         ensure_ascii=False,
                     ),

@@ -153,6 +153,15 @@ def _build_search_tool_command(
     )
 
 
+def _reason_for_cosine(score: float) -> str:
+    conf = 0.5 * (score + 1.0)
+    if conf >= 0.75:
+        return f"Strong waveform match ({score:.3f}); envelope and harmonic profile follow target closely."
+    if conf >= 0.60:
+        return f"Moderate waveform match ({score:.3f}); similar harmonic structure but texture differs."
+    return f"Weak waveform match ({score:.3f}); spectral profile diverges but included for shard coverage."
+
+
 def _build_assistant_proposals(
     shard_names: list[str],
     gt_names: set[str],
@@ -169,76 +178,50 @@ def _build_assistant_proposals(
 
     proposals = []
     for n in selected:
-        is_gt = n in gt_names
         score = float(score_map.get(n, 0.0))
         conf = max(0.05, min(0.99, 0.5 * (score + 1.0)))
-        reason = (
-            "Likely core source component in target timbre."
-            if is_gt
-            else "Similar harmonic texture and transient profile."
-        )
         proposals.append(
             {
                 "candidate_id": id_map[n],
                 "wavetable_name": n,
                 "confidence": round(conf, 3),
-                "reason": reason,
+                "reason": _reason_for_cosine(score),
             }
         )
     return [id_map[n] for n in ranked], proposals
-
-
-def _build_listen_tool_result(candidate_rows: list[dict[str, str]]) -> str:
-    n = len(candidate_rows)
-    if n <= 0:
-        return json.dumps(
-            {"status": "ok", "auditioned": 0, "summary": "No candidate renders were auditioned."},
-            ensure_ascii=False,
-        )
-    picked = [row["candidate_id"] for row in candidate_rows]
-    return json.dumps(
-        {
-            "status": "ok",
-            "auditioned": n,
-            "selected_candidate_ids": picked,
-            "summary": f"Auditioned {n} candidate render(s).",
-        },
-        ensure_ascii=False,
-    )
 
 
 def _build_audio_tags(n: int) -> str:
     return "\n".join(["<audio>"] * max(0, int(n)))
 
 
-def _build_single_audio_response(candidate_id: str) -> str:
-    return json.dumps(
-        {
-            "candidate_id": candidate_id,
-            "audio_preview": "<audio>",
-            "summary": f"Audition preview for {candidate_id}.",
-        },
-        ensure_ascii=False,
-    )
-
-
-def _build_audition_bundle_tool_command(paths: list[str]) -> str:
-    payload = {"paths": paths}
+def _build_audition_bundle_tool_command(paths: list[str], target_path: str) -> str:
+    payload = {"paths": paths, "target": target_path}
     return (
         "python - <<'PY'\n"
-        "import json\n"
+        "import json, numpy as np\n"
         "from pathlib import Path\n"
         "import soundfile as sf\n"
         f"payload = json.loads('''{json.dumps(payload, ensure_ascii=False)}''')\n"
+        "def _cos(a, b):\n"
+        "    m = min(len(a), len(b))\n"
+        "    if m <= 0: return 0.0\n"
+        "    aa, bb = a[:m], b[:m]\n"
+        "    return float(np.dot(aa, bb) / (np.linalg.norm(aa) * np.linalg.norm(bb) + 1e-12))\n"
+        "tgt, _ = sf.read(payload['target'], always_2d=True)\n"
+        "tgt = tgt.mean(axis=1).astype(np.float32)\n"
         "bundle = []\n"
         "for p in payload['paths']:\n"
         "    item = {'path': p, 'exists': Path(p).exists()}\n"
         "    if item['exists']:\n"
         "        try:\n"
         "            x, sr = sf.read(p, always_2d=True)\n"
+        "            x = x.mean(axis=1).astype(np.float32)\n"
         "            item['duration_s'] = round(float(len(x) / max(1, sr)), 4)\n"
+        "            item['cosine_vs_target'] = round(_cos(x, tgt), 4)\n"
         "        except Exception:\n"
         "            item['duration_s'] = None\n"
+        "            item['cosine_vs_target'] = None\n"
         "    bundle.append(item)\n"
         "print(json.dumps({'audition_bundle': bundle}, ensure_ascii=False))\n"
         "PY"
@@ -491,7 +474,6 @@ def main() -> None:
                     row for row in shard_assets if row["candidate_id"] in set(listen_ids)
                 ]
                 listen_rows = sorted(listen_rows, key=lambda x: listen_ids.index(x["candidate_id"]))
-                listen_result = _build_listen_tool_result(listen_rows)
                 listened_audio_paths = [row["render_path"] for row in listen_rows]
 
                 candidate_lines = [
@@ -516,7 +498,7 @@ def main() -> None:
                 audition_tool_payload = json.dumps(
                     {
                         "name": "bash",
-                        "arguments": {"command": _build_audition_bundle_tool_command(listened_audio_paths)},
+                        "arguments": {"command": _build_audition_bundle_tool_command(listened_audio_paths, str(target_audio_path))},
                     },
                     ensure_ascii=False,
                 )
@@ -565,17 +547,29 @@ def main() -> None:
                             ),
                         },
                         {"role": "tool_call", "content": audition_tool_payload},
-                        {"role": "tool_response", "content": audition_tool_response},
-                        {"role": "tool_response", "content": listen_result},
-                    ]
-                )
-                for row in listen_rows:
-                    messages.append(
+                        # Single tool_response with all auditioned candidates bundled.
+                        # Each entry carries one <audio> tag matched to listened_audio_paths in order.
                         {
                             "role": "tool_response",
-                            "content": _build_single_audio_response(row["candidate_id"]),
-                        }
-                    )
+                            "content": json.dumps(
+                                {
+                                    "status": "ok",
+                                    "auditioned": len(listen_rows),
+                                    "audition_results": [
+                                        {
+                                            "candidate_id": row["candidate_id"],
+                                            "wavetable_name": row["wavetable_name"],
+                                            "audio_preview": "<audio>",
+                                            "cosine_vs_target": round(float(shard_scores_by_name.get(row["wavetable_name"], 0.0)), 4),
+                                        }
+                                        for row in listen_rows
+                                    ],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    ]
+                )
                 messages.append({"role": "assistant", "content": json.dumps({"proposals": proposals}, ensure_ascii=False)})
 
                 audios = [

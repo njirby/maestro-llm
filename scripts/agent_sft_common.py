@@ -298,7 +298,7 @@ def validate_ms_swift_multiturn_record(record: dict[str, Any]) -> list[str]:
             errors.append(f"message_{i}_tool_response_before_tool_call")
 
         # Avoid structural chatter patterns that degraded quality in spot checks.
-        if prev_role in {"user", "assistant"} and role == prev_role:
+        if prev_role == role:
             errors.append(f"message_{i}_duplicate_adjacent_role:{role}")
         prev_role = str(role) if role is not None else None
 
@@ -307,7 +307,9 @@ def validate_ms_swift_multiturn_record(record: dict[str, Any]) -> list[str]:
             errors.append(f"message_{i}_content_not_string")
             continue
         tags = content.count("<audio>")
-        if tags > 1:
+        # Multiple <audio> tags are only disallowed in user/assistant turns; a tool_response
+        # may legitimately return a batch of audio previews in a single message.
+        if tags > 1 and role in {"user", "assistant"}:
             errors.append(f"message_{i}_multiple_audio_tags")
         audio_tag_count += tags
 

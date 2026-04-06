@@ -20,7 +20,9 @@ import copy
 import json
 import math
 import random
+import re
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
@@ -44,11 +46,15 @@ NOISE_STD = 0.08          # normalized units — ~8% of param range
 NOISE_PROB = 0.35         # 35% of params in each step get noise applied
 MISTAKE_PROB = 0.25       # 25% of paths get a deliberate mistake step
 
-# (inclusive_upper_bound, n_iterations)
-# Calibrated to the actual param-change distribution from generate_preset()
-# at threshold=0.15: typically 96-133 changed params per archetype.
-# Percentile-based splits: ~p20=102, p40=108, p60=114, p80=122.
-N_TABLE = [(56, 8), (72, 10), (96, 13), (120, 17), (999, 20)]
+# Iteration count controls.
+# Instead of a fixed table that can saturate to 20 when many params differ,
+# sample a realistic "params edited per step" density and derive N from that.
+MIN_ITERATIONS = 6
+MAX_ITERATIONS = 20
+PARAMS_PER_STEP_MIN = 14.0
+PARAMS_PER_STEP_MAX = 24.0
+SEARCH_RESULT_MAX_LINES = 16
+CHECKPOINT_EVERY_STEPS = 3
 
 # Lower index = higher priority (appears earlier in path)
 PARAM_PRIORITY_PREFIXES = [
@@ -98,6 +104,388 @@ def _json_key_to_display(key: str) -> str:
 # display_name → json_key reverse map (built once from PARAM_RANGES)
 _DISPLAY_TO_KEY: dict = {_json_key_to_display(k): k for k in PARAM_RANGES}
 
+_FAMILY_TO_KEYWORD = {
+    "osc": "oscillator",
+    "env1": "envelope 1",
+    "env2": "envelope 2",
+    "filter1": "filter 1",
+    "filter2": "filter 2",
+    "lfo": "lfo",
+    "reverb": "reverb",
+    "delay": "delay",
+    "chorus": "chorus",
+    "distortion": "distortion",
+    "compressor": "compressor",
+    "phaser": "phaser",
+    "flanger": "flanger",
+    "eq": "eq",
+    "modulation": "modulation",
+    "other": "synth",
+}
+
+_STAGE_ORDER = [
+    ("core", ("osc", "env1", "env2", "filter1", "filter2")),
+    ("motion", ("lfo",)),
+    ("space", ("chorus", "delay", "reverb", "distortion", "compressor", "phaser", "flanger", "eq")),
+    ("macro", ("other",)),
+    ("modulation", ("modulation",)),
+]
+MAX_MODULATION_STREAK = 2
+SOFT_MAX_MODULATION_RATIO = 0.55
+
+
+def _modulation_index_from_keyword(keyword: str) -> str | None:
+    m = re.fullmatch(r"modulation\s+(\d+)", (keyword or "").strip().lower())
+    return m.group(1) if m else None
+
+
+def _modulation_slot(name: str) -> str | None:
+    m = re.fullmatch(r"modulation_(\d+)_(?:amount|stereo|bipolar|bypass|power)", name)
+    return m.group(1) if m else None
+
+
+def _param_family(name: str) -> str:
+    if name.startswith(("osc_", "unison_")):
+        return "osc"
+    if name.startswith("env_1_"):
+        return "env1"
+    if name.startswith("env_2_"):
+        return "env2"
+    if name.startswith("filter_1_"):
+        return "filter1"
+    if name.startswith("filter_2_"):
+        return "filter2"
+    if name.startswith("lfo_"):
+        return "lfo"
+    if name.startswith("reverb_"):
+        return "reverb"
+    if name.startswith("delay_"):
+        return "delay"
+    if name.startswith("chorus_"):
+        return "chorus"
+    if name.startswith("distortion_"):
+        return "distortion"
+    if name.startswith("compressor_"):
+        return "compressor"
+    if name.startswith("phaser_"):
+        return "phaser"
+    if name.startswith("flanger_"):
+        return "flanger"
+    if name.startswith("eq_"):
+        return "eq"
+    if name.startswith("modulation_"):
+        return "modulation"
+    return "other"
+
+
+def _stage_index_for_family(family: str) -> int:
+    for idx, (_, fams) in enumerate(_STAGE_ORDER):
+        if family in fams:
+            return idx
+    return len(_STAGE_ORDER) - 1
+
+
+def _families_in_stage(stage_idx: int) -> tuple[str, ...]:
+    return _STAGE_ORDER[max(0, min(stage_idx, len(_STAGE_ORDER) - 1))][1]
+
+
+def _residual(name: str, target_norm: float, init_norm: dict[str, float]) -> float:
+    cur = init_norm.get(name, 0.5)
+    return abs(target_norm - cur)
+
+
+def _build_search_filter(keyword: str) -> str:
+    kw = (keyword or "").strip().lower()
+    mod_idx = _modulation_index_from_keyword(kw)
+    if mod_idx is not None:
+        return f"p.name.lower().startswith('modulation {mod_idx} ')"
+    if kw == "modulation":
+        return "p.name.lower().startswith('modulation ')"
+    safe = kw.replace("'", "\\'")
+    return f"'{safe}' in p.name.lower()"
+
+
+def _display_matches_keyword(display: str, keyword: str) -> bool:
+    display_l = display.lower()
+    mod_idx = _modulation_index_from_keyword(keyword)
+    if mod_idx is not None:
+        return display_l.startswith(f"modulation {mod_idx} ")
+    return (keyword or "").strip().lower() in display_l
+
+
+def _name_matches_keyword(name: str, keyword: str) -> bool:
+    return _display_matches_keyword(_json_key_to_display(name), keyword)
+
+
+def _keyword_coverage(names: list[str], keyword: str) -> float:
+    if not names:
+        return 0.0
+    hits = sum(1 for n in names if _name_matches_keyword(n, keyword))
+    return hits / len(names)
+
+
+def _build_search_snippet(keyword: str) -> str:
+    filt = _build_search_filter(keyword)
+    return (
+        "import reapy\n"
+        "with reapy.inside_reaper():\n"
+        "    fx = reapy.Project().tracks[0].fxs[0]\n"
+        "    hits = []\n"
+        "    for p in fx.params:\n"
+        f"        if {filt}:\n"
+        "            hits.append((p.name, round(p.normalized, 4)))\n"
+        f"    for name, val in hits[:{SEARCH_RESULT_MAX_LINES}]:\n"
+        '        print(f"{name}: {val:.4f}")'
+    )
+
+
+def _plan_step_groups(
+    changed_scalar_params: dict[str, float],
+    init_scalars_native: dict[str, float],
+    n_iterations: int,
+    rng: random.Random,
+) -> tuple[list[list[tuple[str, float]]], list[dict]]:
+    """Plan per-step parameter groups with primary/support family structure."""
+    if not changed_scalar_params:
+        return [[]], [{
+            "primary_family": "other",
+            "support_family": None,
+            "planner_stage": "core",
+            "checkpoint_revisit": False,
+            "planned_param_names": [],
+            "planned_primary_names": [],
+            "allowed_primary_controls": [],
+            "allowed_support_controls": [],
+            "intended_edit_controls": [],
+            "search_scope_type": "family",
+            "intent_tags": ["focus:other", "stage:core"],
+            "search_keyword": "filter",
+        }]
+
+    init_norm: dict[str, float] = {}
+    for name in changed_scalar_params:
+        val = _normalize(name, init_scalars_native.get(name, 0.0))
+        init_norm[name] = 0.0 if val is None else float(val)
+
+    remaining: dict[str, float] = dict(changed_scalar_params)
+    steps_params: list[list[tuple[str, float]]] = []
+    plans: list[dict] = []
+    current_stage_idx = 0
+    modulation_steps_taken = 0
+    modulation_streak = 0
+
+    for step_idx in range(n_iterations):
+        if not remaining:
+            break
+
+        steps_left = max(1, n_iterations - step_idx)
+        step_target = max(1, int(math.ceil(len(remaining) / steps_left)))
+        desired_primary = max(1, int(math.ceil(step_target * 0.7)))
+        max_support = max(0, step_target - desired_primary)
+
+        fam_items: dict[str, list[tuple[str, float, float]]] = defaultdict(list)
+        for name, tgt in remaining.items():
+            family = _param_family(name)
+            fam_items[family].append((name, tgt, _residual(name, tgt, init_norm)))
+        for family in fam_items:
+            fam_items[family].sort(key=lambda x: (x[2], -_param_priority(x[0])), reverse=True)
+        available_families = set(fam_items.keys())
+
+        while (
+            current_stage_idx < len(_STAGE_ORDER) - 1
+            and not any(f in available_families for f in _families_in_stage(current_stage_idx))
+        ):
+            current_stage_idx += 1
+
+        checkpoint = step_idx > 0 and ((step_idx + 1) % CHECKPOINT_EVERY_STEPS == 0)
+        candidate_families = [f for f in _families_in_stage(current_stage_idx) if f in available_families]
+        if checkpoint:
+            earlier = [
+                f
+                for idx in range(current_stage_idx)
+                for f in _families_in_stage(idx)
+                if f in available_families
+            ]
+            if earlier:
+                candidate_families = earlier
+
+        if not candidate_families:
+            candidate_families = sorted(available_families)
+
+        # Soft cap modulation-heavy trajectories when non-modulation families remain.
+        non_mod_available = any(f != "modulation" for f in available_families)
+        soft_mod_cap = max(2, int(math.ceil(n_iterations * SOFT_MAX_MODULATION_RATIO)))
+        current_mod_ratio = modulation_steps_taken / max(1, step_idx)
+        if non_mod_available:
+            if (
+                modulation_steps_taken >= soft_mod_cap
+                or modulation_streak >= MAX_MODULATION_STREAK
+                or (step_idx >= 2 and current_mod_ratio >= 0.50)
+            ):
+                candidate_families = [f for f in candidate_families if f != "modulation"] or candidate_families
+
+        # If current-stage families cannot satisfy purity, advance to a family that can.
+        max_candidate_count = max((len(fam_items[f]) for f in candidate_families), default=0)
+        if max_candidate_count < desired_primary:
+            capable = [f for f in available_families if len(fam_items[f]) >= desired_primary]
+            if capable:
+                candidate_families = sorted(
+                    capable,
+                    key=lambda f: (_stage_index_for_family(f) < current_stage_idx, _stage_index_for_family(f)),
+                )
+            else:
+                step_target = max(1, max(len(v) for v in fam_items.values()))
+                desired_primary = max(1, int(math.ceil(step_target * 0.7)))
+                max_support = max(0, step_target - desired_primary)
+                candidate_families = sorted(available_families, key=lambda f: len(fam_items[f]), reverse=True)
+
+        def _family_score(family: str) -> tuple[int, float, int, int]:
+            items = fam_items[family]
+            total_res = sum(r for _, _, r in items)
+            has_primary_capacity = 1 if len(items) >= desired_primary else 0
+            return (
+                has_primary_capacity,
+                total_res,
+                len(items),
+                -_stage_index_for_family(family),
+            )
+
+        primary_family = max(candidate_families, key=_family_score)
+        primary_items = fam_items[primary_family]
+        chosen_mod_slot: str | None = None
+
+        if primary_family == "modulation":
+            slot_items: dict[str, list[tuple[str, float, float]]] = defaultdict(list)
+            for item in primary_items:
+                slot = _modulation_slot(item[0]) or "0"
+                slot_items[slot].append(item)
+            if slot_items:
+                chosen_mod_slot = max(
+                    slot_items.keys(),
+                    key=lambda s: (sum(r for _, _, r in slot_items[s]), len(slot_items[s])),
+                )
+                primary_items = slot_items[chosen_mod_slot]
+
+        primary_count = min(
+            len(primary_items),
+            max(desired_primary, step_target - max_support),
+        )
+        primary_count = min(primary_count, step_target)
+        selected_primary = primary_items[:primary_count]
+        selected_names = [name for name, _, _ in selected_primary]
+        selected_tuples = [(name, tgt) for name, tgt, _ in selected_primary]
+
+        remaining_slots = step_target - len(selected_tuples)
+        support_family = None
+        support_cap = 0 if primary_family == "modulation" else max_support
+
+        support_candidates = [f for f in candidate_families if f != primary_family]
+        if not support_candidates:
+            support_candidates = [f for f in available_families if f != primary_family]
+        if remaining_slots > 0 and support_candidates and support_cap > 0:
+            support_family = max(
+                support_candidates,
+                key=lambda f: (sum(r for _, _, r in fam_items[f]), len(fam_items[f])),
+            )
+            take = min(remaining_slots, support_cap, len(fam_items[support_family]))
+            for name, tgt, _ in fam_items[support_family][:take]:
+                selected_tuples.append((name, tgt))
+                selected_names.append(name)
+            remaining_slots = step_target - len(selected_tuples)
+
+        # Fill from primary first to preserve purity, then from support.
+        if remaining_slots > 0:
+            used_primary = set(name for name, _, _ in selected_primary)
+            for name, tgt, _ in primary_items:
+                if name in used_primary:
+                    continue
+                selected_tuples.append((name, tgt))
+                selected_names.append(name)
+                remaining_slots -= 1
+                if remaining_slots <= 0:
+                    break
+
+        if remaining_slots > 0 and support_family is not None:
+            used = set(selected_names)
+            for name, tgt, _ in fam_items[support_family]:
+                if name in used:
+                    continue
+                selected_tuples.append((name, tgt))
+                selected_names.append(name)
+                remaining_slots -= 1
+                if remaining_slots <= 0:
+                    break
+
+        if not selected_tuples:
+            # Safety fallback: ensure progress if all capacity checks collapsed.
+            best_name, best_tgt, _ = max(
+                ((n, t, r) for fam in fam_items.values() for (n, t, r) in fam),
+                key=lambda x: x[2],
+            )
+            selected_tuples = [(best_name, best_tgt)]
+            selected_names = [best_name]
+            primary_family = _param_family(best_name)
+            support_family = None
+
+        # For modulation-heavy steps spanning many slots, keep keyword broad.
+        primary_names = [name for name, _ in selected_tuples if _param_family(name) == primary_family]
+        if primary_family == "modulation":
+            slots = sorted({slot for slot in (_modulation_slot(n) for n in primary_names) if slot is not None})
+            if chosen_mod_slot is not None:
+                search_keyword = f"modulation {chosen_mod_slot}"
+            elif len(slots) == 1:
+                search_keyword = f"modulation {slots[0]}"
+            else:
+                search_keyword = "modulation"
+        else:
+            specific_keyword = _search_keyword(primary_names or selected_names)
+            family_keyword = _FAMILY_TO_KEYWORD.get(primary_family, "filter")
+            if not specific_keyword:
+                search_keyword = family_keyword
+            else:
+                # If the specific keyword is too narrow for this step's primary edits,
+                # back off to family-level search to keep search/edit alignment.
+                coverage = _keyword_coverage(primary_names or selected_names, specific_keyword)
+                search_keyword = specific_keyword if coverage >= 0.70 else family_keyword
+
+        stage_name = _STAGE_ORDER[_stage_index_for_family(primary_family)][0]
+        intent_tags = [f"focus:{primary_family}", f"stage:{stage_name}"]
+        if support_family:
+            intent_tags.append(f"support:{support_family}")
+        if checkpoint:
+            intent_tags.append("checkpoint_revisit")
+        current_stage_idx = max(current_stage_idx, _stage_index_for_family(primary_family))
+
+        if primary_family == "modulation":
+            modulation_steps_taken += 1
+            modulation_streak += 1
+        else:
+            modulation_streak = 0
+
+        support_names = [name for name in selected_names if _param_family(name) != primary_family]
+        search_scope_type = "mod_slot" if _modulation_index_from_keyword(search_keyword) else "family"
+
+        plans.append({
+            "primary_family": primary_family,
+            "support_family": support_family,
+            "planner_stage": stage_name,
+            "checkpoint_revisit": checkpoint,
+            "planned_param_names": selected_names,
+            "planned_primary_names": primary_names,
+            "allowed_primary_controls": primary_names,
+            "allowed_support_controls": support_names,
+            "intended_edit_controls": selected_names,
+            "search_scope_type": search_scope_type,
+            "intent_tags": intent_tags,
+            "search_keyword": search_keyword,
+        })
+        steps_params.append(selected_tuples)
+
+        for name, _ in selected_tuples:
+            remaining.pop(name, None)
+
+    return steps_params, plans
+
 
 def _search_keyword(param_names: list) -> str:
     """Derive a short search keyword from a list of json param keys.
@@ -114,7 +502,7 @@ def _search_keyword(param_names: list) -> str:
         parts = name.split("_")
         prefixes.append("_".join(parts[:min(2, len(parts))]))
     if not prefixes:
-        return ""
+        return "filter"
     dominant = _Counter(prefixes).most_common(1)[0][0]
     return _json_key_to_display(dominant).lower()
 
@@ -124,19 +512,25 @@ def _generate_search_result(keyword: str, cumulative_settings: dict) -> str:
 
     Values are the cumulative normalized state BEFORE the step is applied.
     """
+    mod_idx = _modulation_index_from_keyword(keyword)
     lines = []
     for display in sorted(_DISPLAY_TO_KEY):
-        if keyword in display.lower():
-            key = _DISPLAY_TO_KEY[display]
-            r = PARAM_RANGES.get(key)
-            if r is None:
+        display_l = display.lower()
+        if mod_idx is not None:
+            if not display_l.startswith(f"modulation {mod_idx} "):
                 continue
-            native = cumulative_settings.get(key, r["default"])
-            span = r["max"] - r["min"]
-            norm = (native - r["min"]) / span if span != 0 else 0.0
-            norm = max(0.0, min(1.0, norm))
-            lines.append(f"{display}: {norm:.4f}")
-    return "\n".join(lines)
+        elif keyword not in display_l:
+            continue
+        key = _DISPLAY_TO_KEY[display]
+        r = PARAM_RANGES.get(key)
+        if r is None:
+            continue
+        native = cumulative_settings.get(key, r["default"])
+        span = r["max"] - r["min"]
+        norm = (native - r["min"]) / span if span != 0 else 0.0
+        norm = max(0.0, min(1.0, norm))
+        lines.append(f"{display}: {norm:.4f}")
+    return "\n".join(lines[:SEARCH_RESULT_MAX_LINES])
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +667,6 @@ def generate_preset_path(
     # Vital stores mod route source/destination in settings["modulations"][i] but
     # stores amounts as separate scalar keys: modulation_{i+1}_amount (1-indexed).
     target_mods = target["settings"].get("modulations", [])
-    target_scalars_all = _extract_scalar_params(target["settings"])  # pre-filter copy
     modulations_changed: list[dict] = []
     for i, mod in enumerate(target_mods):
         source = mod.get("source", "")
@@ -289,26 +682,18 @@ def generate_preset_path(
 
     # --- Determine N iterations ---
     n_changed = len(changed_scalar_params)
-    n_iterations = next(n for threshold, n in N_TABLE if n_changed <= threshold)
-    n_iterations = max(2, n_iterations)
-    n_iterations = min(n_iterations, 20)
-
-    # --- Sort changed params by priority ---
-    sorted_params = sorted(
-        changed_scalar_params.items(),
-        key=lambda kv: (_param_priority(kv[0]), kv[0]),
-    )
-
-    # --- Partition params across N iterations (greedy fill) ---
-    budget = math.ceil(n_changed / n_iterations) if n_changed > 0 else 1
-    steps_params: list[list[tuple[str, float]]] = [[] for _ in range(n_iterations)]
-    param_iter = iter(sorted_params)
-    for step_idx in range(n_iterations):
-        while len(steps_params[step_idx]) < budget:
-            try:
-                steps_params[step_idx].append(next(param_iter))
-            except StopIteration:
-                break
+    if n_changed <= 0:
+        n_iterations = 1
+    else:
+        density = rng.uniform(PARAMS_PER_STEP_MIN, PARAMS_PER_STEP_MAX)
+        n_iterations = int(math.ceil(n_changed / density))
+    n_iterations = max(MIN_ITERATIONS, n_iterations)
+    n_iterations = min(MAX_ITERATIONS, n_iterations)
+    if n_changed > 0:
+        # Never create more steps than changed params; avoids empty no-op tails.
+        n_iterations = min(n_iterations, n_changed)
+    else:
+        n_iterations = 1
 
     # --- Decide mistake step ---
     has_mistake_step = rng.random() < MISTAKE_PROB
@@ -322,6 +707,15 @@ def generate_preset_path(
     # --- Precompute init normalized values for from_norm tracking ---
     init_scalars_native = _extract_scalar_params(init_preset["settings"])
 
+    # --- Plan step groups with primary/support family structure ---
+    steps_params, step_plans = _plan_step_groups(
+        changed_scalar_params=changed_scalar_params,
+        init_scalars_native=init_scalars_native,
+        n_iterations=n_iterations,
+        rng=rng,
+    )
+    n_iterations = max(1, len(steps_params))
+
     # --- Build cumulative presets and iteration records ---
     cumulative = copy.deepcopy(init_preset)
     # Propagate the target's wavetables and sample into every cumulative preset
@@ -332,6 +726,20 @@ def generate_preset_path(
     iterations = []
 
     for step_idx, step_param_list in enumerate(steps_params):
+        planner = step_plans[step_idx] if step_idx < len(step_plans) else {
+            "primary_family": "other",
+            "support_family": None,
+            "planner_stage": "core",
+            "checkpoint_revisit": False,
+            "planned_param_names": [n for n, _ in step_param_list],
+            "planned_primary_names": [n for n, _ in step_param_list],
+            "allowed_primary_controls": [n for n, _ in step_param_list],
+            "allowed_support_controls": [],
+            "intended_edit_controls": [n for n, _ in step_param_list],
+            "search_scope_type": "family",
+            "intent_tags": ["focus:other", "stage:core"],
+            "search_keyword": _search_keyword([n for n, _ in step_param_list]),
+        }
         step_num = step_idx + 1
         is_mistake = step_idx == mistake_step_idx
         params_changed: dict[str, float] = {}
@@ -428,16 +836,8 @@ def generate_preset_path(
         action_snippet = "\n".join(set_lines)
 
         # --- search_snippet + search_result: targeted param lookup before setting ---
-        keyword = _search_keyword(list(params_applied.keys()))
-        search_snippet = (
-            "import reapy\n"
-            "with reapy.inside_reaper():\n"
-            "    fx = reapy.Project().tracks[0].fxs[0]\n"
-            f"    hits = [(p.name, round(p.normalized, 4)) for p in fx.params\n"
-            f"            if '{keyword}' in p.name.lower()]\n"
-            "    for name, val in hits:\n"
-            '        print(f"{name}: {val:.4f}")'
-        )
+        keyword = planner.get("search_keyword") or _search_keyword(list(params_applied.keys()))
+        search_snippet = _build_search_snippet(keyword)
         search_result = _generate_search_result(keyword, cumulative_settings_before)
 
         # Only include in-memory cumulative_preset copy when there's no disk save
@@ -453,6 +853,17 @@ def generate_preset_path(
             "search_snippet": search_snippet,
             "search_result": search_result,
             "search_keyword": keyword,
+            "primary_family": planner.get("primary_family"),
+            "support_family": planner.get("support_family"),
+            "planner_stage": planner.get("planner_stage"),
+            "checkpoint_revisit": bool(planner.get("checkpoint_revisit", False)),
+            "intent_tags": planner.get("intent_tags", []),
+            "planned_param_names": planner.get("planned_param_names", []),
+            "planned_primary_names": planner.get("planned_primary_names", []),
+            "allowed_primary_controls": planner.get("allowed_primary_controls", []),
+            "allowed_support_controls": planner.get("allowed_support_controls", []),
+            "intended_edit_controls": planner.get("intended_edit_controls", []),
+            "search_scope_type": planner.get("search_scope_type", "family"),
             "is_mistake_step": is_mistake,
             "params_applied": params_applied,
             "params_delta": params_delta,

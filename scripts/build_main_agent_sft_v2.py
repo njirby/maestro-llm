@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 from pathlib import Path
@@ -23,6 +24,337 @@ from scripts.agent_sft_common import (
     load_wavetable_lib,
     select_probe_rows_by_name,
 )
+
+_PARAM_LABELS = {
+    "osc_": "oscillator",
+    "env_1_": "amplitude envelope",
+    "env_2_": "modulation envelope",
+    "filter_1_": "filter",
+    "filter_2_": "secondary filter",
+    "unison_": "unison",
+    "lfo_": "LFO",
+    "reverb_": "reverb",
+    "delay_": "delay",
+    "chorus_": "chorus",
+    "distortion_": "distortion",
+}
+
+_PARAM_KEY_ABBREVS = {
+    "osc": "oscillator",
+    "env": "envelope",
+    "lfo": "lfo",
+    "eq": "eq",
+}
+
+_SUBSYSTEM_DISPLAY = {
+    "osc_1": "oscillator 1",
+    "osc_2": "oscillator 2",
+    "osc_3": "oscillator 3",
+    "filter_1": "filter 1",
+    "filter_2": "filter 2",
+    "filter": "filter",
+    "env_1": "envelope 1",
+    "env_2": "envelope 2",
+    "env_3": "envelope 3",
+    "env_4": "envelope 4",
+    "env_5": "envelope 5",
+    "env_6": "envelope 6",
+    "lfo_1": "LFO 1",
+    "lfo_2": "LFO 2",
+    "lfo_3": "LFO 3",
+    "lfo_4": "LFO 4",
+    "lfo_5": "LFO 5",
+    "lfo_6": "LFO 6",
+    "lfo_7": "LFO 7",
+    "lfo_8": "LFO 8",
+    "sample": "sample oscillator",
+    "random_1": "random LFO 1",
+    "random_2": "random LFO 2",
+    "random_3": "random LFO 3",
+    "random_4": "random LFO 4",
+    "modulation": "mod matrix",
+    "chorus": "chorus",
+    "compressor": "compressor",
+    "delay": "delay",
+    "distortion": "distortion",
+    "eq": "EQ",
+    "flanger": "flanger",
+    "phaser": "phaser",
+    "reverb": "reverb",
+    "voice": "voice",
+    "pitch": "pitch",
+    "stereo": "stereo",
+    "volume": "volume",
+    "velocity": "velocity",
+    "portamento": "portamento",
+    "legato": "legato",
+    "polyphony": "polyphony",
+    "beats": "sync",
+    "oversampling": "oversampling",
+    "effect": "effect chain",
+    "bypass": "bypass",
+    "mpe": "MPE",
+    "macro": "macro",
+}
+
+# Rotating style hints for HYPOTHESIS instructions — indexed by (step_num - 1) % 4.
+# Each hint steers the model toward a different sentence-opening pattern AND explicitly
+# asks the model to reason about {remaining} — the subsystems that still need to change
+# according to the GT-preset gap. This prevents both uniform phrasing and the failure mode
+# where the model only discusses what was just applied rather than what still needs fixing.
+_HYPOTHESIS_STYLE_HINTS = (
+    "Use hedged language (likely/may/could). Explain why {remaining} haven't yet matched "
+    "the target, referencing {primary} as the most likely cause.",
+    "Begin with the acoustic evidence you hear that indicates {remaining} still need "
+    "adjustment (e.g. 'The [X] character in the audio suggests {remaining} are still off '). "
+    "Then name the synthesis mechanism responsible.",
+    "Begin with the synthesis mechanism directly: why {primary} alone isn't enough and "
+    "what {remaining} still need to do to close the remaining timbral gap.",
+    "Begin with what the previous step failed to fix (e.g. 'Despite [what last step "
+    "addressed], {remaining} still cause [perceptual problem] because...').",
+)
+
+
+def _extract_top_remaining(remaining_delta_context: str | None, n: int = 2) -> str:
+    """Pull the top N subsystem names out of a remaining_delta_context string.
+
+    Input:  "compressor (12 params), chorus (11 params), EQ (10 params), ..."
+    Output: "compressor and chorus"   (n=2)
+
+    Returns a generic fallback when context is absent or already converged.
+    """
+    import re as _re
+    if not remaining_delta_context or remaining_delta_context.startswith("none"):
+        return "the remaining parameters"
+    names = _re.findall(r"([A-Za-z0-9 ]+?)\s*\(\d+\s*param", remaining_delta_context)
+    top = [nm.strip() for nm in names[:n]]
+    if not top:
+        return "the remaining parameters"
+    if len(top) == 1:
+        return top[0]
+    return f"{top[0]} and {top[1]}"
+
+
+def _get_param_subsystem(key: str) -> str:
+    """Return the subsystem key used for grouping (e.g. 'osc_1', 'filter_1', 'compressor')."""
+    parts = key.split("_")
+    if len(parts) >= 2 and parts[1].isdigit():
+        if parts[0] == "modulation":
+            return "modulation"  # collapse all mod-matrix slots into one group
+        return f"{parts[0]}_{parts[1]}"
+    return parts[0]
+
+
+def _group_params_for_plan(params_delta: list[dict]) -> str:
+    """Convert params_delta to a natural-language string for PLAN prefix seeding.
+
+    ≤5 params  → enumerate all display names.
+    >5 params  → group by subsystem; small groups name the attributes, large groups
+                 say "N subsystem parameters".
+    """
+    if not params_delta:
+        return "these parameters"
+
+    if len(params_delta) <= 5:
+        names = [_json_key_to_display(d["name"]) for d in params_delta]
+        if len(names) == 1:
+            return names[0]
+        if len(names) == 2:
+            return f"{names[0]} and {names[1]}"
+        return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+    # Group by subsystem, preserving insertion order
+    groups: dict[str, list[str]] = {}
+    for d in params_delta:
+        sub = _get_param_subsystem(d["name"])
+        groups.setdefault(sub, []).append(d["name"])
+
+    parts: list[str] = []
+    for sub, keys in groups.items():
+        label = _SUBSYSTEM_DISPLAY.get(sub, sub.replace("_", " "))
+        n = len(keys)
+        if n == 1:
+            parts.append(_json_key_to_display(keys[0]))
+        elif n <= 3:
+            # Strip subsystem prefix to get just the attribute token(s)
+            prefix = sub + "_"
+            attrs = []
+            for k in keys:
+                attr_key = k[len(prefix):] if k.startswith(prefix) else k
+                attr_disp = _json_key_to_display(attr_key).lower()
+                if attr_disp == "on":   # boolean enable/disable param
+                    attr_disp = "on/off"
+                attrs.append(attr_disp)
+            if len(attrs) == 2:
+                parts.append(f"{label} {attrs[0]} and {attrs[1]}")
+            else:
+                parts.append(f"{label} {', '.join(attrs[:-1])}, and {attrs[-1]}")
+        else:
+            parts.append(f"{n} {label} parameters")
+
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
+def _extract_hypothesis(commentary: str) -> str | None:
+    """Extract the HYPOTHESIS section from a step commentary string.
+
+    Returns the raw HYPOTHESIS text (1-2 sentences), or None if not found.
+    """
+    import re
+    m = re.search(
+        r"\bHYPOTHESIS[:\s]+(.+?)(?=\n\s*\nPLAN[:\s]|\Z)",
+        commentary,
+        re.DOTALL,
+    )
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _extract_heard(commentary: str) -> str | None:
+    """Extract the HEARD section text from a step commentary string.
+
+    Returns the raw HEARD text (1-2 sentences), or None if not found.
+    """
+    import re
+    m = re.search(
+        r"\bHEARD[:\s]+(.+?)(?=\n\s*\nHYPOTHESIS[:\s]|\Z)",
+        commentary,
+        re.DOTALL,
+    )
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _step_remaining_gap(target_preset: dict, step: dict) -> dict | None:
+    """Compute remaining parameter gap between a step's cumulative preset and GT preset.
+
+    Uses compare_preset_path from path_gen (same normalisation logic as the path builder)
+    so the "remaining" signal is grounded in the same parameter-space truth as the path.
+
+    Returns {"n_remaining": int, "by_subsystem": dict[str, int], "context_str": str}
+    or None if no cumulative preset is available.
+    """
+    from maestro.synth.path_gen import compare_preset_path
+
+    cumulative = step.get("cumulative_preset")
+    if cumulative is None and step.get("cumulative_preset_path"):
+        with open(step["cumulative_preset_path"]) as f:
+            cumulative = json.load(f)
+    if cumulative is None:
+        return None
+
+    synthetic = {
+        "target_preset": target_preset,
+        "iterations": [{"cumulative_preset": cumulative}],
+    }
+    try:
+        cmp = compare_preset_path(synthetic)
+    except Exception:
+        return None
+
+    noisy = cmp["noisy"]
+    by_subsystem: dict[str, int] = {}
+    for p in noisy:
+        sub = _get_param_subsystem(p["name"])
+        display = _SUBSYSTEM_DISPLAY.get(sub, sub.replace("_", " "))
+        by_subsystem[display] = by_subsystem.get(display, 0) + 1
+
+    sorted_subs = sorted(by_subsystem.items(), key=lambda x: -x[1])
+
+    if not sorted_subs:
+        context_str = "none — preset converged to target"
+    else:
+        parts = [f"{s} ({n} param{'s' if n > 1 else ''})" for s, n in sorted_subs[:4]]
+        context_str = ", ".join(parts)
+        if len(sorted_subs) > 4:
+            extra = sum(v for _, v in sorted_subs[4:])
+            context_str += f", plus {extra} params across other subsystems"
+
+    return {
+        "n_remaining": len(noisy),
+        "by_subsystem": dict(sorted_subs),
+        "context_str": context_str,
+    }
+
+
+def _json_key_to_display(key: str) -> str:
+    """Convert Vital JSON key style (e.g. 'filter_1_cutoff') to display words."""
+    parts = key.split("_")
+    words = []
+    for p in parts:
+        low = p.lower()
+        if low in _PARAM_KEY_ABBREVS:
+            words.append(_PARAM_KEY_ABBREVS[low].capitalize() if low not in ("lfo", "eq") else low.upper())
+        elif p.isdigit():
+            words.append(p)
+        else:
+            words.append(p.capitalize())
+    return " ".join(words)
+
+
+def _param_label(name: str) -> str:
+    for prefix, label in _PARAM_LABELS.items():
+        if name.startswith(prefix):
+            return label
+    return "synth parameter"
+
+
+def _format_delta_context(params_delta: list, is_mistake_step: bool) -> str:
+    """Format params_delta list into a natural-language string for the Omni prompt."""
+    if not params_delta:
+        return ""
+    lines = []
+    mistake_params = []
+    for d in params_delta:
+        name = d["name"]
+        display = _json_key_to_display(name)
+        from_n = float(d.get("from_norm", 0))
+        to_n = float(d.get("to_norm", 0))
+        label = _param_label(name)
+        magnitude = abs(to_n - from_n)
+        if magnitude < 0.01:
+            direction = "unchanged"
+        elif to_n > from_n:
+            direction = "increased"
+        else:
+            direction = "decreased"
+        mag_str = "slightly" if magnitude < 0.15 else ("significantly" if magnitude > 0.35 else "moderately")
+        if d.get("mistake"):
+            lines.append(
+                f"- {display} ({label}): {direction} {mag_str} [{from_n:.2f}\u2192{to_n:.2f}] \u26a0 moved away from target"
+            )
+            mistake_params.append(display)
+        else:
+            lines.append(f"- {display} ({label}): {direction} {mag_str} [{from_n:.2f}\u2192{to_n:.2f}]")
+    context = "Parameters being changed in this step:\n" + "\n".join(lines)
+    if mistake_params:
+        context += (
+            f"\n\nNote: {', '.join(mistake_params)} moved in the wrong direction (overcorrection). "
+            "The description should acknowledge this mistake and what needs to be fixed next."
+        )
+    return context
+
+
+def _build_param_summary(params_delta: list[dict]) -> str:
+    """One-line step summary: top 4 changes by magnitude with ↑/↓ arrows."""
+    if not params_delta:
+        return "(no changes)"
+    top = sorted(params_delta, key=lambda d: abs(d.get("to_norm", 0) - d.get("from_norm", 0)), reverse=True)[:4]
+    parts = []
+    for d in top:
+        arrow = "\u2191" if d.get("to_norm", 0) > d.get("from_norm", 0) else "\u2193"
+        parts.append(f"{_json_key_to_display(d['name'])} {arrow} {abs(d.get('to_norm', 0) - d.get('from_norm', 0)):.2f}")
+    suffix = f" (+{len(params_delta) - 4} more)" if len(params_delta) > 4 else ""
+    return "; ".join(parts) + suffix
+
+
+CLAP_IMPERCEPTIBLE_THRESHOLD = 0.05  # Steps with CLAP delta below this are perceptually silent.
 
 _TOOL_SPECS = json.dumps(
     [
@@ -116,14 +448,32 @@ def _build_judge_result(
     )
     ranking = [id_map[n] for n in ranked]
     selected = ranking[: max(1, int(select_k))]
+    score_map = {id_map[n]: float(clap_scores.get(n, 0.0)) for n in candidate_names}
+    gt_ids = [id_map[n] for n in candidate_names if n in gt_names]
+    top_scored = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)
+    score_summary = ", ".join(f"{cid} ({s:.3f})" for cid, s in top_scored[:4])
+    gt_note = f" GT candidate: {gt_ids[0]}." if gt_ids else ""
+    reason = (
+        f"Ranked by CLAP similarity to target. "
+        f"Top scores: {score_summary}.{gt_note} "
+        f"Selected top {len(selected)}."
+    )
     return {
         "ranking": ranking,
         "selected": selected,
-        "reason": "Selected highest-plausibility source candidates from aggregated search proposals.",
+        "reason": reason,
     }
 
 
-def _step_commentary(step: dict, step_num: int) -> str:
+def _wrap_as_bash(python_code: str) -> str:
+    """Wrap bare Python code in a shell-executable heredoc."""
+    stripped = python_code.strip()
+    if stripped.startswith("python"):
+        return stripped  # already a shell command
+    return f"python - <<'PY'\n{stripped}\nPY"
+
+
+def _step_commentary_fallback(step: dict, step_num: int) -> str:
     keyword = str(step.get("search_keyword") or "target controls")
     primary = str(step.get("primary_family") or "synth")
     support = str(step.get("support_family") or "none")
@@ -132,6 +482,498 @@ def _step_commentary(step: dict, step_num: int) -> str:
         f"HYPOTHESIS: Primary mismatch is in {primary}, with possible interaction from {support}.\n\n"
         f"PLAN: Apply the programmed updates for {keyword}, then listen again."
     )
+
+
+def _call_omni_commentary(
+    gt_wav: str,
+    iter_wav: str | None,
+    step: dict,
+    step_num: int,
+    archetype: str,
+    omni_server: str,
+    model: str,
+    prev_commentary: str | None = None,
+    params_delta: list | None = None,
+    is_mistake_step: bool = False,
+    allowed_params: list | None = None,
+    remaining_delta_context: str | None = None,
+    prior_iter_wav: str | None = None,  # unused in single-call mode
+    clap_delta: float | None = None,  # unused in single-call mode
+) -> str:
+    """Call the hosted Omni model for grounded HEARD/HYPOTHESIS/PLAN commentary.
+    Falls back to the template string if the server is unavailable."""
+    import httpx
+
+    primary = str(step.get("primary_family") or "synth")
+    support = str(step.get("support_family") or "none")
+    keyword = str(step.get("search_keyword") or "target controls")
+
+    delta_ctx = _format_delta_context(params_delta or [], is_mistake_step)
+    param_summary = _build_param_summary(params_delta or [])
+    allowed_str = ", ".join(allowed_params) if allowed_params else "all"
+    mistake_note = (
+        "MISTAKE STEP: these changes were intentional regressions for training robustness.\n"
+        if is_mistake_step else ""
+    )
+    remaining_str = (
+        f"Still needs to change: {remaining_delta_context}\n"
+        if remaining_delta_context else ""
+    )
+
+    with open(gt_wav, "rb") as f:
+        gt_b64 = base64.b64encode(f.read()).decode()
+
+    content: list[dict] = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{gt_b64}"}}
+    ]
+    if iter_wav:
+        with open(iter_wav, "rb") as f:
+            iter_b64 = base64.b64encode(f.read()).decode()
+        content.append({"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{iter_b64}"}})
+        prev_context = (
+            f"\nPrevious step assessment:\n{prev_commentary}\n"
+            if prev_commentary else ""
+        )
+        prompt = (
+            f"You are a music production AI agent comparing synthesizer audio.\n"
+            f"AUDIO A is the target {archetype} sound. AUDIO B is the current preset (after step {step_num - 1}).\n"
+            f"Step {step_num} summary: {param_summary}\n"
+            f"\n{delta_ctx}\n"
+            f"Allowed parameters this step: {allowed_str}\n"
+            f"{mistake_note}"
+            f"{remaining_str}"
+            f"{prev_context}\n"
+            f"Write exactly 3 short sections, each 1-2 concise sentences:\n"
+            f"HEARD: concrete perceptual differences between A and B now — reference what changed vs previous step if relevant.\n"
+            f"HYPOTHESIS: likely synthesis causes — use words like likely/may/could.\n"
+            f"PLAN: what this next parameter update ({keyword}) targets; "
+            f"reference {primary} controls specifically. PLAN must only reference parameters listed above.\n\n"
+            f"Use natural control names only (no snake_case). Archetype: {archetype}. "
+            f"Support family: {support}."
+        )
+    else:
+        prompt = (
+            f"You are a music production AI agent. You just heard a target {archetype} sound.\n\n"
+            f"Step {step_num} summary: {param_summary}\n"
+            f"\n{delta_ctx}\n"
+            f"Allowed parameters this step: {allowed_str}\n"
+            f"Write exactly 3 short sections, each 1-2 concise sentences:\n"
+            f"HEARD: describe the timbre, texture, and movement you hear.\n"
+            f"HYPOTHESIS: what synthesis elements likely produce this sound.\n"
+            f"PLAN: how to start recreating it — begin with {primary} controls. "
+            f"PLAN must only reference parameters listed above.\n\n"
+            f"Use natural control names only (no snake_case). Archetype: {archetype}."
+        )
+    content.append({"type": "text", "text": prompt})
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 600,
+        "temperature": 0.5,
+    }
+    try:
+        with httpx.Client() as client:
+            resp = client.post(
+                f"{omni_server}/v1/chat/completions", json=payload, timeout=90.0
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return _step_commentary_fallback(step, step_num)
+
+
+def _call_omni_commentary_two_stage(
+    gt_wav: str,
+    iter_wav: str | None,
+    step: dict,
+    step_num: int,
+    archetype: str,
+    omni_server: str,
+    omni_model: str,
+    stage2_server: str,
+    stage2_model: str,
+    prev_commentary: str | None = None,
+    params_delta: list | None = None,
+    is_mistake_step: bool = False,
+    allowed_params: list | None = None,
+    remaining_delta_context: str | None = None,
+    prior_iter_wav: str | None = None,
+    clap_delta: float | None = None,
+) -> str:
+    """Two-stage commentary: Stage 1 Omni describes audio only; Stage 2 text-only
+    model integrates the description with params_delta to produce HEARD/HYPOTHESIS/PLAN.
+
+    Stage 1 uses three clips when prior_iter_wav is available:
+      - 1A: prior_iter_wav → iter_wav (what changed in the last step)
+      - 1B: iter_wav → gt_wav (remaining gap to target)
+
+    When clap_delta < CLAP_IMPERCEPTIBLE_THRESHOLD the step is perceptually silent;
+    Stage 1 is skipped entirely and a template acknowledgment is used instead.
+
+    Falls back to the single-call version if either stage fails.
+    """
+    import httpx
+
+    primary = str(step.get("primary_family") or "synth")
+    support = str(step.get("support_family") or "none")
+    keyword = str(step.get("search_keyword") or "target controls")
+    delta_ctx = _format_delta_context(params_delta or [], is_mistake_step)
+    param_summary = _build_param_summary(params_delta or [])
+    allowed_str = ", ".join(allowed_params) if allowed_params else "all"
+    mistake_note = (
+        "MISTAKE STEP: these changes were intentional regressions for training robustness.\n"
+        if is_mistake_step else ""
+    )
+    remaining_str = (
+        f"Still needs to change: {remaining_delta_context}\n"
+        if remaining_delta_context else ""
+    )
+
+    # --- Stage 1: audio-only perceptual description ---
+    # Outputs two separate observations that Stage 2 will use distinctly:
+    #   step_change_obs  — what the previous step achieved (from Stage 1A, 3-clip only)
+    #   remaining_gap_obs — what still differs from the target (from Stage 1B or GT-only)
+    is_imperceptible = clap_delta is not None and clap_delta < CLAP_IMPERCEPTIBLE_THRESHOLD
+
+    step_change_obs: str | None = None
+    remaining_gap_obs: str | None = None
+
+    if is_imperceptible:
+        param_cat = _param_label(params_delta[0]["name"]) if params_delta else "synth"
+        step_change_obs = (
+            f"The previous edit produced no audible difference — CLAP perceptual distance was "
+            f"below threshold. The {param_cat} adjustments are sub-perceptual precision refinements."
+        )
+    else:
+        with open(gt_wav, "rb") as f:
+            gt_b64 = base64.b64encode(f.read()).decode()
+
+        if iter_wav and prior_iter_wav:
+            # 3-clip: Stage 1A (prior→current) + Stage 1B (current→target).
+            with open(prior_iter_wav, "rb") as f:
+                prior_b64 = base64.b64encode(f.read()).decode()
+            with open(iter_wav, "rb") as f:
+                iter_b64 = base64.b64encode(f.read()).decode()
+
+            s1a_content: list[dict] = [
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{prior_b64}"}},
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{iter_b64}"}},
+                {"type": "text", "text": (
+                    "You are a music production AI. Listen to two synthesizer clips.\n"
+                    "AUDIO A: the preset BEFORE the last parameter edit.\n"
+                    "AUDIO B: the preset AFTER the last parameter edit.\n\n"
+                    "Describe ONLY what changed between A and B: be specific about frequency region "
+                    "(low/mid/high), envelope shape (attack/decay/sustain), harmonic character "
+                    "(brightness, buzz, shimmer), or modulation movement.\n"
+                    "2-3 sentences. No recommendations. No 'lacks' — describe what IS different."
+                )},
+            ]
+            s1b_content: list[dict] = [
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{iter_b64}"}},
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{gt_b64}"}},
+                {"type": "text", "text": (
+                    f"You are a music production AI. Listen to two synthesizer clips.\n"
+                    f"AUDIO A: the current {archetype} preset (after step {step_num - 1}).\n"
+                    f"AUDIO B: the target sound to match.\n\n"
+                    "Describe the remaining timbral gap: what specific qualities does the target have "
+                    "that the current preset does not? Focus on the most prominent differences in "
+                    "frequency balance, harmonic density, envelope shape, or modulation.\n"
+                    "2-3 sentences. No recommendations."
+                )},
+            ]
+            try:
+                with httpx.Client() as client:
+                    s1a_resp = client.post(
+                        f"{omni_server}/v1/chat/completions",
+                        json={"model": omni_model, "messages": [{"role": "user", "content": s1a_content}],
+                              "max_tokens": 160, "temperature": 0.4},
+                        timeout=90.0,
+                    )
+                    s1a_resp.raise_for_status()
+                    step_change_obs = s1a_resp.json()["choices"][0]["message"]["content"].strip()
+
+                    s1b_resp = client.post(
+                        f"{omni_server}/v1/chat/completions",
+                        json={"model": omni_model, "messages": [{"role": "user", "content": s1b_content}],
+                              "max_tokens": 160, "temperature": 0.4},
+                        timeout=90.0,
+                    )
+                    s1b_resp.raise_for_status()
+                    remaining_gap_obs = s1b_resp.json()["choices"][0]["message"]["content"].strip()
+            except Exception:
+                return _step_commentary_fallback(step, step_num)
+
+        elif iter_wav:
+            # Step 1 or no prior: only current→target gap available.
+            with open(iter_wav, "rb") as f:
+                iter_b64 = base64.b64encode(f.read()).decode()
+            s1_content: list[dict] = [
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{iter_b64}"}},
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{gt_b64}"}},
+                {"type": "text", "text": (
+                    f"You are a music production AI. Listen to two synthesizer clips.\n"
+                    f"AUDIO A: the current {archetype} preset (starting point).\n"
+                    f"AUDIO B: the target sound to match.\n\n"
+                    "Describe the specific timbral gap: what qualities does the target have that the "
+                    "current preset does not? Be precise about frequency balance, harmonic texture, "
+                    "envelope character, and any modulation or movement.\n"
+                    "3-4 sentences. No recommendations."
+                )},
+            ]
+            try:
+                with httpx.Client() as client:
+                    s1_resp = client.post(
+                        f"{omni_server}/v1/chat/completions",
+                        json={"model": omni_model, "messages": [{"role": "user", "content": s1_content}],
+                              "max_tokens": 220, "temperature": 0.4},
+                        timeout=90.0,
+                    )
+                    s1_resp.raise_for_status()
+                    remaining_gap_obs = s1_resp.json()["choices"][0]["message"]["content"].strip()
+            except Exception:
+                return _step_commentary_fallback(step, step_num)
+
+        else:
+            # No iter clip — GT description only (first step, no default preset rendered yet).
+            s1_content = [
+                {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{gt_b64}"}},
+                {"type": "text", "text": (
+                    f"You are a music production AI. Listen to this target {archetype} synthesizer sound.\n\n"
+                    "Describe what you hear: be specific about frequency balance (bright/warm/dark), "
+                    "harmonic character (clean/buzzy/rich), envelope shape (sharp/slow attack, long/short decay), "
+                    "and any movement or modulation.\n"
+                    "3-4 sentences. No recommendations."
+                )},
+            ]
+            try:
+                with httpx.Client() as client:
+                    s1_resp = client.post(
+                        f"{omni_server}/v1/chat/completions",
+                        json={"model": omni_model, "messages": [{"role": "user", "content": s1_content}],
+                              "max_tokens": 220, "temperature": 0.4},
+                        timeout=90.0,
+                    )
+                    s1_resp.raise_for_status()
+                    remaining_gap_obs = s1_resp.json()["choices"][0]["message"]["content"].strip()
+            except Exception:
+                return _step_commentary_fallback(step, step_num)
+
+    # --- Stage 2: text-only integration ---
+    # Build the observation block, keeping step_change and remaining_gap clearly labelled
+    # so Stage 2 can reference each in the appropriate sentence of HEARD.
+    prior_heard = _extract_heard(prev_commentary) if prev_commentary else None
+
+    obs_block = ""
+    if step_change_obs and remaining_gap_obs:
+        obs_block = (
+            f"[WHAT THE LAST STEP CHANGED]\n{step_change_obs}\n\n"
+            f"[REMAINING GAP TO TARGET]\n{remaining_gap_obs}"
+        )
+        heard_base = (
+            "HEARD (2 sentences): Sentence 1 describes what the previous step changed, "
+            "drawn from [WHAT THE LAST STEP CHANGED]. "
+            "Sentence 2 states the most important remaining timbral gap, "
+            "drawn from [REMAINING GAP TO TARGET]. "
+            "Use specific sonic language (e.g. 'the attack softened', 'high-mid shimmer increased', "
+            "'filter cutoff moved lower') — avoid generic phrases like 'lacks texture' or 'still missing'."
+        )
+        if prior_heard:
+            heard_instruction = (
+                heard_base + " "
+                f"The previous step's HEARD began: \"{prior_heard[:180]}\" "
+                f"— Sentence 1 must describe something DIFFERENT from this prior observation."
+            )
+        else:
+            heard_instruction = heard_base
+    elif step_change_obs:
+        # Imperceptible step — only the sub-threshold note, no remaining gap measured.
+        obs_block = f"[PERCEPTUAL OBSERVATION]\n{step_change_obs}"
+        heard_instruction = (
+            "HEARD (1-2 sentences): Acknowledge that this step produced no audible change — "
+            "the edit is a sub-perceptual precision adjustment. Explain briefly why these small "
+            "changes still matter for convergence toward the target."
+        )
+    else:
+        # First step or no prior — only remaining gap available.
+        obs_block = f"[REMAINING GAP TO TARGET]\n{remaining_gap_obs}"
+        heard_instruction = (
+            "HEARD (1-2 sentences): Describe the most prominent timbral gap between the current "
+            "preset and the target, drawn from [REMAINING GAP TO TARGET]. "
+            "Use specific sonic language — avoid generic phrases like 'lacks texture'."
+        )
+
+    prev_context = (
+        f"Previous step assessment:\n{prev_commentary}\n\n"
+        if prev_commentary else ""
+    )
+    mistake_instruction = (
+        "NOTE: This step contains intentional regression moves for training robustness — "
+        "HEARD should note that the previous step moved away from target.\n"
+        if is_mistake_step else ""
+    )
+
+    # PLAN: 2-sentence format — Sentence 1 is the pre-seeded param inventory (machine-verifiable),
+    # Sentence 2 is the model's rationale (the actual training signal).
+    # Splitting them keeps the "why" uncluttered by the param list.
+    if params_delta:
+        params_str = _group_params_for_plan(params_delta)
+        plan_instruction = (
+            f"PLAN (2 sentences): "
+            f"Sentence 1 — copy this exactly: \"Adjusting {params_str}.\" "
+            f"Sentence 2 — one sentence explaining how these changes address the remaining "
+            f"timbral gap. Do not name any parameter in Sentence 2."
+        )
+    else:
+        plan_instruction = (
+            "PLAN (1 sentence): Explain the rationale for the parameter adjustments listed above."
+        )
+
+    # HYPOTHESIS: rotate style hints by step_num so consecutive steps use different
+    # sentence-opening patterns. Each hint embeds {remaining} — the top subsystems that
+    # still differ from the GT preset — so the model reasons about what still needs fixing,
+    # not just what was applied in the current step.
+    remaining_top = _extract_top_remaining(remaining_delta_context)
+    style_hint = _HYPOTHESIS_STYLE_HINTS[(step_num - 1) % len(_HYPOTHESIS_STYLE_HINTS)].format(
+        primary=primary, support=support, remaining=remaining_top
+    )
+
+    # When a prior hypothesis exists, require revision rather than restatement.
+    prior_hypothesis = _extract_hypothesis(prev_commentary) if prev_commentary else None
+    if prior_hypothesis:
+        hypothesis_instruction = (
+            f"HYPOTHESIS (1-2 sentences): Revise your synthesis hypothesis in light of what "
+            f"this step's audio just revealed. The prior hypothesis was: "
+            f"\"{prior_hypothesis[:280]}\" "
+            f"— your new hypothesis must either update what still needs to change or identify "
+            f"a new cause for the remaining gap. Do not simply restate the prior hypothesis. "
+            f"{style_hint}"
+        )
+    else:
+        hypothesis_instruction = (
+            f"HYPOTHESIS (1-2 sentences): Describe the most likely synthesis causes for the "
+            f"remaining timbral gap. {style_hint}"
+        )
+
+    s2_prompt = (
+        f"You are a music production AI agent writing step {step_num} analysis for recreating "
+        f"a {archetype} synth sound.\n\n"
+        f"--- Perceptual observations from audio ---\n{obs_block}\n\n"
+        f"--- Parameter changes for step {step_num} ---\n"
+        f"Summary: {param_summary}\n"
+        f"{delta_ctx}\n"
+        f"{mistake_instruction}"
+        f"{remaining_str}"
+        f"{prev_context}"
+        f"Write exactly 3 sections (no markdown bold, no headers other than the labels below):\n\n"
+        f"{heard_instruction}\n\n"
+        f"{hypothesis_instruction}\n\n"
+        f"{plan_instruction}\n\n"
+        f"Archetype: {archetype}. Be concise and specific."
+    )
+
+    s2_payload = {
+        "model": stage2_model,
+        "messages": [{"role": "user", "content": s2_prompt}],
+        "max_tokens": 400,
+        "temperature": 0.4,
+    }
+
+    fallback_obs = step_change_obs or remaining_gap_obs or "No audio observation available."
+    try:
+        with httpx.Client() as client:
+            s2_resp = client.post(
+                f"{stage2_server}/v1/chat/completions", json=s2_payload, timeout=90.0
+            )
+            s2_resp.raise_for_status()
+            return s2_resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return (
+            f"HEARD: {fallback_obs[:200]}\n\n"
+            f"HYPOTHESIS: Likely caused by {primary} parameter interactions.\n\n"
+            f"PLAN: Apply the programmed {keyword} updates."
+        )
+
+
+def _call_omni_closing_eval(
+    gt_wav: str,
+    final_iter_wav: str,
+    archetype: str,
+    omni_server: str,
+    model: str,
+    convergence: dict | None = None,
+) -> str:
+    """Final A/B eval after all iteration steps.
+
+    convergence — output of _step_remaining_gap on the final step, or None.
+      {"n_remaining": int, "by_subsystem": dict, "context_str": str}
+
+    The prompt branches on convergence status so the agent's verdict is grounded
+    in parameter-space truth rather than free-form speculation.
+    """
+    import httpx
+
+    with open(gt_wav, "rb") as f:
+        gt_b64 = base64.b64encode(f.read()).decode()
+    with open(final_iter_wav, "rb") as f:
+        iter_b64 = base64.b64encode(f.read()).decode()
+
+    if convergence is None:
+        verdict_instruction = (
+            "Write 2-3 sentences: what aspects now match well, and what still differs most. "
+            "Be specific about timbre, texture, or envelope."
+        )
+        verdict_label = "FINAL ASSESSMENT:"
+    elif convergence.get("converged"):
+        verdict_instruction = (
+            "The full planned iteration path has been completed. "
+            "Write 2 sentences: describe what the final render sounds like compared to the "
+            "target (timbre, texture, envelope), then confirm the recreation task is complete."
+        )
+        verdict_label = "FINAL ASSESSMENT (complete):"
+    else:
+        n = convergence.get("n_remaining", 0)
+        subs = list(convergence.get("by_subsystem", {}).keys())[:3]
+        subs_str = ", ".join(subs) if subs else "several subsystems"
+        verdict_instruction = (
+            f"The iteration budget is exhausted before the path completed. "
+            f"{n} parameters in {subs_str} still differ from the target preset. "
+            "Write 2 sentences: describe what timbral qualities were successfully recreated, "
+            "then describe the most significant remaining gap."
+        )
+        verdict_label = "FINAL ASSESSMENT (budget exhausted):"
+
+    content = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{gt_b64}"}},
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{iter_b64}"}},
+        {"type": "text", "text": (
+            f"You are a music production AI agent doing a final review.\n"
+            f"AUDIO A is the target {archetype} sound. AUDIO B is the final recreated preset.\n\n"
+            f"{verdict_instruction}\n"
+            f"Begin your response with \"{verdict_label}\""
+        )},
+    ]
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 200,
+        "temperature": 0.4,
+    }
+    try:
+        with httpx.Client() as client:
+            resp = client.post(
+                f"{omni_server}/v1/chat/completions", json=payload, timeout=90.0
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        if convergence and convergence.get("converged"):
+            return "FINAL ASSESSMENT (complete): The recreation is complete."
+        elif convergence:
+            subs = list(convergence.get("by_subsystem", {}).keys())[:2]
+            subs_str = ", ".join(subs) if subs else "several parameters"
+            return f"FINAL ASSESSMENT (budget exhausted): Iterations exhausted — {subs_str} still differ from the target."
+        return "Recreation pass complete."
 
 
 def _build_listen_probe_command(audio_path: Path) -> str:
@@ -183,7 +1025,20 @@ def main() -> None:
 
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
+    ap.add_argument("--omni-server", default="", help="Omni model server URL (empty = use template fallback).")
+    ap.add_argument("--omni-model", default="Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    ap.add_argument(
+        "--commentary-mode",
+        choices=["single", "two_stage"],
+        default="single",
+        help="single: one Omni call with injected delta context; two_stage: audio-only Stage 1 + text-only Stage 2.",
+    )
+    ap.add_argument("--stage2-server", default="", help="Stage 2 text model server URL (defaults to --omni-server).")
+    ap.add_argument("--stage2-model", default="", help="Stage 2 model name (defaults to --omni-model).")
     args = ap.parse_args()
+
+    stage2_server = args.stage2_server or args.omni_server
+    stage2_model = args.stage2_model or args.omni_model
 
     entries = load_manifest_entries(Path(args.manifest), max_samples=args.max_samples)
     index_rows = load_index_rows(args.index_meta)
@@ -204,7 +1059,13 @@ def main() -> None:
 
         with open(Path(entry["path_file"])) as f:
             path_data = json.load(f)
-        gt_names = set(extract_gt_wavetable_names(Path(path_data["target_preset_path"])))
+        if "target_preset_path" in path_data:
+            gt_names = set(extract_gt_wavetable_names(Path(path_data["target_preset_path"])))
+        elif "target_preset" in path_data:
+            from scripts.build_wavetable_retrieval_baseline import _extract_gt_wavetable_names_from_preset_dict
+            gt_names = set(_extract_gt_wavetable_names_from_preset_dict(path_data["target_preset"]))
+        else:
+            continue
         if not gt_names:
             continue
 
@@ -320,7 +1181,33 @@ def main() -> None:
                 },
             )
         )
-        messages.append({"role": "tool_response", "content": json.dumps(judge_result, ensure_ascii=False)})
+        # Include audio previews for selected candidates so the main agent hears
+        # what was chosen before starting iterative edits.
+        selected_previews = [
+            {
+                "candidate_id": id_map[n],
+                "wavetable_name": n,
+                "audio_preview": "<audio>",
+            }
+            for n in selected_names[: int(args.select_k)]
+            if n in candidate_audio
+        ]
+        judge_response_content = {**judge_result, "selected_previews": selected_previews}
+        messages.append(
+            {"role": "tool_response", "content": json.dumps(judge_response_content, ensure_ascii=False)}
+        )
+
+        archetype = str(entry.get("archetype", "synth"))
+        prev_iter_wav: str | None = str(default_audio_path) if default_audio_path else None
+        prev_prev_iter_wav: str | None = None  # audio two steps back for 3-clip Stage 1A
+        prev_commentary: str | None = None
+        # Load target_preset — in-memory for old smoke-test paths, on-disk for
+        # --generate mode paths which strip the dict and write target_preset_path instead.
+        target_preset = path_data.get("target_preset")
+        if target_preset is None and path_data.get("target_preset_path"):
+            with open(path_data["target_preset_path"]) as _f:
+                target_preset = json.load(_f)
+        step_gaps_cache: dict[int, dict | None] = {}  # step_num → remaining gap after that step
 
         for step in path_data.get("iterations", [])[: int(args.max_steps)]:
             step_num = int(step.get("step", 0))
@@ -330,22 +1217,65 @@ def main() -> None:
                 if step_num == 1 and selected_names
                 else ""
             )
+            if args.omni_server:
+                # Compute remaining parameter gap from GT preset vs this step's cumulative
+                # preset. This grounds the HYPOTHESIS in parameter-space truth rather than
+                # relying on the (often absent) remaining_delta_context field in path files.
+                step_gap = _step_remaining_gap(target_preset, step) if target_preset else None
+                step_gaps_cache[step_num] = step_gap
+                remaining_delta_context = (
+                    step_gap["context_str"] if step_gap else step.get("remaining_delta_context")
+                )
+                _common_kwargs = dict(
+                    gt_wav=str(target_audio_path),
+                    iter_wav=prev_iter_wav,
+                    step=step,
+                    step_num=step_num,
+                    archetype=archetype,
+                    prev_commentary=prev_commentary,
+                    params_delta=step.get("params_delta") or [],
+                    is_mistake_step=bool(step.get("is_mistake_step", False)),
+                    # planned_param_names is the closest proxy for allowed_params in path data
+                    allowed_params=step.get("planned_param_names") or step.get("allowed_params"),
+                    remaining_delta_context=remaining_delta_context,
+                    prior_iter_wav=prev_prev_iter_wav,
+                    clap_delta=(float(step["clap_delta"]) if step.get("clap_delta") is not None else None),
+                )
+                if args.commentary_mode == "two_stage":
+                    commentary = _call_omni_commentary_two_stage(
+                        omni_server=args.omni_server,
+                        omni_model=args.omni_model,
+                        stage2_server=stage2_server,
+                        stage2_model=stage2_model,
+                        **_common_kwargs,
+                    )
+                else:
+                    commentary = _call_omni_commentary(
+                        omni_server=args.omni_server,
+                        model=args.omni_model,
+                        **_common_kwargs,
+                    )
+                prev_commentary = commentary
+            else:
+                commentary = _step_commentary_fallback(step, step_num)
             messages.append(
                 {
                     "role": "assistant",
                     "content": (
                         prefix
-                        + _step_commentary(step, step_num)
+                        + commentary
                         + f"\n\nExecuting step {step_num} parameter updates now."
                     ),
                 }
             )
-            messages.append(_tool_call("bash", {"command": action_snippet}))
+            messages.append(_tool_call("bash", {"command": _wrap_as_bash(action_snippet)}))
             messages.append({"role": "tool_response", "content": json.dumps({"status": "ok"}, ensure_ascii=False)})
 
             if step_num - 1 < len(iter_wavs):
                 iter_audio = iter_wavs[step_num - 1]
                 used_iter_audio_paths.append(str(iter_audio))
+                prev_prev_iter_wav = prev_iter_wav  # shift the 2-step-back pointer
+                prev_iter_wav = str(iter_audio)
                 messages.append(
                     {
                         "role": "assistant",
@@ -363,11 +1293,60 @@ def main() -> None:
                     }
                 )
 
-        messages.append({"role": "assistant", "content": "Recreation pass complete."})
+        # Determine convergence: the path is "complete" if we applied all its planned
+        # iterations (i.e. max_steps was not the binding constraint). If max_steps cut the
+        # path short, the budget is exhausted. This is more reliable than testing n_remaining
+        # == 0 which is rarely true in practice due to path_gen noise injection.
+        final_steps = path_data.get("iterations", [])[: int(args.max_steps)]
+        n_path_iterations = len(path_data.get("iterations", []))
+        path_complete = len(final_steps) >= n_path_iterations
+
+        # Reuse cached gap for the last applied step (already computed during the loop).
+        last_step_num = int(final_steps[-1].get("step", 0)) if final_steps else 0
+        final_gap = step_gaps_cache.get(last_step_num) if last_step_num else None
+
+        convergence = {
+            "converged": path_complete,
+            "n_remaining": final_gap["n_remaining"] if final_gap else 0,
+            "by_subsystem": final_gap["by_subsystem"] if final_gap else {},
+        }
+
+        # User turn that prompts the closing assessment (makes this a proper Q&A exchange).
+        messages.append(
+            {
+                "role": "user",
+                "content": "That completes the available iterations. Compare your final render to the target and give your final assessment.",
+            }
+        )
+
+        if args.omni_server and used_iter_audio_paths:
+            closing = _call_omni_closing_eval(
+                gt_wav=str(target_audio_path),
+                final_iter_wav=used_iter_audio_paths[-1],
+                archetype=archetype,
+                omni_server=args.omni_server,
+                model=args.omni_model,
+                convergence=convergence,
+            )
+        else:
+            if convergence["converged"]:
+                closing = "FINAL ASSESSMENT (complete): The recreation is complete."
+            else:
+                subs = list(convergence["by_subsystem"].keys())[:2]
+                subs_str = ", ".join(subs) if subs else "several parameters"
+                closing = (
+                    f"FINAL ASSESSMENT (budget exhausted): Iterations exhausted — "
+                    f"{subs_str} still differ from the target."
+                )
+        messages.append({"role": "assistant", "content": closing})
 
         audio_assets = [str(target_audio_path)]
         if default_audio_path is not None:
             audio_assets.append(str(default_audio_path))
+        # Selected candidate probes appear right after default (matching selected_previews in judge response).
+        for n in selected_names[: int(args.select_k)]:
+            if n in candidate_audio:
+                audio_assets.append(str(candidate_audio[n]))
         audio_assets.extend(used_iter_audio_paths)
 
         record = {
@@ -397,6 +1376,26 @@ def main() -> None:
                 "num_agents": int(args.num_agents),
                 "candidate_source": args.candidate_source,
                 "max_steps": int(args.max_steps),
+                "commentary_mode": args.commentary_mode,
+                # step_labels carries ground-truth params per step for offline grading.
+                # remaining_top_2: top 2 subsystem names that still differ from GT after
+                # this step — used by the grader to score HYPOTHESIS grounding quality.
+                "step_labels": [
+                    {
+                        "step": int(s.get("step", 0)),
+                        "keyword": str(s.get("search_keyword", "")),
+                        "params_delta": s.get("params_delta") or [],
+                        "planned_param_names": s.get("planned_param_names") or [],
+                        "clap_delta": (float(s["clap_delta"]) if s.get("clap_delta") is not None else None),
+                        "remaining_top_2": _extract_top_remaining(
+                            step_gaps_cache.get(int(s.get("step", 0)), {}).get("context_str")
+                            if step_gaps_cache.get(int(s.get("step", 0)))
+                            else None,
+                            n=2,
+                        ),
+                    }
+                    for s in path_data.get("iterations", [])[: int(args.max_steps)]
+                ],
             },
         }
         assert_valid_ms_swift_multiturn_record(record)

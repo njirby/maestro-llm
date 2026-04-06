@@ -4,8 +4,10 @@ Render iterative preset-recreation audio samples for SFT training data.
 
 For each sample:
   - Generate (or load) an N-step parameter path from init to target preset
-  - Render a ground-truth clip using the target preset + make_gt_notes()
-  - Render N-1 iteration probe clips using intermediate cumulative presets
+  - Render a ground-truth musical clip (target preset + make_gt_notes())
+  - Render a target probe clip using the same note pattern as iteration probes
+  - Render a default/init probe clip, then N iteration probe clips (one per step)
+    using cumulative presets
 
 Usage:
     python scripts/render_iter_presets.py \
@@ -18,6 +20,7 @@ import argparse
 import json
 import multiprocessing
 import os
+import pretty_midi
 import random
 import signal
 import sys
@@ -51,6 +54,27 @@ except ImportError:
 
 _vital_instance = None
 _wavetable_lib_cache = None
+_init_preset_cache = None
+
+
+def _write_notes_to_midi(notes: list, out_path: Path, tempo: float = 120.0) -> None:
+    """Persist a note list to a single-track MIDI file."""
+    pm = pretty_midi.PrettyMIDI(initial_tempo=float(tempo))
+    inst = pretty_midi.Instrument(program=0, is_drum=False, name="source")
+    for n in notes:
+        vel = int(getattr(n, "velocity", 100))
+        vel = max(1, min(127, vel))
+        pitch = int(getattr(n, "pitch", 60))
+        start = float(getattr(n, "start", 0.0))
+        end = float(getattr(n, "end", max(0.05, start + 0.25)))
+        if end <= start:
+            end = start + 0.05
+        inst.notes.append(
+            pretty_midi.Note(velocity=vel, pitch=pitch, start=start, end=end)
+        )
+    pm.instruments.append(inst)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pm.write(str(out_path))
 
 
 def _worker_init():
@@ -68,7 +92,7 @@ def _render_sample(job: dict) -> dict | None:
     Returns a manifest-entry dict on success, or None if the sample should be
     skipped (audibility failure, error, etc.).
     """
-    global _vital_instance, _wavetable_lib_cache
+    global _vital_instance, _wavetable_lib_cache, _init_preset_cache
 
     mode = job["mode"]
     sample_id = job["sample_id"]
@@ -81,7 +105,7 @@ def _render_sample(job: dict) -> dict | None:
         # 1. Generate or load the parameter path
         # ------------------------------------------------------------------
         if mode == "generate":
-            from maestro.synth.path_gen import generate_preset_path
+            from maestro.synth.path_gen import compare_preset_path, generate_preset_path
             from maestro.synth.wavetable_lib import load_wavetable_lib
 
             if _wavetable_lib_cache is None and job.get("wavetable_lib_path"):
@@ -104,21 +128,7 @@ def _render_sample(job: dict) -> dict | None:
                 output_dir=paths_dir,
                 sample_id=sample_id,
             )
-
-            # Save a portable path JSON (without bulky cumulative_preset dicts)
-            if paths_dir is not None:
-                path_json_path = paths_dir / f"{sample_id}.json"
-                save_data = {
-                    k: v
-                    for k, v in path_data.items()
-                    if k != "target_preset"
-                }
-                save_data["iterations"] = [
-                    {k: v for k, v in it.items() if k != "cumulative_preset"}
-                    for it in save_data["iterations"]
-                ]
-                with open(path_json_path, "w") as f:
-                    json.dump(save_data, f, indent=2)
+            compare = compare_preset_path(path_data)
         else:
             # --paths-dir mode: load existing path JSON
             path_json_path = Path(job["path_file"])
@@ -126,12 +136,55 @@ def _render_sample(job: dict) -> dict | None:
                 path_data = json.load(f)
             sample_id = path_data["sample_id"]
             archetype = path_data["archetype"]
+            compare = None
 
         steps = path_data["iterations"]
         n_iterations = path_data["n_iterations"]
 
         # ------------------------------------------------------------------
-        # 2. Render GT audio (last cumulative preset = target)
+        # 2. Build source MIDI + render default/init probe clip for baseline
+        # ------------------------------------------------------------------
+        probe_notes = make_probe_notes(archetype)
+        gt_notes = make_gt_notes()
+        midi_dir = audio_dir.parent / "midi"
+        source_midi_path = midi_dir / f"{sample_id}_source.mid"
+        _write_notes_to_midi(gt_notes, source_midi_path)
+
+        if mode == "generate" and paths_dir is not None:
+            path_json_path = paths_dir / f"{sample_id}.json"
+            target_preset_path = paths_dir / f"{sample_id}_target.vital"
+            with open(target_preset_path, "w") as f:
+                json.dump(path_data["target_preset"], f)
+            save_data = {
+                k: v
+                for k, v in path_data.items()
+                if k != "target_preset"
+            }
+            save_data["target_preset_path"] = str(target_preset_path)
+            save_data["source_midi_path"] = str(source_midi_path)
+            save_data["final_vs_target_summary"] = compare["summary"]
+            save_data["final_vs_target_top_noisy"] = compare["noisy"][:12]
+            save_data["iterations"] = [
+                {k: v for k, v in it.items() if k != "cumulative_preset"}
+                for it in save_data["iterations"]
+            ]
+            with open(path_json_path, "w") as f:
+                json.dump(save_data, f, indent=2)
+
+        if _init_preset_cache is None:
+            init_path = Path(__file__).resolve().parent.parent / "maestro" / "synth" / "init_preset.json"
+            with open(init_path) as f:
+                _init_preset_cache = json.load(f)
+        _vital_instance.load_json(json.dumps(_init_preset_cache))
+        default_audio = _render_note_list(
+            _vital_instance, probe_notes, SAMPLE_RATE, tail_s=1.0
+        )
+        default_audio = trim_silence(default_audio, SAMPLE_RATE, min_duration_s=0.5)
+        default_wav = audio_dir / f"{sample_id}_default.wav"
+        sf.write(str(default_wav), default_audio.T, SAMPLE_RATE, subtype="PCM_24")
+
+        # ------------------------------------------------------------------
+        # 3. Render GT audio (last cumulative preset = target)
         # ------------------------------------------------------------------
         last_step = steps[-1]
         gt_preset_path = last_step.get("cumulative_preset_path")
@@ -150,21 +203,26 @@ def _render_sample(job: dict) -> dict | None:
         if not probe_audibility(_vital_instance, note_dur=gt_probe_dur)["pass"]:
             return None
 
-        gt_audio = _render_note_list(
-            _vital_instance, make_gt_notes(), SAMPLE_RATE, tail_s=2.0
-        )
+        gt_audio = _render_note_list(_vital_instance, gt_notes, SAMPLE_RATE, tail_s=2.0)
         gt_audio = trim_silence(gt_audio, SAMPLE_RATE)
 
         gt_wav = audio_dir / f"{sample_id}_gt.wav"
         sf.write(str(gt_wav), gt_audio.T, SAMPLE_RATE, subtype="PCM_24")
 
+        # Target probe clip: same note pattern as iter probes for apples-to-apples A/B.
+        gt_probe_audio = _render_note_list(
+            _vital_instance, probe_notes, SAMPLE_RATE, tail_s=1.0
+        )
+        gt_probe_audio = trim_silence(gt_probe_audio, SAMPLE_RATE, min_duration_s=0.5)
+        gt_probe_wav = audio_dir / f"{sample_id}_gt_probe.wav"
+        sf.write(str(gt_probe_wav), gt_probe_audio.T, SAMPLE_RATE, subtype="PCM_24")
+
         # ------------------------------------------------------------------
-        # 3. Render N-1 iteration probe clips (steps 0 .. N-2)
+        # 4. Render N iteration probe clips (steps 0 .. N-1)
         # ------------------------------------------------------------------
-        probe_notes = make_probe_notes(archetype)
         iter_wavs: list[str] = []
 
-        for step_idx in range(n_iterations - 1):
+        for step_idx in range(n_iterations):
             step = steps[step_idx]
             step_preset_path = step.get("cumulative_preset_path")
             if step_preset_path is None:
@@ -187,15 +245,28 @@ def _render_sample(job: dict) -> dict | None:
             iter_wavs.append(str(iter_wav))
 
         # ------------------------------------------------------------------
-        # 4. Return manifest entry
+        # 5. Return manifest entry
         # ------------------------------------------------------------------
         entry = {
             "sample_id": sample_id,
             "archetype": archetype,
             "n_iterations": n_iterations,
             "gt_wav": str(gt_wav),
+            "gt_probe_wav": str(gt_probe_wav),
+            "default_wav": str(default_wav),
             "iter_wavs": iter_wavs,
+            "source_midi_path": str(source_midi_path),
         }
+        if isinstance(compare, dict):
+            entry["final_vs_target_summary"] = compare.get("summary")
+            entry["final_vs_target_top_noisy"] = compare.get("noisy", [])[:12]
+        elif isinstance(path_data.get("final_vs_target_summary"), str):
+            entry["final_vs_target_summary"] = path_data["final_vs_target_summary"]
+            entry["final_vs_target_top_noisy"] = path_data.get("final_vs_target_top_noisy", [])
+        if path_data.get("target_preset_path"):
+            entry["target_preset_path"] = str(path_data["target_preset_path"])
+        elif mode == "generate" and paths_dir is not None:
+            entry["target_preset_path"] = str(paths_dir / f"{sample_id}_target.vital")
         if mode == "generate" and paths_dir is not None:
             entry["path_file"] = str(paths_dir / f"{sample_id}.json")
         elif mode == "paths_dir":
@@ -291,7 +362,8 @@ def main() -> None:
             sample_id = f"{archetype}_{sample_seed:08x}"
 
             gt_wav = audio_dir / f"{sample_id}_gt.wav"
-            if gt_wav.exists() and not args.overwrite:
+            default_wav = audio_dir / f"{sample_id}_default.wav"
+            if gt_wav.exists() and default_wav.exists() and not args.overwrite:
                 continue
 
             jobs.append({
@@ -317,7 +389,8 @@ def main() -> None:
             archetype = meta["archetype"]
 
             gt_wav = audio_dir / f"{sample_id}_gt.wav"
-            if gt_wav.exists() and not args.overwrite:
+            default_wav = audio_dir / f"{sample_id}_default.wav"
+            if gt_wav.exists() and default_wav.exists() and not args.overwrite:
                 continue
 
             jobs.append({

@@ -138,6 +138,173 @@ python scripts/build_iter_sft_dataset.py \
     --omni-server http://localhost:8000 \
     --output data/prepared/iter_sft/train.jsonl \
     --concurrency 8
+
+# Dual-agent SFT outputs:
+# - main agent orchestration conversations (delegates search)
+# - step-level search-agent conversations (writes bash+reapy search code)
+python scripts/build_iter_sft_dataset.py \
+    --manifest outputs/iter_sft/manifest.jsonl \
+    --omni-server http://localhost:8000 \
+    --output data/prepared/iter_sft/main_agent_train.jsonl \
+    --main-search-mode search_agent \
+    --search-output data/prepared/iter_sft/search_agent_train.jsonl \
+    --search-fanout 3 \
+    --search-bad-result-prob 0.25 \
+    --search-bad-result-max 1 \
+    --concurrency 8
+```
+
+### Iterative preset recreation pipeline (main-agent SFT v2)
+
+This is the primary SFT pipeline as of 2025. It generates multi-turn conversations where an audio-language model listens to a target sound, reasons about what parameters differ, and iteratively adjusts a Vital preset step-by-step until it converges.
+
+**Step 1 — generate path data and render audio** (no GPU needed):
+
+```bash
+python scripts/render_iter_presets.py \
+    --generate 1000 \
+    --archetypes bass lead pad keys pluck sequence \
+    --output-dir outputs/iter_sft \
+    --wavetable-lib data/wavetable_lib.json \
+    --jobs 24
+```
+
+This generates `N` synthetic (target preset, parameter path, rendered audio) tuples. For each sample it produces:
+- `{id}_gt.wav` — ground truth audio (target preset, musical note sequence)
+- `{id}_default.wav` — Vital default preset baseline probe
+- `{id}_step{N}.wav` — cumulative preset probe after step N
+- `{id}_target.vital` — target preset (saved separately, not embedded in path JSON)
+- A `manifest.jsonl` with one entry per sample pointing to all the above paths
+
+Path lengths scale with the number of differing parameters (8–20 steps). Params are applied in priority order (oscillators → envelopes → filters → modulation routing) to mirror how a skilled sound designer approaches the problem.
+
+**Step 2 — build SFT conversations** (requires Qwen3-Omni at localhost:8000):
+
+```bash
+python scripts/build_main_agent_sft_v2.py \
+    --manifest outputs/iter_sft/manifest.jsonl \
+    --index-npy outputs/wt_retrieval_baseline/wt_index.npz \
+    --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
+    --wavetable-lib data/wavetable_lib.json \
+    --out-jsonl data/prepared/agent_sft/main.jsonl \
+    --max-steps 13 \
+    --omni-server http://localhost:8000 \
+    --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --commentary-mode two_stage \
+    --stage2-server http://localhost:8000 \
+    --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --clap-device cuda:0
+```
+
+Each output record is a multi-turn ms-swift JSONL conversation. `--max-steps` caps how many iteration turns appear per conversation. If the path has more steps than the cap, the conversation ends with a `FINAL ASSESSMENT (budget exhausted):` verdict; if the path runs to its planned end, it ends with `FINAL ASSESSMENT (complete):`. Aim for ~25–35% complete examples for balanced training — use `--max-steps` relative to path lengths in your manifest.
+
+**Conversation structure:**
+
+```
+user:       <audio> [GT clip]  "Recreate this {archetype} sound in Vital."
+assistant:  HEARD: [initial perceptual gap description]
+            HYPOTHESIS: [synthesis cause of the gap]
+            PLAN: [param inventory sentence]. [rationale sentence — no param names]
+            → tool_call: search "oscillator 1"
+tool_resp:  Oscillator 1 Level: 0.4063\nOscillator 1 Transpose: 0.5000\n...
+assistant:  → tool_call: set params
+tool_resp:  Done
+assistant:  → tool_call: render probe
+tool_resp:  <audio> [step N probe clip]
+
+# repeated for each iteration step
+
+assistant:  FINAL ASSESSMENT (complete): [2-sentence perceptual summary]
+            — or —
+            FINAL ASSESSMENT (budget exhausted): [summary of progress and remaining gap]
+```
+
+Total audio per record: 2 + N clips (GT + default probe + N step probes). At ~94.5 tokens/sec, a 10-step conversation with typical clip lengths runs ~13–15K tokens total.
+
+**Two-stage commentary** is the recommended mode. Stage 1 calls Omni with audio to generate HEARD (perceptual observation) and HYPOTHESIS (synthesis cause). Stage 2 calls a text model to write PLAN (param inventory + rationale). This separation keeps the audio-grounded reasoning clean from the parameter-naming task.
+
+**GT-preset grounding for HYPOTHESIS**: at each step, the builder computes which subsystems still differ most between the cumulative preset and the ground-truth target (`compare_preset_path` in `path_gen.py`). The top-2 remaining subsystem names are injected into the HYPOTHESIS instruction prompt, forcing the model to reason about what actually still needs to change rather than hallucinating plausible-sounding causes. These are also stored in `meta.step_labels[].remaining_top_2` for offline grading.
+
+**HYPOTHESIS style rotation**: 4 style hint templates rotate by step number so consecutive steps don't produce structurally identical reasoning (acoustic-evidence → mechanism-first → prior-step-contrast → hedged-language, cycling).
+
+**Step 3 — grade and filter** (requires Qwen3-Omni at localhost:8000):
+
+```bash
+python scripts/grade_agent_sft.py \
+    --input data/prepared/agent_sft/main.jsonl \
+    --output data/prepared/agent_sft/main_graded.jsonl \
+    --llm-judge-server http://localhost:8000 \
+    --min-score 0.85 \
+    --verbose
+```
+
+**Scoring dimensions for `main` records:**
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| `plan_param_alignment` | 45% | LLM judge: does PLAN name the params that were actually changed? |
+| `section_structure` | 20% | HEARD / HYPOTHESIS / PLAN / FINAL ASSESSMENT all present each step |
+| `snake_case_clean` | 15% | No raw snake_case param names leaked into commentary text |
+| `hypothesis_grounding` | 15% | HYPOTHESIS mentions ≥1 of the top-2 remaining subsystem names from GT gap |
+| `format_consistent` | 5% | Consistent heading format across all steps |
+
+`overall` is a weighted sum of the above (normalized). `commentary_diversity` is computed and stored for diagnostics but excluded from the overall score (structural ceiling ~0.67 regardless of quality). Typical scores on well-generated data: mean ~0.97, range 0.94–1.00.
+
+**Smoke test** (12 samples, fast iteration):
+
+```bash
+# Generate 12 path/audio samples
+python scripts/render_iter_presets.py --generate 12 \
+    --output-dir outputs/smoke_test --wavetable-lib data/wavetable_lib.json
+
+# Build conversations
+python scripts/build_main_agent_sft_v2.py \
+    --manifest outputs/smoke_test/manifest.jsonl \
+    --index-npy outputs/wt_retrieval_baseline/wt_index.npz \
+    --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
+    --wavetable-lib data/wavetable_lib.json \
+    --out-jsonl outputs/smoke_test/main_agent_smoke.jsonl \
+    --max-samples 12 --max-steps 13 \
+    --omni-server http://localhost:8000 \
+    --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --commentary-mode two_stage \
+    --stage2-server http://localhost:8000 \
+    --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --clap-device cuda:0
+
+# Grade
+python scripts/grade_agent_sft.py \
+    --input outputs/smoke_test/main_agent_smoke.jsonl \
+    --output outputs/smoke_test/graded.jsonl \
+    --llm-judge-server http://localhost:8000 \
+    --verbose
+```
+
+### Hierarchical agent SFT builders (search / judge / main — wavetable retrieval)
+
+An earlier hierarchical pipeline builds datasets for three specialized agents that collaborate on wavetable selection (selecting the right oscillator wavetable from a 568-entry library given a target audio clip). This is distinct from the iterative preset recreation pipeline above.
+
+```bash
+# 1) Search-agent SFT
+python scripts/build_search_agent_sft.py \
+  --manifest outputs/wt_retrieval_eval15000_gt_wav_full/manifest.jsonl \
+  --out-jsonl data/prepared/agent_sft/search.jsonl \
+  --candidate-source oracle_mix8 --candidate-limit 24 \
+  --num-agents 4 --proposals-per-agent 3
+
+# 2) Judge-agent SFT (with candidate-order permutations)
+python scripts/build_judge_agent_sft.py \
+  --manifest outputs/wt_retrieval_eval15000_gt_wav_full/manifest.jsonl \
+  --out-jsonl data/prepared/agent_sft/judge.jsonl \
+  --candidate-source oracle_mix8 --candidate-limit 8 \
+  --select-k 3 --permutations 3
+
+# 3) Merge task datasets
+python scripts/merge_agent_sft.py \
+  --input data/prepared/agent_sft/search.jsonl \
+  --input data/prepared/agent_sft/judge.jsonl \
+  --output data/prepared/agent_sft/train_merged.jsonl \
+  --shuffle --seed 1337
 ```
 
 ### Train
@@ -327,9 +494,16 @@ maestro/
     phase1.py         # Manifest utilities for stem/MIDI corpora
 
 scripts/
+  render_iter_presets.py      # Batch-render GT + probe clips; write manifest.jsonl
+  build_main_agent_sft_v2.py  # Primary SFT builder: two-stage commentary + GT-grounding
+  grade_agent_sft.py          # Quality grader + LLM-as-judge filter
+  agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, probes
+  build_search_agent_sft.py   # Search-agent SFT: shard-parallel wavetable proposals
+  build_judge_agent_sft.py    # Judge-agent SFT: listwise candidate ranking
+  merge_agent_sft.py          # Merge task JSONL files, shuffle
+  build_iter_sft_dataset.py   # Earlier single-agent SFT assembler (Omni commentary)
   demo_iter_examples.py       # Generate demo conversations + render all audio
   verify_preset_path.py       # Diagnostic: compare target vs final cumulative preset
-  build_iter_sft_dataset.py   # Assemble multi-turn JSONL with Omni commentary
   reaper_render_probe.py      # Standalone: render REAPER track to /tmp/probe.wav
   render_vital_wavs.py        # General-purpose preset render script
   check_preset_diversity.py   # CLAP diversity audit
@@ -337,6 +511,8 @@ scripts/
   train_qwen25_omni_lora.py   # MS-Swift LoRA training launcher
 
 tests/
+  test_agent_sft_contracts.py # Contract tests for build_main_agent_sft_v2 (144 tests)
+  test_agent_sft_grading.py   # Tests for grade_agent_sft scoring logic
   test_path_gen_snippets.py   # Unit tests: display names, search/set snippets
   test_pipeline_v2.py         # Structural invariants: reapy API, no fictional CLI
   test_demo_iter.py           # Conversation builder tests
@@ -352,12 +528,12 @@ configs/
 
 **Implemented and working:**
 - Synthetic preset generator (`preset_gen.py`) with 6 archetypes
-- Wavetable library builder and loader
+- Wavetable library builder and loader (568 unique wavetables)
 - N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
-- Search-before-set snippet generation: synthetic reapy search/set code for each iteration
-- Preset fidelity diagnostic (`verify_preset_path.py`) categorising diffs by root cause
-- Demo conversation builder (`demo_iter_examples.py`) with matching note sequences across all clips
-- Multi-turn JSONL assembler (`build_iter_sft_dataset.py`) with Omni commentary
+- `render_iter_presets.py` — batch render of GT, default, and per-step probe clips; writes `manifest.jsonl`
+- `build_main_agent_sft_v2.py` — two-stage Omni commentary pipeline with GT-preset grounding and HYPOTHESIS style rotation
+- `grade_agent_sft.py` — heuristic + LLM-as-judge scoring with `hypothesis_grounding` metric
+- Hierarchical wavetable-retrieval SFT builders (search / judge agents)
 - Lua tuple pipeline for melody transcription SFT data
 - MS-Swift LoRA training scripts for Qwen2.5-Omni
 
