@@ -21,7 +21,9 @@ from scripts.grade_agent_sft import (
     _has_all_sections,
     _param_mentioned_in_text,
     _llm_judge_plan_step,
+    _score_clap_net_improvement,
     _score_hypothesis_grounding,
+    _score_plan_rationale_unique,
     llm_judge_main_record,
     score_main_record,
     score_search_record,
@@ -860,6 +862,241 @@ def test_overall_score_unaffected_by_low_diversity():
 
 
 # ---------------------------------------------------------------------------
+# CLAP monotonicity metric
+# ---------------------------------------------------------------------------
+
+def test_clap_net_improvement_returns_none_for_no_clap_data():
+    labels = [{"step": i, "clap_score": None} for i in range(1, 5)]
+    assert _score_clap_net_improvement(labels) is None
+
+
+def test_clap_net_improvement_returns_none_for_single_step():
+    labels = [{"step": 1, "clap_score": 0.5}]
+    assert _score_clap_net_improvement(labels) is None
+
+
+def test_clap_net_improvement_perfect_when_large_delta():
+    # delta = 0.55 - 0.25 = 0.30 → score 1.0 (at normalization ceiling)
+    # i=0: 0.25, i=4: 0.55 → delta exactly 0.30
+    labels = [{"step": i + 1, "clap_score": 0.25 + i * 0.075} for i in range(5)]
+    score = _score_clap_net_improvement(labels)
+    assert score == 1.0, f"delta>=0.30 should score 1.0, got {score}"
+
+
+def test_clap_net_improvement_zero_when_no_progress():
+    # final == first → delta=0
+    labels = [{"step": 1, "clap_score": 0.5}, {"step": 2, "clap_score": 0.5}]
+    assert _score_clap_net_improvement(labels) == 0.0
+
+
+def test_clap_net_improvement_zero_when_degrading():
+    # final < first → clamped to 0.0
+    labels = [{"step": i, "clap_score": 0.8 - i * 0.05} for i in range(1, 6)]
+    assert _score_clap_net_improvement(labels) == 0.0
+
+
+def test_clap_net_improvement_partial_score():
+    # delta = 0.55 - 0.40 = 0.15 → 0.15/0.30 = 0.5
+    labels = [
+        {"step": 1, "clap_score": 0.40},
+        {"step": 2, "clap_score": 0.45},  # intermediate is ignored
+        {"step": 3, "clap_score": 0.30},  # intermediate is ignored
+        {"step": 4, "clap_score": 0.55},  # only last matters
+    ]
+    score = _score_clap_net_improvement(labels)
+    assert abs(score - 0.5) < 1e-4, f"Expected 0.5 (delta=0.15/0.30), got {score}"
+
+
+def test_clap_net_improvement_ignores_intermediate_fluctuations():
+    # Noisy path: intermediate steps dip, but first=0.40, last=0.70 → delta=0.30 → 1.0
+    labels = [
+        {"step": 1, "clap_score": 0.40},
+        {"step": 2, "clap_score": 0.35},  # dip
+        {"step": 3, "clap_score": 0.32},  # worse
+        {"step": 4, "clap_score": 0.45},
+        {"step": 5, "clap_score": 0.70},  # big jump at end
+    ]
+    score = _score_clap_net_improvement(labels)
+    assert score == 1.0, f"Should be 1.0 (net delta=0.30), got {score}"
+
+
+def test_clap_net_improvement_reduces_overall_when_low():
+    """A path that degrades CLAP every step should score lower than one that improves."""
+    from unittest.mock import patch
+
+    def _make_record(clap_scores: list) -> dict:
+        return {
+            "id": "test",
+            "task_type": "main",
+            "messages": [
+                {"role": "user", "content": "target"},
+                *[
+                    {"role": "assistant", "content": f"HEARD: bright sound.\n\nHYPOTHESIS: The compressor is off.\n\nPLAN: Adjusting step {i}. This improves tone."}
+                    for i in range(len(clap_scores))
+                ],
+            ],
+            "labels": {},
+            "meta": {
+                "step_labels": [
+                    {"step": i + 1, "clap_score": s, "remaining_top_2": "compressor and reverb",
+                     "params_delta": [{"name": f"env_{i}_attack"}]}
+                    for i, s in enumerate(clap_scores)
+                ]
+            },
+        }
+
+    with patch("scripts.grade_agent_sft._HTTPX_AVAILABLE", False):
+        improving = score_main_record(_make_record([0.3, 0.4, 0.5, 0.6, 0.7]))
+        degrading = score_main_record(_make_record([0.7, 0.6, 0.5, 0.4, 0.3]))
+
+    assert improving["overall"] > degrading["overall"], (
+        f"Improving CLAP path ({improving['overall']:.4f}) should outscore "
+        f"degrading path ({degrading['overall']:.4f})"
+    )
+
+
+def test_clap_net_improvement_in_score_output():
+    """clap_net_improvement must appear in score_main_record output."""
+    from unittest.mock import patch
+
+    record = {
+        "id": "test",
+        "task_type": "main",
+        "messages": [
+            {"role": "user", "content": "target"},
+            {"role": "assistant", "content": "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting cutoff. This brightens tone."},
+        ],
+        "labels": {},
+        "meta": {
+            "step_labels": [{"step": 1, "clap_score": 0.5, "remaining_top_2": None, "params_delta": []}]
+        },
+    }
+    with patch("scripts.grade_agent_sft._HTTPX_AVAILABLE", False):
+        result = score_main_record(record)
+    assert "clap_net_improvement" in result
+
+
+# ---------------------------------------------------------------------------
+# Plan rationale uniqueness metric
+# ---------------------------------------------------------------------------
+
+def test_plan_rationale_unique_returns_none_for_single_turn():
+    turns = ["HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting filter 1 cutoff. This brightens the tone."]
+    assert _score_plan_rationale_unique(turns) is None
+
+
+def test_plan_rationale_unique_perfect_when_all_different():
+    turns = [
+        "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting filter 1 cutoff. This brightens the overall tone significantly.",
+        "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting envelope attack time. This controls the transient punch.",
+        "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting oscillator wave frame. This adds harmonic complexity to the timbre.",
+    ]
+    score = _score_plan_rationale_unique(turns)
+    assert score == 1.0, f"All different sentences should score 1.0, got {score}"
+
+
+def test_plan_rationale_unique_zero_when_all_identical():
+    repeated = "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting filter 1 cutoff. These changes will enable deeper filter modulation and stereo movement shaping the evolving brightness."
+    turns = [repeated] * 5
+    score = _score_plan_rationale_unique(turns)
+    assert score == 0.0, f"All identical sentences should score 0.0, got {score}"
+
+
+def test_plan_rationale_unique_partial_repetition():
+    turns = [
+        "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting filter 1 cutoff. These changes will unlock deeper filter modulation and stereo movement.",
+        "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting envelope 1 attack. These changes will enable deeper filter modulation and stereo movement.",  # near-identical s2
+        "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting oscillator wave. This adds rich harmonic overtones not present in the current preset.",  # clearly different
+    ]
+    score = _score_plan_rationale_unique(turns)
+    # pair(0,1): similar → 0.0; pair(1,2): different → 1.0 → mean = 0.5
+    assert score == 0.5, f"Expected 0.5 for one similar / one different pair, got {score}"
+
+
+def test_plan_rationale_unique_reduces_overall_score():
+    """A path with repeated PLAN Sentence 2 should score lower than one with unique rationales."""
+    from unittest.mock import patch
+
+    def _make_record(turns_content: list[str]) -> dict:
+        return {
+            "id": "test",
+            "task_type": "main",
+            "messages": [
+                {"role": "user", "content": "target"},
+                *[{"role": "assistant", "content": c} for c in turns_content],
+            ],
+            "labels": {},
+            "meta": {"step_labels": []},
+        }
+
+    boilerplate = "These changes will enable deeper filter modulation and stereo movement shaping the evolving brightness."
+    unique_rationales = [
+        f"HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting {p}. {r}"
+        for p, r in [
+            ("filter 1 cutoff", "This brightens the upper harmonic range considerably."),
+            ("envelope attack", "This sharpens the transient punch for percussive impact."),
+            ("lfo rate", "This introduces rhythmic timbral movement to the sustained tone."),
+        ]
+    ]
+    repeated_rationales = [
+        f"HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting {p}. {boilerplate}"
+        for p in ["filter 1 cutoff", "envelope attack", "lfo rate"]
+    ]
+
+    with patch("scripts.grade_agent_sft._HTTPX_AVAILABLE", False):
+        good = score_main_record(_make_record(unique_rationales))
+        bad = score_main_record(_make_record(repeated_rationales))
+
+    assert good["overall"] > bad["overall"], (
+        f"Unique rationales ({good['overall']:.4f}) should outscore "
+        f"repeated rationales ({bad['overall']:.4f})"
+    )
+
+
+def test_plan_rationale_unique_in_score_output():
+    """plan_rationale_unique must appear in score_main_record output."""
+    from unittest.mock import patch
+
+    record = {
+        "id": "test",
+        "task_type": "main",
+        "messages": [
+            {"role": "user", "content": "target"},
+            {"role": "assistant", "content": "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting cutoff. This brightens tone."},
+            {"role": "assistant", "content": "HEARD: a\n\nHYPOTHESIS: b\n\nPLAN: Adjusting attack. This sharpens the hit."},
+        ],
+        "labels": {},
+        "meta": {"step_labels": []},
+    }
+    with patch("scripts.grade_agent_sft._HTTPX_AVAILABLE", False):
+        result = score_main_record(record)
+
+    assert "plan_rationale_unique" in result
+    assert result["plan_rationale_unique"] is not None
+
+
+def test_plan_rationale_unique_excluded_from_weights_when_none():
+    """When plan_rationale_unique is None (single step), overall must still be computed."""
+    from unittest.mock import patch
+
+    record = {
+        "id": "test",
+        "task_type": "main",
+        "messages": [
+            {"role": "user", "content": "target"},
+            {"role": "assistant", "content": "HEARD: x\n\nHYPOTHESIS: y\n\nPLAN: Adjusting cutoff. This brightens tone."},
+        ],
+        "labels": {},
+        "meta": {"step_labels": []},
+    }
+    with patch("scripts.grade_agent_sft._HTTPX_AVAILABLE", False):
+        result = score_main_record(record)
+
+    assert result["plan_rationale_unique"] is None
+    assert result["overall"] > 0.0, "overall should still be computed when plan_rationale_unique is None"
+
+
+# ---------------------------------------------------------------------------
 # Hypothesis grounding metric
 # ---------------------------------------------------------------------------
 
@@ -983,3 +1220,156 @@ def test_low_hypothesis_grounding_reduces_overall():
 
     assert good["overall"] > bad["overall"], \
         f"Good grounding ({good['overall']}) should score higher than bad grounding ({bad['overall']})"
+
+
+# ---------------------------------------------------------------------------
+# Parallel grading tests
+# ---------------------------------------------------------------------------
+
+def _make_grading_record(record_id: str, score: float) -> dict:
+    """Return a minimal main record; mock score_record will return *score*."""
+    return {
+        "id": record_id,
+        "task_type": "main",
+        "messages": [],
+        "meta": {"step_labels": []},
+    }
+
+
+def test_grade_file_parallel_same_records_as_serial(tmp_path):
+    """grade_file with workers>1 must produce same record set as workers=1."""
+    import json
+    from unittest.mock import patch
+
+    records = [_make_grading_record(f"r{i}", 0.9) for i in range(8)]
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    fake_scores = {"overall": 0.9, "plan_param_alignment": 1.0}
+
+    with patch("scripts.grade_agent_sft.score_record", return_value=fake_scores):
+        out_serial = tmp_path / "serial.jsonl"
+        grade_file(input_file, out_serial, workers=1)
+
+        out_parallel = tmp_path / "parallel.jsonl"
+        grade_file(input_file, out_parallel, workers=4)
+
+    serial_ids = [json.loads(l)["id"] for l in open(out_serial)]
+    parallel_ids = [json.loads(l)["id"] for l in open(out_parallel)]
+    assert serial_ids == parallel_ids, "Output IDs must match between serial and parallel runs"
+
+
+def test_grade_file_parallel_preserves_input_order(tmp_path):
+    """Output record order must match input order even when workers > 1."""
+    import json
+    import time
+    from unittest.mock import patch
+
+    n = 12
+    records = [_make_grading_record(f"r{i:02d}", 1.0) for i in range(n)]
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    def _slow_score(record, **kwargs):
+        # Reverse-order delay: early records sleep longer, so without order
+        # preservation the output would be reversed.
+        idx = int(record["id"][1:])
+        time.sleep((n - idx) * 0.01)
+        return {"overall": float(idx) / n}
+
+    with patch("scripts.grade_agent_sft.score_record", side_effect=_slow_score):
+        out = tmp_path / "out.jsonl"
+        grade_file(input_file, out, workers=n)
+
+    ids = [json.loads(l)["id"] for l in open(out)]
+    assert ids == [f"r{i:02d}" for i in range(n)], f"Order not preserved: {ids}"
+
+
+def test_grade_file_workers_1_produces_correct_output(tmp_path):
+    """workers=1 (serial path) must produce correctly ordered, correctly scored output."""
+    import json
+    from unittest.mock import patch
+
+    records = [_make_grading_record(f"r{i}", 0.8) for i in range(4)]
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    fake_scores = {"overall": 0.8}
+    with patch("scripts.grade_agent_sft.score_record", return_value=fake_scores):
+        out = tmp_path / "out.jsonl"
+        grade_file(input_file, out, workers=1)
+
+    out_records = [json.loads(l) for l in open(out)]
+    assert len(out_records) == 4
+    assert [r["id"] for r in out_records] == [f"r{i}" for i in range(4)]
+
+
+def test_grade_file_failed_record_does_not_kill_others(tmp_path):
+    """A record that raises during scoring should warn but not abort the run.
+
+    The failed record is kept in output with empty quality_scores rather than
+    silently dropped — callers can inspect records with missing 'overall' scores.
+    """
+    import json
+    from unittest.mock import patch
+
+    records = [_make_grading_record(f"r{i}", 0.9) for i in range(6)]
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    call_count = [0]
+
+    def _sometimes_fails(record, **kwargs):
+        call_count[0] += 1
+        if record["id"] == "r2":
+            raise RuntimeError("simulated scoring failure")
+        return {"overall": 0.9}
+
+    with patch("scripts.grade_agent_sft.score_record", side_effect=_sometimes_fails):
+        out = tmp_path / "out.jsonl"
+        # Should not raise despite one record failing
+        grade_file(input_file, out, workers=4)
+
+    assert call_count[0] == 6, "All 6 records should have been attempted"
+    out_records = {json.loads(l)["id"]: json.loads(l) for l in open(out)}
+    assert len(out_records) == 6, "All 6 records should be in output (failed gets empty scores)"
+    # The failed record gets an empty quality_scores dict (no 'overall' key)
+    assert out_records["r2"]["quality_scores"] == {}, "Failed record should have empty quality_scores"
+    # Successful records have their scores intact
+    assert out_records["r0"]["quality_scores"]["overall"] == 0.9
+
+
+def test_grade_file_parallel_score_values_match_serial(tmp_path):
+    """Scores returned parallel must be identical to those returned serial."""
+    import json
+    from unittest.mock import patch
+
+    records = [_make_grading_record(f"r{i}", 0.0) for i in range(6)]
+    input_file = tmp_path / "input.jsonl"
+    with open(input_file, "w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    # Return a unique score per record to detect any mixing
+    def _unique_score(record, **kwargs):
+        idx = int(record["id"][1:])
+        return {"overall": round(idx * 0.1 + 0.1, 3)}
+
+    with patch("scripts.grade_agent_sft.score_record", side_effect=_unique_score):
+        out_s = tmp_path / "serial.jsonl"
+        grade_file(input_file, out_s, workers=1)
+        out_p = tmp_path / "parallel.jsonl"
+        grade_file(input_file, out_p, workers=6)
+
+    serial_scores = [json.loads(l)["quality_scores"]["overall"] for l in open(out_s)]
+    parallel_scores = [json.loads(l)["quality_scores"]["overall"] for l in open(out_p)]
+    assert serial_scores == parallel_scores, \
+        f"Score mismatch: serial={serial_scores}, parallel={parallel_scores}"

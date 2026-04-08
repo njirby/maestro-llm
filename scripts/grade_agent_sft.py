@@ -301,6 +301,55 @@ def llm_judge_main_record(
 # Per-task-type scorers
 # ---------------------------------------------------------------------------
 
+def _score_clap_net_improvement(step_labels: list[dict]) -> float | None:
+    """Net CLAP improvement from first step to last, normalized to [0, 1].
+
+    Measures whether the path made meaningful net progress toward the GT audio,
+    regardless of noisy intermediate steps. A delta of +0.30 cosine units or more
+    scores 1.0; a delta of 0 or below scores 0.0; values in between scale linearly.
+
+    This replaced clap_monotonic, which penalized intentional path_gen noise injection
+    that causes individual steps to fluctuate even when the path is converging.
+    """
+    scores = [sl.get("clap_score") for sl in step_labels if sl.get("clap_score") is not None]
+    if len(scores) < 2:
+        return None
+    delta = scores[-1] - scores[0]
+    return round(min(1.0, max(0.0, delta / 0.30)), 4)
+
+
+def _score_plan_rationale_unique(commentary_turns: list[str]) -> float | None:
+    """Fraction of consecutive PLAN Sentence-2 pairs that are sufficiently different.
+
+    PLAN Sentence 1 is pre-seeded with the parameter inventory and is always correct.
+    Sentence 2 is the free-form rationale. This metric flags paths where the model
+    degrades into copy-pasting the same boilerplate rationale across steps.
+
+    For each consecutive pair (step N, step N+1), computes Jaccard word-overlap on
+    their Sentence 2 texts. A pair scores 1.0 if overlap < 0.60, else 0.0.
+    Returns None when fewer than 2 turns have an extractable Sentence 2.
+    """
+    def _plan_sent2(turn: str) -> str | None:
+        plan = _extract_section(turn, "PLAN:")
+        if not plan:
+            return None
+        sents = [s.strip() for s in plan.split(".") if len(s.strip()) > 15]
+        return sents[1] if len(sents) > 1 else (sents[0] if sents else None)
+
+    sent2s = [s for t in commentary_turns if (s := _plan_sent2(t)) is not None]
+    if len(sent2s) < 2:
+        return None
+
+    scores: list[float] = []
+    for a, b in zip(sent2s, sent2s[1:]):
+        a_words = set(a.lower().split())
+        b_words = set(b.lower().split())
+        union = a_words | b_words
+        jaccard = len(a_words & b_words) / len(union) if union else 1.0
+        scores.append(1.0 if jaccard < 0.60 else 0.0)
+    return round(sum(scores) / len(scores), 4)
+
+
 def _score_hypothesis_grounding(
     commentary_turns: list[str],
     step_labels: list[dict],
@@ -345,9 +394,18 @@ def score_main_record(
     ]
     assistant_turns = [m["content"] for m in messages if m["role"] == "assistant"]
 
-    # 1. Section structure
-    if commentary_turns:
-        section_structure = sum(_has_all_sections(t) for t in commentary_turns) / len(commentary_turns)
+    # Separate listening turns (HEARD/HYPOTHESIS/PLAN) from planning-only turns (PLAN only).
+    # Planning turns are exempt from section_structure and hypothesis_grounding checks —
+    # they are intentionally PLAN-only by design (audio gate suppressed the listen turn).
+    listening_turns = [t for t in commentary_turns if "HEARD:" in t]
+    planning_only_turns = [t for t in commentary_turns if "HEARD:" not in t and "PLAN:" in t]
+
+    # 1. Section structure — only applies to listening turns (full HEARD/HYPOTHESIS/PLAN expected).
+    if listening_turns:
+        section_structure = sum(_has_all_sections(t) for t in listening_turns) / len(listening_turns)
+    elif commentary_turns:
+        # All turns are planning-only — no structure to check; treat as N/A → 1.0.
+        section_structure = 1.0
     else:
         section_structure = 0.0
 
@@ -409,37 +467,61 @@ def score_main_record(
             })
         plan_param_alignment = aligned / assessable if assessable > 0 else None
 
-    # 6. Hypothesis grounding — fraction of steps where HYPOTHESIS mentions a top remaining
+    # 6. Plan rationale uniqueness — penalises paths where PLAN Sentence 2 degrades
+    # into repeated boilerplate. plan_param_alignment is always 1.0 because Sentence 1
+    # is pre-seeded with the correct param inventory; this metric captures the quality
+    # of the free-form Sentence 2 rationale instead.
+    plan_rationale_unique = _score_plan_rationale_unique(commentary_turns)
+
+    # 7. Hypothesis grounding — fraction of steps where HYPOTHESIS mentions a top remaining
     # subsystem from the GT-preset gap. Requires remaining_top_2 in step_labels (built by
     # build_main_agent_sft_v2 when target_preset is available).
-    hypothesis_grounding = _score_hypothesis_grounding(commentary_turns, step_labels)
+    # Only listening turns have HYPOTHESIS sections; planning-only turns are exempt.
+    listening_step_labels = [
+        lbl for lbl in step_labels if not lbl.get("is_planning_step", False)
+    ] if step_labels else step_labels
+    hypothesis_grounding = _score_hypothesis_grounding(listening_turns, listening_step_labels)
 
-    # 7. Optional LLM judge — replaces heuristic plan_param_alignment in overall score
+    # 8. CLAP net improvement — did the path make meaningful net progress toward GT audio?
+    # Measures final-vs-initial CLAP delta normalized to [0,1]. Replaces clap_monotonic
+    # which penalized intentional path_gen noise on intermediate steps.
+    clap_net_improvement = _score_clap_net_improvement(step_labels)
+
+    # 9. Optional LLM judge — kept for diagnostics/transparency but excluded from overall
+    # score because plan_param_alignment is structurally guaranteed to be 1.0 (Sentence 1
+    # is pre-seeded with ground-truth params), so the judge score carries no signal.
     llm_results: dict[str, Any] = {}
     if llm_judge_server:
         llm_results = llm_judge_main_record(record, llm_judge_server, llm_judge_model)
 
     llm_alignment: float | None = llm_results.get("llm_plan_alignment")
 
-    # Overall weighted score — use LLM alignment as primary signal when available
-    alignment_signal = llm_alignment if llm_alignment is not None else plan_param_alignment
-    # commentary_diversity is computed and reported but excluded from overall — it has a
-    # structural ceiling (~0.67) regardless of content quality in this domain.
-    # hypothesis_grounding measures whether HYPOTHESIS correctly names remaining subsystems.
+    # Overall weighted score.
+    # plan_param_alignment / llm_plan_alignment are excluded from the overall score because
+    # Sentence 1 of PLAN is pre-seeded with the ground-truth param inventory, making
+    # alignment structurally guaranteed — it carries no training-quality signal.
+    # commentary_diversity is also excluded — it has a structural ceiling (~0.67) in this
+    # domain regardless of content quality.
+    # section_structure is kept at a small weight as a correctness sanity check; it has
+    # been 1.0 in all observed data (format is reliable) so it carries minimal influence.
     weights = {
-        "plan_param_alignment":  0.45,
-        "section_structure":     0.20,
-        "snake_case_clean":      0.15,
+        "clap_net_improvement":  0.30,
+        "plan_rationale_unique": 0.25,
+        "hypothesis_grounding":  0.25,
+        "section_structure":     0.10,
+        "snake_case_clean":      0.05,
         "format_consistent":     0.05,
-        "hypothesis_grounding":  0.15,
     }
     raw = {
-        "plan_param_alignment": alignment_signal,
+        "clap_net_improvement": clap_net_improvement,
+        "plan_rationale_unique": plan_rationale_unique,
+        "hypothesis_grounding": hypothesis_grounding,
         "section_structure": section_structure,
         "snake_case_clean": snake_case_clean,
         "commentary_diversity": commentary_diversity,
         "format_consistent": format_consistent,
-        "hypothesis_grounding": hypothesis_grounding,
+        # Keep alignment scores as diagnostics
+        "plan_param_alignment": plan_param_alignment,
     }
     weighted_sum = 0.0
     weight_sum = 0.0
@@ -452,7 +534,6 @@ def score_main_record(
 
     result: dict[str, Any] = {
         **raw,
-        # Always keep heuristic score for transparency; overall uses whichever is active
         "heuristic_plan_param_alignment": plan_param_alignment,
         "overall": round(overall, 4),
         "per_step_alignment": per_step_alignment,
@@ -579,6 +660,7 @@ def grade_file(
     verbose: bool = False,
     llm_judge_server: str | None = "http://localhost:8000",
     llm_judge_model: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+    workers: int = 1,
 ) -> dict[str, Any]:
     """Grade all records in *input_path*, write scored output to *output_path*.
 
@@ -586,8 +668,14 @@ def grade_file(
     ``http://localhost:8000``.  Pass ``llm_judge_server=None`` to disable it and
     fall back to heuristic bigram matching only.
 
+    ``workers`` controls how many records are scored concurrently. Each record's
+    scoring is independent HTTP calls, so threading scales well. Defaults to 1
+    (serial). Output order always matches input order regardless of workers.
+
     Returns a summary dict with per-task-type stats.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     rows: list[dict] = []
     with open(input_path) as f:
         for line in f:
@@ -595,11 +683,35 @@ def grade_file(
             if line:
                 rows.append(json.loads(line))
 
+    # Score all records, in parallel if workers > 1. Results keyed by input index
+    # so output order is always deterministic regardless of completion order.
+    scores_by_idx: dict[int, dict] = {}
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(score_record, record,
+                            llm_judge_server=llm_judge_server,
+                            llm_judge_model=llm_judge_model): i
+                for i, record in enumerate(rows)
+            }
+            for fut in as_completed(futs):
+                i = futs[fut]
+                try:
+                    scores_by_idx[i] = fut.result()
+                except Exception as exc:
+                    print(f"WARNING: record {i} ({rows[i].get('id','?')}) failed scoring: {exc}")
+                    scores_by_idx[i] = {}
+    else:
+        for i, record in enumerate(rows):
+            scores_by_idx[i] = score_record(
+                record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model
+            )
+
     scored: list[dict] = []
     kept = 0
     all_scores: list[tuple[str, float]] = []  # (task, overall) for summary stats
-    for record in rows:
-        scores = score_record(record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model)
+    for i, record in enumerate(rows):
+        scores = scores_by_idx[i]
         record_out = dict(record)
         record_out["quality_scores"] = scores
         overall = scores.get("overall")
@@ -672,6 +784,13 @@ def main() -> None:
         action="store_true",
         help="Disable LLM-as-judge scoring and use heuristic bigram matching only.",
     )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of records to score concurrently (default: 4). Each record's scoring "
+             "is independent HTTP calls so threading scales well.",
+    )
     args = ap.parse_args()
 
     summary = grade_file(
@@ -681,6 +800,7 @@ def main() -> None:
         verbose=args.verbose,
         llm_judge_server=None if args.no_llm_judge else args.llm_judge_server,
         llm_judge_model=args.llm_judge_model,
+        workers=args.workers,
     )
     print(json.dumps(summary, indent=2))
 

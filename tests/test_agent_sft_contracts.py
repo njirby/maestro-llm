@@ -661,28 +661,24 @@ def test_clap_imperceptible_threshold_exported():
 
 
 def test_imperceptible_step_uses_template_not_audio(tmp_path):
-    """When clap_delta < threshold, two_stage commentary must skip audio Stage 1
-    and produce 'Minimal perceptual change' in the HEARD section."""
+    """When is_planning_step=True, two_stage commentary must skip audio Stage 1
+    and produce a PLAN-only response (no HEARD/HYPOTHESIS), making only 1 HTTP call."""
     from unittest.mock import patch, MagicMock
-    from scripts.build_main_agent_sft_v2 import (
-        _call_omni_commentary_two_stage,
-        CLAP_IMPERCEPTIBLE_THRESHOLD,
-    )
+    from scripts.build_main_agent_sft_v2 import _call_omni_commentary_two_stage
 
     # Write stub WAV files so open() calls succeed.
     gt_wav = tmp_path / "gt.wav"
     iter_wav = tmp_path / "iter.wav"
     prior_wav = tmp_path / "prior.wav"
     for p in (gt_wav, iter_wav, prior_wav):
-        p.write_bytes(b"\x00" * 44)  # minimal stub, not read for audio in imperceptible path
+        p.write_bytes(b"\x00" * 44)  # minimal stub, not read in planning path
 
     step = {"primary_family": "filter", "support_family": "env", "search_keyword": "cutoff"}
     params_delta = [{"name": "filter_1_cutoff", "from_norm": 0.5, "to_norm": 0.52, "mistake": False}]
 
-    # Mock stage2 server to return a canned response that echoes the heard_text.
     mock_resp = MagicMock()
     mock_resp.json.return_value = {
-        "choices": [{"message": {"content": "HEARD: {{heard}}\n\nHYPOTHESIS: x\n\nPLAN: adjust filter cutoff."}}]
+        "choices": [{"message": {"content": "PLAN: Adjusting filter 1 cutoff. These sub-perceptual changes prepare the filter for the next audible step."}}]
     }
     mock_resp.raise_for_status = MagicMock()
 
@@ -719,21 +715,24 @@ def test_imperceptible_step_uses_template_not_audio(tmp_path):
             stage2_server="http://localhost:8000",
             stage2_model="test-model",
             params_delta=params_delta,
-            clap_delta=CLAP_IMPERCEPTIBLE_THRESHOLD * 0.5,  # below threshold
+            clap_delta=0.005,  # below any gate threshold
             prior_iter_wav=str(prior_wav),
+            is_planning_step=True,  # gate decided this is a planning step
         )
 
-    # Stage 2 should have been called once (with the imperceptible template as heard_text).
+    # Planning path: only 1 HTTP call (Stage 2 text-only, no Stage 1 audio calls).
     assert mock_client.post.call_count == 1, \
-        f"Expected 1 call (Stage 2 only), got {mock_client.post.call_count}"
+        f"Expected 1 call (planning path, Stage 2 only), got {mock_client.post.call_count}"
 
-    # The Stage 2 prompt should contain the imperceptible acknowledgment.
+    # The prompt should mention sub-perceptual/planning context and request PLAN only.
     assert captured_prompts, "No prompts captured"
     combined = " ".join(captured_prompts)
     assert any(kw in combined for kw in (
-        "Minimal perceptual change", "perceptual threshold", "below threshold",
-        "sub-perceptual", "no audible difference"
-    )), f"Expected imperceptible acknowledgment in prompt, got: {combined[:300]}"
+        "no audible difference", "sub-perceptual", "PLAN", "planning"
+    )), f"Expected planning context in prompt, got: {combined[:300]}"
+
+    # Result should be the mocked PLAN-only response.
+    assert "PLAN:" in result
 
 
 def test_three_clip_stage1_makes_two_omni_calls(tmp_path):
@@ -1479,3 +1478,100 @@ def test_remaining_delta_context_uses_gt_preset_gap():
     # New path: step_gap["context_str"] takes precedence
     assert 'step_gap["context_str"]' in src or "step_gap" in src, \
         "step_gap result not used in main()"
+
+
+# ---------------------------------------------------------------------------
+# Parallel builder tests
+# ---------------------------------------------------------------------------
+
+def test_builder_has_workers_arg():
+    """build_main_agent_sft_v2.main() must accept a --workers argument."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert "--workers" in src, "--workers argument missing from main()"
+    assert "workers" in src, "workers variable not used in main()"
+
+
+def test_builder_uses_thread_pool_executor():
+    """main() must use ThreadPoolExecutor for parallelism."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert "ThreadPoolExecutor" in src, "ThreadPoolExecutor not found in main()"
+    assert "as_completed" in src, "as_completed not found in main()"
+
+
+def test_builder_serial_lock_guards_vita_and_clap():
+    """_process_entry must acquire a lock before vita/CLAP calls."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    # The lock must be acquired before ensure_candidate_probes_for_names (vita)
+    lock_pos = src.index("_serial_lock")
+    probe_pos = src.index("ensure_candidate_probes_for_names")
+    assert lock_pos < probe_pos, "_serial_lock must appear before ensure_candidate_probes_for_names"
+    # choose_candidate_pool (CLAP) must also be inside the lock
+    clap_pos = src.index("choose_candidate_pool")
+    assert lock_pos < clap_pos, "_serial_lock must appear before choose_candidate_pool"
+
+
+def test_builder_output_order_deterministic():
+    """Records must be sorted by input index, not completion order."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    # Must sort by index before writing
+    assert "sorted(records_by_idx)" in src, \
+        "records_by_idx must be sorted by index to guarantee output order"
+
+
+def test_builder_worker_errors_handled_gracefully():
+    """Failed entries must log a warning and be skipped, not abort the run."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert "WARNING" in src, "No WARNING message for failed entries"
+    assert "except Exception" in src, "No exception handler for failed entries"
+
+
+def test_builder_workers_1_skips_thread_pool():
+    """When workers=1, the serial path must be used (no ThreadPoolExecutor)."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    # The code must branch on workers > 1
+    assert "workers > 1" in src or "args.workers > 1" in src, \
+        "No branch on workers > 1; serial path may be missing"
+
+
+def test_builder_process_entry_returns_none_on_skip():
+    """_process_entry must return None for entries that should be skipped."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert "return None" in src, "_process_entry must return None for skipped entries"
+
+
+def test_builder_record_collected_via_return_not_append():
+    """The parallel design requires _process_entry to return the record, not append to a list."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert "return [record]" in src or "return record" in src, \
+        "_process_entry must return record (not append)"
+    # The old pattern records.append(record) should be replaced
+    assert "records.append(record)" not in src, \
+        "records.append(record) still present; should be return record"
+
+
+def test_step_labels_includes_clap_score():
+    """step_labels must include a clap_score field populated at build time."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert '"clap_score"' in src, "clap_score field missing from step_labels"
+    assert "step_clap_scores" in src, "step_clap_scores dict not computed in main()"
+    assert "embedder.cosine_paths" in src.split("step_clap_scores")[1].split("step_labels")[0] or \
+           "embedder.cosine_paths" in src, \
+        "embedder.cosine_paths not called for per-step CLAP computation"

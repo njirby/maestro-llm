@@ -5,6 +5,8 @@ import argparse
 import base64
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -499,6 +501,8 @@ def _call_omni_commentary(
     remaining_delta_context: str | None = None,
     prior_iter_wav: str | None = None,  # unused in single-call mode
     clap_delta: float | None = None,  # unused in single-call mode
+    is_planning_step: bool = False,
+    planner_stage: str | None = None,
 ) -> str:
     """Call the hosted Omni model for grounded HEARD/HYPOTHESIS/PLAN commentary.
     Falls back to the template string if the server is unavailable."""
@@ -519,6 +523,42 @@ def _call_omni_commentary(
         f"Still needs to change: {remaining_delta_context}\n"
         if remaining_delta_context else ""
     )
+
+    # Planning steps: text-only, PLAN section only — no HEARD/HYPOTHESIS, no audio.
+    if is_planning_step:
+        if params_delta:
+            params_str = _group_params_for_plan(params_delta)
+            plan_sentence1 = f"Adjusting {params_str}."
+        else:
+            plan_sentence1 = "Applying parameter updates."
+        planning_prompt = (
+            f"You are a music production AI agent. Step {step_num} applies parameter changes "
+            f"that produce no audible difference yet — the timbral effect will become perceptible "
+            f"after additional parameters are adjusted.\n\n"
+            f"Parameter changes: {param_summary}\n"
+            f"{delta_ctx}\n"
+            f"{remaining_str}"
+            f"Write a PLAN section only (2 sentences):\n"
+            f"Sentence 1 — copy this exactly: \"{plan_sentence1}\"\n"
+            f"Sentence 2 — one sentence explaining how these structural changes set up the "
+            f"next audible step toward the target sound.\n\n"
+            f"Output only: PLAN: <sentence 1> <sentence 2>"
+        )
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": planning_prompt}],
+            "max_tokens": 120,
+            "temperature": 0.4,
+        }
+        try:
+            with httpx.Client() as client:
+                resp = client.post(
+                    f"{omni_server}/v1/chat/completions", json=payload, timeout=60.0
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception:
+            return f"PLAN: {plan_sentence1} These precision adjustments prepare the preset for the next audible improvement step."
 
     with open(gt_wav, "rb") as f:
         gt_b64 = base64.b64encode(f.read()).decode()
@@ -600,6 +640,8 @@ def _call_omni_commentary_two_stage(
     remaining_delta_context: str | None = None,
     prior_iter_wav: str | None = None,
     clap_delta: float | None = None,
+    planner_stage: str | None = None,
+    is_planning_step: bool = False,
 ) -> str:
     """Two-stage commentary: Stage 1 Omni describes audio only; Stage 2 text-only
     model integrates the description with params_delta to produce HEARD/HYPOTHESIS/PLAN.
@@ -630,11 +672,52 @@ def _call_omni_commentary_two_stage(
         if remaining_delta_context else ""
     )
 
+    # Planning steps: text-only Stage 2 call — PLAN section only, no HEARD/HYPOTHESIS, no audio.
+    if is_planning_step:
+        if params_delta:
+            params_str = _group_params_for_plan(params_delta)
+            plan_sentence1 = f"Adjusting {params_str}."
+        else:
+            plan_sentence1 = "Applying parameter updates."
+        planning_prompt = (
+            f"You are a music production AI agent. Step {step_num} applies parameter changes "
+            f"that produce no audible difference yet — the timbral effect will become perceptible "
+            f"after additional parameters are adjusted.\n\n"
+            f"Parameter changes: {param_summary}\n"
+            f"{delta_ctx}\n"
+            f"{remaining_str}"
+            f"Write a PLAN section only (2 sentences):\n"
+            f"Sentence 1 — copy this exactly: \"{plan_sentence1}\"\n"
+            f"Sentence 2 — one sentence explaining how these structural changes set up the "
+            f"next audible step toward the target {primary} sound.\n\n"
+            f"Output only: PLAN: <sentence 1> <sentence 2>"
+        )
+        s2_payload = {
+            "model": stage2_model,
+            "messages": [{"role": "user", "content": planning_prompt}],
+            "max_tokens": 120,
+            "temperature": 0.4,
+        }
+        try:
+            with httpx.Client() as client:
+                s2_resp = client.post(
+                    f"{stage2_server}/v1/chat/completions", json=s2_payload, timeout=60.0
+                )
+                s2_resp.raise_for_status()
+                return s2_resp.json()["choices"][0]["message"]["content"].strip()
+        except Exception:
+            return f"PLAN: {plan_sentence1} These precision adjustments prepare the preset for the next audible improvement step."
+
     # --- Stage 1: audio-only perceptual description ---
     # Outputs two separate observations that Stage 2 will use distinctly:
     #   step_change_obs  — what the previous step achieved (from Stage 1A, 3-clip only)
     #   remaining_gap_obs — what still differs from the target (from Stage 1B or GT-only)
-    is_imperceptible = clap_delta is not None and clap_delta < CLAP_IMPERCEPTIBLE_THRESHOLD
+    #
+    # Note: planning steps (is_planning_step=True) already returned early above, so by the time
+    # we reach here, the step is a genuine listening step — audio gate has confirmed |delta| is
+    # large enough to hear. Disable the old imperceptible skip so Stage 1 always runs for
+    # listening steps and the model actually describes what it hears.
+    is_imperceptible = False
 
     step_change_obs: str | None = None
     remaining_gap_obs: str | None = None
@@ -840,7 +923,20 @@ def _call_omni_commentary_two_stage(
 
     # When a prior hypothesis exists, require revision rather than restatement.
     prior_hypothesis = _extract_hypothesis(prev_commentary) if prev_commentary else None
-    if prior_hypothesis:
+    if planner_stage == "correction":
+        # Correction steps fix params that were deliberately set wrong in an earlier step.
+        # Hypothesis must: (1) identify what was wrong from audio evidence, (2) explain the
+        # correction, and (3) note what timbral gap still remains after this fix.
+        correction_params = [p["name"].replace("_", " ") for p in (params_delta or [])[:3]]
+        correction_str = ", ".join(correction_params) if correction_params else "earlier parameters"
+        hypothesis_instruction = (
+            f"HYPOTHESIS (2 sentences): Sentence 1 — based on what you hear, explain what was "
+            f"wrong with the earlier {correction_str} settings (too high, too low, wrong "
+            f"direction) and why correcting them helps close the gap. "
+            f"Sentence 2 — describe what timbral difference still remains between the current "
+            f"render and the target after this correction, referencing {remaining_top}."
+        )
+    elif prior_hypothesis:
         hypothesis_instruction = (
             f"HYPOTHESIS (1-2 sentences): Revise your synthesis hypothesis in light of what "
             f"this step's audio just revealed. The prior hypothesis was: "
@@ -926,9 +1022,10 @@ def _call_omni_closing_eval(
         verdict_label = "FINAL ASSESSMENT:"
     elif convergence.get("converged"):
         verdict_instruction = (
-            "The full planned iteration path has been completed. "
-            "Write 2 sentences: describe what the final render sounds like compared to the "
-            "target (timbre, texture, envelope), then confirm the recreation task is complete."
+            "All planned iterations have been applied. "
+            "Write 2 sentences: honestly describe how close the final render is to the target "
+            "(note any timbral, textural, or envelope differences you can still hear), "
+            "then confirm the iteration path is complete even if a small gap remains."
         )
         verdict_label = "FINAL ASSESSMENT (complete):"
     else:
@@ -968,7 +1065,7 @@ def _call_omni_closing_eval(
             return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception:
         if convergence and convergence.get("converged"):
-            return "FINAL ASSESSMENT (complete): The recreation is complete."
+            return "FINAL ASSESSMENT (complete): All planned iterations have been applied. The recreation path is complete."
         elif convergence:
             subs = list(convergence.get("by_subsystem", {}).keys())[:2]
             subs_str = ", ".join(subs) if subs else "several parameters"
@@ -1023,10 +1120,26 @@ def main() -> None:
     ap.add_argument("--trim-min-duration-s", type=float, default=0.5)
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
 
+    ap.add_argument("--audio-gate-threshold", type=float, default=0.01,
+        help="Absolute CLAP delta threshold. Steps with |delta| below this get PLAN-only turns "
+             "(no audio listen). Set to 0 to disable gating (listen every step). Default 0.01.")
+    ap.add_argument("--reanchor-gt-audio", action="store_true", default=False,
+        help="Re-attach GT audio to the intro of each chunked block 2+. Disabled by default: "
+             "the model is expected to reason from conversation context without re-listening to GT "
+             "every block, which produces higher-quality training signal and saves ~3000 tokens per block.")
+
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
     ap.add_argument("--omni-server", default="", help="Omni model server URL (empty = use template fallback).")
     ap.add_argument("--omni-model", default="Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of samples to process concurrently (default: 4). Omni calls are I/O-bound "
+             "so threading scales well. Vita (probe rendering) and CLAP (GPU) are serialized "
+             "internally via a shared lock; only Omni calls run in parallel.",
+    )
     ap.add_argument(
         "--commentary-mode",
         choices=["single", "two_stage"],
@@ -1035,6 +1148,16 @@ def main() -> None:
     )
     ap.add_argument("--stage2-server", default="", help="Stage 2 text model server URL (defaults to --omni-server).")
     ap.add_argument("--stage2-model", default="", help="Stage 2 model name (defaults to --omni-model).")
+    ap.add_argument(
+        "--window-tokens", type=int, default=None,
+        help="If set, split each conversation into blocks of at most this many tokens. "
+             "Each block re-includes GT audio + current-state audio as context prefix. "
+             "Requires soundfile + transformers tokenizer. Recommended: 12288.",
+    )
+    ap.add_argument(
+        "--audio-token-rate", type=float, default=94.5,
+        help="Tokens per second of audio for block budget estimation (default 94.5).",
+    )
     args = ap.parse_args()
 
     stage2_server = args.stage2_server or args.omni_server
@@ -1048,10 +1171,205 @@ def main() -> None:
     embedder = ClapEmbedder.create(args.clap_device)
     shortlist_data = build_clap_shortlist_data(args.index_npy, index_rows)
 
-    candidate_audio: dict[str, Path] = {}
-    records: list[dict] = []
+    # Load tokenizer once if chunking is requested.
+    _tok = None
+    if args.window_tokens:
+        from transformers import AutoTokenizer
+        _tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Omni-7B", trust_remote_code=True)
+        print(f"Chunking enabled: window_tokens={args.window_tokens}, tokenizer loaded.")
 
-    for entry in entries:
+    # Shared mutable probe cache. Serialized via _serial_lock.
+    candidate_audio: dict[str, Path] = {}
+
+    # Serializes vita (probe rendering) and CLAP (GPU) calls. Omni HTTP calls run freely
+    # outside this lock — they are the dominant bottleneck and benefit from parallelism.
+    _serial_lock = threading.Lock()
+
+    def _estimate_block_tokens(messages: list[dict], audio_paths: list[str]) -> int:
+        """Estimate total token count (text + audio) for a block."""
+        import soundfile as _sf
+        text = sum(
+            len(_tok.encode(m["content"], add_special_tokens=False))
+            for m in messages
+            if isinstance(m.get("content"), str)
+        )
+        audio = 0
+        for p in audio_paths:
+            try:
+                audio += int(_sf.info(p).duration * args.audio_token_rate)
+            except Exception:
+                pass
+        return text + audio
+
+    def _make_block_intro(
+        current_state_audio: str,
+        steps_completed: int,
+        gt_audio_path: str | None = None,
+    ) -> tuple[list[dict], list[str]]:
+        """Build the 4-message intro for block 2+.
+
+        Mirrors the existing baseline-listen pattern so the format validator passes:
+          user → assistant → tool_call → tool_response (current state audio)
+
+        When gt_audio_path is provided, the user message includes a GT audio re-anchor
+        (<audio> tag) so the model can re-orient to the target. When None (default),
+        the GT audio is omitted — the model is expected to reason from context alone,
+        which produces higher-quality training signal and saves ~3000 tokens per block.
+        """
+        user_content = (
+            f"{'<audio>' + chr(10) if gt_audio_path else ''}"
+            f"{'Target sound re-established. ' if gt_audio_path else ''}"
+            f"Current preset state after "
+            f"{steps_completed} iteration{'s' if steps_completed != 1 else ''}. "
+            f"Continue iterating toward the target."
+        )
+        messages = [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": "Listening to current preset state."},
+            _tool_call("bash", {"command": _build_listen_probe_command(current_state_audio)}),
+            {
+                "role": "tool_response",
+                "content": json.dumps(
+                    {"status": "ok", "baseline_audio": "<audio>", "path": current_state_audio},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        audios = ([gt_audio_path] if gt_audio_path else []) + [current_state_audio]
+        return messages, audios
+
+    def _chunk_into_blocks(
+        full_messages: list[dict],
+        full_audios: list[str],
+        preamble_msg_count: int,
+        preamble_audio_count: int,
+        step_boundaries: list[tuple[int, int, str | None]],
+        closing_messages: list[dict],
+        gt_audio_path: str,
+        default_audio_path: str | None,
+        base_record: dict,
+        reanchor_gt_audio: bool = False,
+    ) -> list[dict]:
+        """Split a fully-built record into window_tokens-sized blocks.
+
+        Each block gets current-state audio as a context prefix.
+        When reanchor_gt_audio=True, GT audio is also re-attached to block 2+ intros.
+        Block 1 includes the full search preamble; block 2+ get a synthetic intro.
+        The closing user+assistant turns appear only in the final block.
+
+        step_boundaries: list of (msg_start, msg_end, iter_audio_path) per step.
+          iter_audio_path may be None if no iter audio was emitted for that step.
+        """
+        preamble_messages = full_messages[:preamble_msg_count]
+        preamble_audios = full_audios[:preamble_audio_count]
+
+        blocks: list[dict] = []
+        block_idx = 0
+        current_state_audio = default_audio_path  # updated after each block flush
+        accumulated_msgs: list[dict] = []
+        accumulated_audios: list[str] = []
+        block_step_indices: list[int] = []  # which step indices are in current block
+        steps_completed_before_block = 0
+
+        def _flush_block(include_closing: bool) -> None:
+            nonlocal block_idx, accumulated_msgs, accumulated_audios, block_step_indices
+            nonlocal steps_completed_before_block, current_state_audio
+
+            if block_idx == 0:
+                intro_msgs = preamble_messages
+                intro_audios = preamble_audios
+            else:
+                intro_msgs, intro_audios = _make_block_intro(
+                    current_state_audio,
+                    steps_completed_before_block,
+                    gt_audio_path=gt_audio_path if reanchor_gt_audio else None,
+                )
+
+            block_messages = intro_msgs + accumulated_msgs
+            block_audio_list = intro_audios + accumulated_audios
+
+            if include_closing:
+                block_messages = block_messages + closing_messages
+            else:
+                # Non-final blocks must end with an assistant message (format constraint).
+                # Add a brief transition turn so the next block can start with a user message.
+                block_messages = block_messages + [
+                    {
+                        "role": "assistant",
+                        "content": "Iteration block complete. Continuing to the next set of edits.",
+                    }
+                ]
+
+            # Build per-block step_labels from the base record's full step_labels
+            full_step_labels = base_record["meta"]["step_labels"]
+            block_step_labels = [full_step_labels[i] for i in block_step_indices]
+
+            block_record = {
+                "id": f"{base_record['id']}_block{block_idx}",
+                "task_type": base_record["task_type"],
+                "tools": base_record["tools"],
+                "messages": block_messages,
+                "audios": block_audio_list,
+                "assets": base_record["assets"],
+                "labels": base_record["labels"],
+                "meta": {
+                    **{k: v for k, v in base_record["meta"].items() if k != "step_labels"},
+                    "block_idx": block_idx,
+                    "total_blocks": -1,  # filled in after all blocks known
+                    "source_sample_id": base_record["id"],
+                    "step_labels": block_step_labels,
+                },
+            }
+            assert_valid_ms_swift_multiturn_record(block_record)
+            blocks.append(block_record)
+
+            # Update state for next block
+            steps_completed_before_block += len(block_step_indices)
+            if block_step_indices:
+                last_step_i = block_step_indices[-1]
+                current_state_audio = step_boundaries[last_step_i][2] or current_state_audio
+            block_idx += 1
+            accumulated_msgs = []
+            accumulated_audios = []
+            block_step_indices = []
+
+        for step_i, (msg_start, msg_end, iter_audio) in enumerate(step_boundaries):
+            step_msgs = full_messages[msg_start:msg_end]
+            step_audios = [iter_audio] if iter_audio else []
+
+            # Decide context for projection
+            if block_idx == 0:
+                ctx_msgs = preamble_messages
+                ctx_audios = preamble_audios
+            else:
+                ctx_msgs, ctx_audios = _make_block_intro(
+                    gt_audio_path, current_state_audio, steps_completed_before_block
+                )
+
+            projected = _estimate_block_tokens(
+                ctx_msgs + accumulated_msgs + step_msgs + closing_messages,
+                ctx_audios + accumulated_audios + step_audios,
+            )
+
+            if projected > args.window_tokens and accumulated_msgs:
+                # Current step would overflow — flush what we have, start fresh
+                _flush_block(include_closing=False)
+
+            accumulated_msgs.extend(step_msgs)
+            accumulated_audios.extend(step_audios)
+            block_step_indices.append(step_i)
+
+        # Flush final block with closing turns
+        _flush_block(include_closing=True)
+
+        # Fill in total_blocks now that we know the count
+        for blk in blocks:
+            blk["meta"]["total_blocks"] = len(blocks)
+
+        return blocks
+
+    def _process_entry(entry: dict) -> list[dict] | None:
+        """Build one or more SFT records. Returns None if the entry should be skipped."""
         sample_id = str(entry["sample_id"])
         target_audio_path = Path(entry.get("gt_wav") or entry.get("gt_probe_wav"))
         default_audio_path = Path(entry.get("default_wav")) if entry.get("default_wav") else None
@@ -1065,38 +1383,76 @@ def main() -> None:
             from scripts.build_wavetable_retrieval_baseline import _extract_gt_wavetable_names_from_preset_dict
             gt_names = set(_extract_gt_wavetable_names_from_preset_dict(path_data["target_preset"]))
         else:
-            continue
+            return None
         if not gt_names:
-            continue
+            return None
 
-        candidate_names = choose_candidate_pool(
-            sample_id=sample_id,
-            query_audio_path=target_audio_path,
-            gt_names=sorted(gt_names),
-            universe_names=universe_names,
-            candidate_source=args.candidate_source,
-            candidate_limit=int(args.candidate_limit),
-            oracle_hard_pool=int(args.oracle_hard_pool),
-            seed=int(args.seed),
-            clap_embedder=embedder,
-            selected_rows_meta=index_rows,
-            shortlist_data=shortlist_data,
-        )
-        if not candidate_names:
-            continue
+        # Serialize vita (probe rendering) and CLAP (GPU) — these are fast relative to
+        # Omni calls. The per-step Omni calls below run outside this lock.
+        with _serial_lock:
+            candidate_names = choose_candidate_pool(
+                sample_id=sample_id,
+                query_audio_path=target_audio_path,
+                gt_names=sorted(gt_names),
+                universe_names=universe_names,
+                candidate_source=args.candidate_source,
+                candidate_limit=int(args.candidate_limit),
+                oracle_hard_pool=int(args.oracle_hard_pool),
+                seed=int(args.seed),
+                clap_embedder=embedder,
+                selected_rows_meta=index_rows,
+                shortlist_data=shortlist_data,
+            )
+            if not candidate_names:
+                return None
 
-        ensure_candidate_probes_for_names(
-            names=candidate_names,
-            wavetable_lib=wavetable_lib,
-            selected_rows=selected_by_name,
-            out_dir=args.probe_dir,
-            cache=candidate_audio,
-            probe_archetype=args.probe_archetype,
-            probe_tail_s=args.probe_tail_s,
-            trim_min_duration_s=args.trim_min_duration_s,
-        )
+            ensure_candidate_probes_for_names(
+                names=candidate_names,
+                wavetable_lib=wavetable_lib,
+                selected_rows=selected_by_name,
+                out_dir=args.probe_dir,
+                cache=candidate_audio,
+                probe_archetype=args.probe_archetype,
+                probe_tail_s=args.probe_tail_s,
+                trim_min_duration_s=args.trim_min_duration_s,
+            )
 
-        clap_scores = {n: embedder.cosine_paths(candidate_audio[n], target_audio_path) for n in candidate_names}
+            clap_scores = {n: embedder.cosine_paths(candidate_audio[n], target_audio_path) for n in candidate_names}
+
+            # Per-step CLAP scores: computed upfront (under serial lock) so we can gate
+            # audio listening turns before the main step loop runs.
+            step_clap_scores: dict[int, float] = {}
+            default_clap_score: float | None = None
+            if iter_wavs:
+                if default_audio_path:
+                    try:
+                        default_clap_score = float(
+                            embedder.cosine_paths(default_audio_path, target_audio_path)
+                        )
+                    except Exception:
+                        pass
+                for _step in path_data.get("iterations", [])[: int(args.max_steps)]:
+                    _snum = int(_step.get("step", 0))
+                    _idx = _snum - 1
+                    if 0 <= _idx < len(iter_wavs):
+                        try:
+                            step_clap_scores[_snum] = float(
+                                embedder.cosine_paths(iter_wavs[_idx], target_audio_path)
+                            )
+                        except Exception:
+                            pass
+
+            # |delta| per step vs the previous step's audio (or default for step 1).
+            # Used to decide whether a step produced an audible change.
+            step_clap_deltas: dict[int, float | None] = {}
+            _prev_clap = default_clap_score
+            for _step in path_data.get("iterations", [])[: int(args.max_steps)]:
+                _snum = int(_step.get("step", 0))
+                _cur = step_clap_scores.get(_snum)
+                if _cur is not None and _prev_clap is not None:
+                    step_clap_deltas[_snum] = abs(_cur - _prev_clap)
+                _prev_clap = _cur if _cur is not None else _prev_clap
+
         id_map = {name: f"C{i}" for i, name in enumerate(candidate_names, start=1)}
         candidate_assets = [
             {"candidate_id": id_map[name], "wavetable_name": name, "audio_path": str(candidate_audio[name])}
@@ -1200,6 +1556,8 @@ def main() -> None:
         archetype = str(entry.get("archetype", "synth"))
         prev_iter_wav: str | None = str(default_audio_path) if default_audio_path else None
         prev_prev_iter_wav: str | None = None  # audio two steps back for 3-clip Stage 1A
+        last_listened_iter_wav: str | None = None  # most recently heard audio (skip planning steps)
+        _snum_is_planning: dict[int, bool] = {}  # step_num → True if audio gate suppressed listen
         prev_commentary: str | None = None
         # Load target_preset — in-memory for old smoke-test paths, on-disk for
         # --generate mode paths which strip the dict and write target_preset_path instead.
@@ -1209,7 +1567,12 @@ def main() -> None:
                 target_preset = json.load(_f)
         step_gaps_cache: dict[int, dict | None] = {}  # step_num → remaining gap after that step
 
+        # Track per-step message boundaries and iter audio paths for chunking.
+        preamble_msg_count = len(messages)
+        step_boundaries: list[tuple[int, int, str | None]] = []  # (msg_start, msg_end, iter_audio)
+
         for step in path_data.get("iterations", [])[: int(args.max_steps)]:
+            _step_msg_start = len(messages)
             step_num = int(step.get("step", 0))
             action_snippet = step.get("action_snippet") or step.get("python_script") or "print('noop')"
             prefix = (
@@ -1217,6 +1580,15 @@ def main() -> None:
                 if step_num == 1 and selected_names
                 else ""
             )
+            # Decide whether this step needs a full listen or just a plan.
+            _abs_delta = step_clap_deltas.get(step_num)
+            _is_listening_step = (
+                args.audio_gate_threshold == 0
+                or _abs_delta is None
+                or _abs_delta >= args.audio_gate_threshold
+            )
+            _snum_is_planning[step_num] = not _is_listening_step
+
             if args.omni_server:
                 # Compute remaining parameter gap from GT preset vs this step's cumulative
                 # preset. This grounds the HYPOTHESIS in parameter-space truth rather than
@@ -1238,8 +1610,12 @@ def main() -> None:
                     # planned_param_names is the closest proxy for allowed_params in path data
                     allowed_params=step.get("planned_param_names") or step.get("allowed_params"),
                     remaining_delta_context=remaining_delta_context,
-                    prior_iter_wav=prev_prev_iter_wav,
-                    clap_delta=(float(step["clap_delta"]) if step.get("clap_delta") is not None else None),
+                    # Use last_listened_iter_wav for Stage 1A so the "before/after" comparison
+                    # reflects the last time audio actually changed, not the last rendered state.
+                    prior_iter_wav=last_listened_iter_wav,
+                    clap_delta=step_clap_deltas.get(step_num),
+                    is_planning_step=not _is_listening_step,
+                    planner_stage=step.get("planner_stage"),
                 )
                 if args.commentary_mode == "two_stage":
                     commentary = _call_omni_commentary_two_stage(
@@ -1269,41 +1645,54 @@ def main() -> None:
                 }
             )
             messages.append(_tool_call("bash", {"command": _wrap_as_bash(action_snippet)}))
-            messages.append({"role": "tool_response", "content": json.dumps({"status": "ok"}, ensure_ascii=False)})
+            if _is_listening_step:
+                messages.append({"role": "tool_response", "content": json.dumps({"status": "ok"}, ensure_ascii=False)})
+            else:
+                messages.append({"role": "tool_response", "content": json.dumps(
+                    {"status": "ok", "note": "Sub-perceptual edit — no significant timbral shift. No audio update."},
+                    ensure_ascii=False)})
 
+            _step_iter_audio: str | None = None
             if step_num - 1 < len(iter_wavs):
                 iter_audio = iter_wavs[step_num - 1]
-                used_iter_audio_paths.append(str(iter_audio))
-                prev_prev_iter_wav = prev_iter_wav  # shift the 2-step-back pointer
+                prev_prev_iter_wav = prev_iter_wav  # always advance pointer (needed for Stage 1B)
                 prev_iter_wav = str(iter_audio)
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": f"Listening to updated preset after step {step_num}.",
-                    }
-                )
-                messages.append(_tool_call("bash", {"command": _build_listen_probe_command(iter_audio)}))
-                messages.append(
-                    {
-                        "role": "tool_response",
-                        "content": json.dumps(
-                            {"status": "ok", "step": step_num, "iter_audio": "<audio>", "path": str(iter_audio)},
-                            ensure_ascii=False,
-                        ),
-                    }
-                )
+                if _is_listening_step:
+                    used_iter_audio_paths.append(str(iter_audio))
+                    last_listened_iter_wav = str(iter_audio)
+                    _step_iter_audio = str(iter_audio)
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": f"Listening to updated preset after step {step_num}.",
+                        }
+                    )
+                    messages.append(_tool_call("bash", {"command": _build_listen_probe_command(iter_audio)}))
+                    messages.append(
+                        {
+                            "role": "tool_response",
+                            "content": json.dumps(
+                                {"status": "ok", "step": step_num, "iter_audio": "<audio>", "path": str(iter_audio)},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                # planning steps: no audio messages, _step_iter_audio stays None
 
-        # Determine convergence: the path is "complete" if we applied all its planned
-        # iterations (i.e. max_steps was not the binding constraint). If max_steps cut the
-        # path short, the budget is exhausted. This is more reliable than testing n_remaining
-        # == 0 which is rarely true in practice due to path_gen noise injection.
+            step_boundaries.append((_step_msg_start, len(messages), _step_iter_audio))
+
+        # Determine convergence: a path is "complete" only when the final cumulative
+        # preset actually matches GT (n_remaining == 0). Budget exhausted means we ran
+        # out of steps regardless of whether the preset converged.
         final_steps = path_data.get("iterations", [])[: int(args.max_steps)]
         n_path_iterations = len(path_data.get("iterations", []))
-        path_complete = len(final_steps) >= n_path_iterations
 
         # Reuse cached gap for the last applied step (already computed during the loop).
         last_step_num = int(final_steps[-1].get("step", 0)) if final_steps else 0
         final_gap = step_gaps_cache.get(last_step_num) if last_step_num else None
+
+        # A path is complete only when the final cumulative preset matches GT (n_remaining == 0).
+        path_complete = final_gap is not None and final_gap["n_remaining"] == 0
 
         convergence = {
             "converged": path_complete,
@@ -1330,7 +1719,7 @@ def main() -> None:
             )
         else:
             if convergence["converged"]:
-                closing = "FINAL ASSESSMENT (complete): The recreation is complete."
+                closing = "FINAL ASSESSMENT (complete): All planned iterations have been applied. The recreation path is complete."
             else:
                 subs = list(convergence["by_subsystem"].keys())[:2]
                 subs_str = ", ".join(subs) if subs else "several parameters"
@@ -1339,6 +1728,8 @@ def main() -> None:
                     f"{subs_str} still differ from the target."
                 )
         messages.append({"role": "assistant", "content": closing})
+        # Closing messages = last 2 messages (user prompt + assistant assessment).
+        closing_messages = messages[-2:]
 
         audio_assets = [str(target_audio_path)]
         if default_audio_path is not None:
@@ -1347,7 +1738,20 @@ def main() -> None:
         for n in selected_names[: int(args.select_k)]:
             if n in candidate_audio:
                 audio_assets.append(str(candidate_audio[n]))
+        # preamble_audio_count = audios before the iter renders (gt + default + candidates).
+        preamble_audio_count = len(audio_assets)
         audio_assets.extend(used_iter_audio_paths)
+
+        # Pre-compute the last main-loop step's remaining gap context for use as
+        # fallback in correction steps (which are appended after the main loop and
+        # have no step_gaps_cache entry of their own).
+        _last_main_ctx: str | None = None
+        for _s in path_data.get("iterations", [])[: int(args.max_steps)]:
+            if _s.get("planner_stage") != "correction":
+                _snum = int(_s.get("step", 0))
+                _gap = step_gaps_cache.get(_snum)
+                if _gap:
+                    _last_main_ctx = _gap.get("context_str")
 
         record = {
             "id": sample_id,
@@ -1377,37 +1781,106 @@ def main() -> None:
                 "candidate_source": args.candidate_source,
                 "max_steps": int(args.max_steps),
                 "commentary_mode": args.commentary_mode,
+                "path_complete": path_complete,
+                "n_remaining": convergence["n_remaining"],
                 # step_labels carries ground-truth params per step for offline grading.
                 # remaining_top_2: top 2 subsystem names that still differ from GT after
                 # this step — used by the grader to score HYPOTHESIS grounding quality.
+                # For correction steps (appended after main loop), fall back to the last
+                # main-loop step's remaining gap so the label is still meaningful.
                 "step_labels": [
                     {
                         "step": int(s.get("step", 0)),
                         "keyword": str(s.get("search_keyword", "")),
+                        "planner_stage": s.get("planner_stage"),
                         "params_delta": s.get("params_delta") or [],
                         "planned_param_names": s.get("planned_param_names") or [],
                         "clap_delta": (float(s["clap_delta"]) if s.get("clap_delta") is not None else None),
+                        # clap_score: cosine similarity between this step's rendered audio
+                        # and the GT audio. Populated at build time for use by the grader.
+                        "clap_score": step_clap_scores.get(int(s.get("step", 0))),
                         "remaining_top_2": _extract_top_remaining(
                             step_gaps_cache.get(int(s.get("step", 0)), {}).get("context_str")
                             if step_gaps_cache.get(int(s.get("step", 0)))
-                            else None,
+                            else _last_main_ctx,
                             n=2,
                         ),
+                        # is_planning_step: True when the audio gate suppressed the listen turn
+                        # (|clap_delta| < threshold). Used by grader to exempt planning steps
+                        # from section_structure and hypothesis_grounding checks.
+                        "is_planning_step": _snum_is_planning.get(int(s.get("step", 0)), False),
                     }
                     for s in path_data.get("iterations", [])[: int(args.max_steps)]
                 ],
             },
         }
         assert_valid_ms_swift_multiturn_record(record)
-        records.append(record)
 
+        if args.window_tokens and _tok is not None:
+            # Chunk the full record into window-sized blocks.
+            return _chunk_into_blocks(
+                full_messages=messages,
+                full_audios=audio_assets,
+                preamble_msg_count=preamble_msg_count,
+                preamble_audio_count=preamble_audio_count,
+                step_boundaries=step_boundaries,
+                closing_messages=closing_messages,
+                gt_audio_path=str(target_audio_path),
+                default_audio_path=str(default_audio_path) if default_audio_path else None,
+                base_record=record,
+                reanchor_gt_audio=args.reanchor_gt_audio,
+            )
+        return [record]
+
+    # Process entries in parallel. Vita (probe rendering) and CLAP (GPU) are serialized
+    # via _serial_lock inside _process_entry; Omni HTTP calls run freely in parallel.
+    # Results are written incrementally as each future completes so progress is visible
+    # and partial results survive early termination.
     out_path = Path(args.out_jsonl)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_lock = threading.Lock()
+    records_by_idx: dict[int, list[dict]] = {}
+    total_blocks_written = 0
+
+    def _write_records(recs: list[dict], i: int) -> None:
+        nonlocal total_blocks_written
+        with _write_lock:
+            records_by_idx[i] = recs
+            # Append-write completed records immediately for progress visibility.
+            # Final file is re-written in order after all futures complete.
+            total_blocks_written += len(recs)
+            sid = recs[0]["meta"].get("sample_id", "?") if recs else "?"
+            n_done = len(records_by_idx)
+            print(f"[{n_done}/{len(entries)}] {sid}: {len(recs)} block(s) written ({total_blocks_written} total)")
+
+    if args.workers > 1:
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futs = {pool.submit(_process_entry, entry): i for i, entry in enumerate(entries)}
+            for fut in as_completed(futs):
+                i = futs[fut]
+                try:
+                    recs = fut.result()
+                    if recs is not None:
+                        _write_records(recs, i)
+                except Exception as exc:
+                    import traceback
+                    sample_id = entries[i].get("sample_id", f"entry_{i}")
+                    print(f"WARNING: {sample_id} failed: {exc}")
+                    traceback.print_exc()
+    else:
+        for i, entry in enumerate(entries):
+            recs = _process_entry(entry)
+            if recs is not None:
+                _write_records(recs, i)
+
+    # Write final output in deterministic input order.
+    records = [r for i in sorted(records_by_idx) for r in records_by_idx[i]]
     with open(out_path, "w") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    print(f"Wrote {len(records)} main-agent v2 records to {out_path}")
+    n_source = len(records_by_idx)
+    print(f"Wrote {len(records)} records ({n_source} samples → {len(records)} blocks) to {out_path}")
 
 
 if __name__ == "__main__":
