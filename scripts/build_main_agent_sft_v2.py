@@ -1476,11 +1476,17 @@ def main() -> None:
 
         messages: list[dict] = []
         used_iter_audio_paths: list[str] = []
+        start_type = entry.get("start_type", "init")
+        archetype_str = entry.get('archetype', 'synth')
+        if start_type == "random":
+            start_phrase = f"Adapt the current {archetype_str} preset to match this target sound."
+        else:
+            start_phrase = f"Recreate this {archetype_str} target sound in Vital from default."
         messages.append(
             {
                 "role": "user",
                 "content": (
-                    f"<audio>\nRecreate this {entry.get('archetype', 'synth')} target sound in Vital from default.\n"
+                    f"<audio>\n{start_phrase}\n"
                     "Run hierarchical wavetable search, keep <=3 candidates, then continue iterative edits."
                 ),
             }
@@ -1776,6 +1782,7 @@ def main() -> None:
             "meta": {
                 "sample_id": sample_id,
                 "archetype": str(entry.get("archetype", "synth")),
+                "start_type": start_type,
                 "agent": "main",
                 "num_agents": int(args.num_agents),
                 "candidate_source": args.candidate_source,
@@ -1795,7 +1802,7 @@ def main() -> None:
                         "planner_stage": s.get("planner_stage"),
                         "params_delta": s.get("params_delta") or [],
                         "planned_param_names": s.get("planned_param_names") or [],
-                        "clap_delta": (float(s["clap_delta"]) if s.get("clap_delta") is not None else None),
+                        "clap_delta": step_clap_deltas.get(int(s.get("step", 0))),
                         # clap_score: cosine similarity between this step's rendered audio
                         # and the GT audio. Populated at build time for use by the grader.
                         "clap_score": step_clap_scores.get(int(s.get("step", 0))),

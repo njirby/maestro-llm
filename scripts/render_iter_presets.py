@@ -106,6 +106,7 @@ def _render_sample(job: dict) -> dict | None:
         # ------------------------------------------------------------------
         if mode == "generate":
             from maestro.synth.path_gen import compare_preset_path, generate_preset_path
+            from maestro.synth.preset_gen import generate_preset
             from maestro.synth.wavetable_lib import load_wavetable_lib
 
             if _wavetable_lib_cache is None and job.get("wavetable_lib_path"):
@@ -121,12 +122,30 @@ def _render_sample(job: dict) -> dict | None:
                     _wavetable_lib_cache = []
 
             rng = random.Random(job["seed"])
+
+            # Optionally start from a random synthetic preset instead of the
+            # Vital init preset. This teaches the model to adapt from an
+            # existing-but-wrong patch rather than always from a blank slate.
+            random_start_prob = float(job.get("random_start_prob", 0.0))
+            start_preset = None
+            start_type = "init"
+            if random_start_prob > 0.0 and rng.random() < random_start_prob:
+                # Generate a second synthetic preset of the same archetype as
+                # the random starting point. Use a derived seed so it's
+                # reproducible but distinct from the target seed.
+                start_rng = random.Random(job["seed"] ^ 0xDEADBEEF)
+                start_preset = generate_preset(
+                    archetype, start_rng, wavetable_lib=_wavetable_lib_cache or []
+                )
+                start_type = "random"
+
             path_data = generate_preset_path(
                 archetype,
                 rng,
                 wavetable_lib=_wavetable_lib_cache or [],
                 output_dir=paths_dir,
                 sample_id=sample_id,
+                start_preset=start_preset,
             )
             compare = compare_preset_path(path_data)
         else:
@@ -137,6 +156,8 @@ def _render_sample(job: dict) -> dict | None:
             sample_id = path_data["sample_id"]
             archetype = path_data["archetype"]
             compare = None
+            start_type = path_data.get("start_type", "init")
+            start_preset = None  # not needed for render; already baked into path
 
         steps = path_data["iterations"]
         n_iterations = path_data["n_iterations"]
@@ -167,18 +188,30 @@ def _render_sample(job: dict) -> dict | None:
             save_data["source_midi_path"] = str(source_midi_path)
             save_data["final_vs_target_summary"] = compare["summary"]
             save_data["final_vs_target_top_noisy"] = compare["noisy"][:12]
+            save_data["start_type"] = start_type
             save_data["iterations"] = [
                 {k: v for k, v in it.items() if k != "cumulative_preset"}
                 for it in save_data["iterations"]
             ]
+            if start_preset is not None:
+                start_preset_path = paths_dir / f"{sample_id}_start.vital"
+                with open(start_preset_path, "w") as f:
+                    json.dump(start_preset, f)
+                save_data["start_preset_path"] = str(start_preset_path)
             with open(path_json_path, "w") as f:
                 json.dump(save_data, f, indent=2)
 
-        if _init_preset_cache is None:
-            init_path = Path(__file__).resolve().parent.parent / "maestro" / "synth" / "init_preset.json"
-            with open(init_path) as f:
-                _init_preset_cache = json.load(f)
-        _vital_instance.load_json(json.dumps(_init_preset_cache))
+        # Render default/baseline probe clip from the starting preset.
+        # For random-start samples this is the random synthetic preset;
+        # for init samples it's the Vital default blank patch.
+        if start_preset is not None:
+            _vital_instance.load_json(json.dumps(start_preset))
+        else:
+            if _init_preset_cache is None:
+                init_path = Path(__file__).resolve().parent.parent / "maestro" / "synth" / "init_preset.json"
+                with open(init_path) as f:
+                    _init_preset_cache = json.load(f)
+            _vital_instance.load_json(json.dumps(_init_preset_cache))
         default_audio = _render_note_list(
             _vital_instance, probe_notes, SAMPLE_RATE, tail_s=_probe_tail_s
         )
@@ -259,6 +292,7 @@ def _render_sample(job: dict) -> dict | None:
             "default_wav": str(default_wav),
             "iter_wavs": iter_wavs,
             "source_midi_path": str(source_midi_path),
+            "start_type": start_type,
         }
         if isinstance(compare, dict):
             entry["final_vs_target_summary"] = compare.get("summary")
@@ -325,6 +359,13 @@ def parse_args() -> argparse.Namespace:
         help="Duration of GT and probe audio clips in seconds (default 10.0, recommend 5.0 "
              "to halve audio token budget for training)",
     )
+    p.add_argument(
+        "--random-start-prob", type=float, default=0.0,
+        help="Fraction of samples that start from a random synthetic preset instead of the "
+             "Vital init preset (default 0.0). E.g. 0.5 means half of paths start from a "
+             "randomly generated patch of the same archetype, teaching the model to adapt "
+             "from an existing-but-wrong sound rather than always from a blank slate.",
+    )
     return p.parse_args()
 
 
@@ -383,6 +424,7 @@ def main() -> None:
                 "wavetable_lib_path": wavetable_lib_path,
                 "seed": sample_seed,
                 "clip_duration_s": args.clip_duration_s,
+                "random_start_prob": args.random_start_prob,
             })
     else:
         paths_dir_in = _resolve(args.paths_dir)

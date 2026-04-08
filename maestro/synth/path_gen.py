@@ -637,8 +637,9 @@ def generate_preset_path(
     wavetable_lib: list | None = None,
     output_dir: Path | None = None,
     sample_id: str | None = None,
+    start_preset: dict | None = None,
 ) -> dict:
-    """Generate an N-step parameter path from init preset to a generated target.
+    """Generate an N-step parameter path from a starting preset to a generated target.
 
     Parameters
     ----------
@@ -654,6 +655,11 @@ def generate_preset_path(
         {output_dir}/{sample_id}_step{N}.vital
     sample_id : str | None
         Identifier for this sample. Auto-generated if not provided.
+    start_preset : dict | None
+        Starting preset dict. If None (default), uses the Vital init preset.
+        Pass a synthetic preset to generate paths from a non-default starting point,
+        which teaches the model to adapt from an existing-but-wrong patch rather
+        than always from a blank slate.
 
     Returns
     -------
@@ -674,7 +680,7 @@ def generate_preset_path(
 
     # --- Generate target preset ---
     target = generate_preset(archetype, rng, wavetable_lib=wavetable_lib)
-    init_preset = copy.deepcopy(_INIT_PRESET)
+    init_preset = copy.deepcopy(start_preset) if start_preset is not None else copy.deepcopy(_INIT_PRESET)
 
     # --- Extract scalar params ---
     target_scalars = _extract_scalar_params(target["settings"])
