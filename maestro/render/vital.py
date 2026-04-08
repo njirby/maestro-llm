@@ -257,40 +257,38 @@ def render_probe_note(
 # Note helpers
 # ---------------------------------------------------------------------------
 
-def make_gt_notes() -> list:
-    """4 major triads spanning C2-C5, each held 2.5s. Total ~10s GT reference clip."""
-    notes = []
+def make_gt_notes(clip_duration_s: float = 10.0) -> list:
+    """4 major triads spanning C2-C5, scaled to clip_duration_s (default 10s → 2.5s/triad)."""
     roots = [36, 48, 60, 72]  # C2, C3, C4, C5
     intervals = [0, 4, 7]     # root, major third, fifth
+    note_dur = clip_duration_s / len(roots)
+    notes = []
     for i, root in enumerate(roots):
-        start = i * 2.5
-        end = start + 2.5
+        start = i * note_dur
+        end = start + note_dur
         for interval in intervals:
             pitch = max(0, min(127, root + interval))
             notes.append(pretty_midi.Note(velocity=90, pitch=pitch, start=start, end=end))
     return notes
 
 
-PROBE_NOTE_DURATION = {
-    "pad":      1.5,   # 3 notes × 1.7s spacing + 1.0s tail ≈ 5.2s total
-    "keys":     1.2,   # 3 notes × 1.4s spacing + 1.0s tail ≈ 4.8s total
-    "bass":     1.2,
-    "lead":     1.2,
-    "pluck":    1.0,   # fast attack/decay — 3 notes × 1.2s + 1.0s tail ≈ 4.6s total
-    "sequence": 1.0,
-}
-PROBE_TAIL_PAD = 1.0  # extra tail after last note
+def make_probe_notes(archetype: str = "bass", clip_duration_s: float = 10.0) -> list:
+    """Same 4 major triads as make_gt_notes so probe and GT clips are directly comparable.
 
-
-def make_probe_notes(archetype: str = "bass") -> list:
-    """3 held notes at C3/C4/C5 for per-iteration probing. Duration is archetype-aware."""
-    note_dur = PROBE_NOTE_DURATION.get(archetype, 2.5)
-    pitches = [48, 60, 72]  # C3, C4, C5
+    Using identical note content means any perceptual difference between probe and GT
+    reflects only preset differences, not note-pattern differences.
+    clip_duration_s scales all note timings proportionally (default 10s → 2.5s/triad).
+    """
+    roots = [36, 48, 60, 72]  # C2, C3, C4, C5
+    intervals = [0, 4, 7]     # root, major third, fifth
+    note_dur = clip_duration_s / len(roots)
     notes = []
-    for i, pitch in enumerate(pitches):
-        start = i * (note_dur + 0.2)
+    for i, root in enumerate(roots):
+        start = i * note_dur
         end = start + note_dur
-        notes.append(pretty_midi.Note(velocity=85, pitch=pitch, start=start, end=end))
+        for interval in intervals:
+            pitch = max(0, min(127, root + interval))
+            notes.append(pretty_midi.Note(velocity=85, pitch=pitch, start=start, end=end))
     return notes
 
 

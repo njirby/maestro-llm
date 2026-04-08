@@ -144,8 +144,11 @@ def _render_sample(job: dict) -> dict | None:
         # ------------------------------------------------------------------
         # 2. Build source MIDI + render default/init probe clip for baseline
         # ------------------------------------------------------------------
-        probe_notes = make_probe_notes(archetype)
-        gt_notes = make_gt_notes()
+        clip_dur = float(job.get("clip_duration_s", 10.0))
+        probe_notes = make_probe_notes(archetype, clip_duration_s=clip_dur)
+        gt_notes = make_gt_notes(clip_duration_s=clip_dur)
+        _probe_tail_s = max(0.1, 1.0 * (clip_dur / 10.0))
+        _gt_tail_s = max(0.2, 2.0 * (clip_dur / 10.0))
         midi_dir = audio_dir.parent / "midi"
         source_midi_path = midi_dir / f"{sample_id}_source.mid"
         _write_notes_to_midi(gt_notes, source_midi_path)
@@ -177,7 +180,7 @@ def _render_sample(job: dict) -> dict | None:
                 _init_preset_cache = json.load(f)
         _vital_instance.load_json(json.dumps(_init_preset_cache))
         default_audio = _render_note_list(
-            _vital_instance, probe_notes, SAMPLE_RATE, tail_s=1.0
+            _vital_instance, probe_notes, SAMPLE_RATE, tail_s=_probe_tail_s
         )
         default_audio = trim_silence(default_audio, SAMPLE_RATE, min_duration_s=0.5)
         default_wav = audio_dir / f"{sample_id}_default.wav"
@@ -203,7 +206,7 @@ def _render_sample(job: dict) -> dict | None:
         if not probe_audibility(_vital_instance, note_dur=gt_probe_dur)["pass"]:
             return None
 
-        gt_audio = _render_note_list(_vital_instance, gt_notes, SAMPLE_RATE, tail_s=2.0)
+        gt_audio = _render_note_list(_vital_instance, gt_notes, SAMPLE_RATE, tail_s=_gt_tail_s)
         gt_audio = trim_silence(gt_audio, SAMPLE_RATE)
 
         gt_wav = audio_dir / f"{sample_id}_gt.wav"
@@ -211,7 +214,7 @@ def _render_sample(job: dict) -> dict | None:
 
         # Target probe clip: same note pattern as iter probes for apples-to-apples A/B.
         gt_probe_audio = _render_note_list(
-            _vital_instance, probe_notes, SAMPLE_RATE, tail_s=1.0
+            _vital_instance, probe_notes, SAMPLE_RATE, tail_s=_probe_tail_s
         )
         gt_probe_audio = trim_silence(gt_probe_audio, SAMPLE_RATE, min_duration_s=0.5)
         gt_probe_wav = audio_dir / f"{sample_id}_gt_probe.wav"
@@ -236,7 +239,7 @@ def _render_sample(job: dict) -> dict | None:
             # Note: no audibility gate on iter clips — early steps are intentionally
             # thin (only a few params set), and that's valid training signal.
             iter_audio = _render_note_list(
-                _vital_instance, probe_notes, SAMPLE_RATE, tail_s=1.0
+                _vital_instance, probe_notes, SAMPLE_RATE, tail_s=_probe_tail_s
             )
             iter_audio = trim_silence(iter_audio, SAMPLE_RATE, min_duration_s=0.5)
 
@@ -317,6 +320,11 @@ def parse_args() -> argparse.Namespace:
         "--overwrite", action="store_true",
         help="Re-render existing files",
     )
+    p.add_argument(
+        "--clip-duration-s", type=float, default=10.0,
+        help="Duration of GT and probe audio clips in seconds (default 10.0, recommend 5.0 "
+             "to halve audio token budget for training)",
+    )
     return p.parse_args()
 
 
@@ -374,6 +382,7 @@ def main() -> None:
                 "paths_dir": str(paths_dir),
                 "wavetable_lib_path": wavetable_lib_path,
                 "seed": sample_seed,
+                "clip_duration_s": args.clip_duration_s,
             })
     else:
         paths_dir_in = _resolve(args.paths_dir)
@@ -401,6 +410,7 @@ def main() -> None:
                 "paths_dir": None,
                 "path_file": str(pf),
                 "seed": args.seed,
+                "clip_duration_s": args.clip_duration_s,
             })
 
     total = args.generate if args.generate else len(

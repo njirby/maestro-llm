@@ -42,15 +42,15 @@ with open(_DATA_DIR / "init_preset.json") as _f:
 # Constants
 # ---------------------------------------------------------------------------
 
-NOISE_STD = 0.08          # normalized units — ~8% of param range
-NOISE_PROB = 0.35         # 35% of params in each step get noise applied
-MISTAKE_PROB = 0.25       # 25% of paths get a deliberate mistake step
+MISTAKE_PROB = 0.08       # 8% chance any individual param assignment is wrong
+CORRECTION_BATCH_SIZE = 4  # max params per correction step
 
 # Iteration count controls.
 # Instead of a fixed table that can saturate to 20 when many params differ,
 # sample a realistic "params edited per step" density and derive N from that.
 MIN_ITERATIONS = 6
 MAX_ITERATIONS = 20
+MAX_ITERATIONS_HARD_CAP = 40  # absolute ceiling including overflow steps
 PARAMS_PER_STEP_MIN = 14.0
 PARAMS_PER_STEP_MAX = 24.0
 SEARCH_RESULT_MAX_LINES = 16
@@ -274,11 +274,13 @@ def _plan_step_groups(
     modulation_steps_taken = 0
     modulation_streak = 0
 
-    for step_idx in range(n_iterations):
-        if not remaining:
-            break
-
-        steps_left = max(1, n_iterations - step_idx)
+    step_idx = 0
+    while remaining and step_idx < MAX_ITERATIONS_HARD_CAP:
+        # Estimate steps still needed based on remaining param count and expected
+        # step density. This ensures step_target stays reasonable as overflow steps
+        # mop up any params left after the originally-planned n_iterations.
+        avg_step_size = max(1.0, (PARAMS_PER_STEP_MIN + PARAMS_PER_STEP_MAX) / 2.0)
+        steps_left = max(1, int(math.ceil(len(remaining) / avg_step_size)))
         step_target = max(1, int(math.ceil(len(remaining) / steps_left)))
         desired_primary = max(1, int(math.ceil(step_target * 0.7)))
         max_support = max(0, step_target - desired_primary)
@@ -334,7 +336,9 @@ def _plan_step_groups(
                     key=lambda f: (_stage_index_for_family(f) < current_stage_idx, _stage_index_for_family(f)),
                 )
             else:
-                step_target = max(1, max(len(v) for v in fam_items.values()))
+                # No family can satisfy desired_primary — batch multiple small families.
+                # Use PARAMS_PER_STEP_MAX so the multi-family fill packs them together.
+                step_target = min(int(PARAMS_PER_STEP_MAX), len(remaining))
                 desired_primary = max(1, int(math.ceil(step_target * 0.7)))
                 max_support = max(0, step_target - desired_primary)
                 candidate_families = sorted(available_families, key=lambda f: len(fam_items[f]), reverse=True)
@@ -355,16 +359,28 @@ def _plan_step_groups(
         chosen_mod_slot: str | None = None
 
         if primary_family == "modulation":
+            # Batch multiple modulation slots per step rather than one slot per step.
+            # Sort slots by total residual (highest-residual slots first), then take
+            # up to step_target params spanning as many slots as needed.
             slot_items: dict[str, list[tuple[str, float, float]]] = defaultdict(list)
             for item in primary_items:
                 slot = _modulation_slot(item[0]) or "0"
                 slot_items[slot].append(item)
-            if slot_items:
-                chosen_mod_slot = max(
-                    slot_items.keys(),
-                    key=lambda s: (sum(r for _, _, r in slot_items[s]), len(slot_items[s])),
-                )
-                primary_items = slot_items[chosen_mod_slot]
+            # Build batched list: fill up to step_target params from top-residual slots
+            slots_by_residual = sorted(
+                slot_items.keys(),
+                key=lambda s: (sum(r for _, _, r in slot_items[s]), len(slot_items[s])),
+                reverse=True,
+            )
+            batched: list[tuple[str, float, float]] = []
+            for slot in slots_by_residual:
+                batched.extend(slot_items[slot])
+                if len(batched) >= step_target:
+                    break
+            primary_items = batched[:step_target]
+            # For keyword: use the dominant slot if all from same slot, else "modulation"
+            slots_used = sorted({_modulation_slot(item[0]) or "0" for item in primary_items})
+            chosen_mod_slot = slots_used[0] if len(slots_used) == 1 else None
 
         primary_count = min(
             len(primary_items),
@@ -415,6 +431,29 @@ def _plan_step_groups(
                 remaining_slots -= 1
                 if remaining_slots <= 0:
                     break
+
+        # Multi-family fill: when slots remain after primary+support, pull from any
+        # remaining family rather than leaving them for isolated 1-2 param steps.
+        # This prevents a long tail of tiny steps for small families.
+        if remaining_slots > 0:
+            used = set(selected_names)
+            extra_families = sorted(
+                [f for f in available_families if f not in (primary_family, support_family)],
+                key=lambda f: (len(fam_items[f]), sum(r for _, _, r in fam_items[f])),
+                reverse=True,
+            )
+            for fam in extra_families:
+                if remaining_slots <= 0:
+                    break
+                for name, tgt, _ in fam_items[fam]:
+                    if name in used:
+                        continue
+                    selected_tuples.append((name, tgt))
+                    selected_names.append(name)
+                    remaining_slots -= 1
+                    used.add(name)
+                    if remaining_slots <= 0:
+                        break
 
         if not selected_tuples:
             # Safety fallback: ensure progress if all capacity checks collapsed.
@@ -483,6 +522,8 @@ def _plan_step_groups(
 
         for name, _ in selected_tuples:
             remaining.pop(name, None)
+
+        step_idx += 1
 
     return steps_params, plans
 
@@ -695,14 +736,10 @@ def generate_preset_path(
     else:
         n_iterations = 1
 
-    # --- Decide mistake step ---
-    has_mistake_step = rng.random() < MISTAKE_PROB
-    mistake_step_idx = None
-    if has_mistake_step and n_iterations >= 2:
-        # Pick any step except the last
-        mistake_step_idx = rng.randint(0, n_iterations - 2)
-    else:
-        has_mistake_step = False
+    # Track params that were applied with a deliberate mistake value so we can
+    # schedule correction steps after the main loop.
+    # Maps param name → correct target_norm value.
+    mistaken_params: dict[str, float] = {}
 
     # --- Precompute init normalized values for from_norm tracking ---
     init_scalars_native = _extract_scalar_params(init_preset["settings"])
@@ -741,7 +778,6 @@ def generate_preset_path(
             "search_keyword": _search_keyword([n for n, _ in step_param_list]),
         }
         step_num = step_idx + 1
-        is_mistake = step_idx == mistake_step_idx
         params_changed: dict[str, float] = {}
         params_applied: dict[str, float] = {}
         params_delta: list[dict] = []
@@ -762,25 +798,28 @@ def generate_preset_path(
             # Target norm value (ground truth)
             target_norm = norm_val
 
-            # Compute applied value: start with target, then optionally add noise
-            applied_norm = target_norm
-
-            # Mistake step: 25% of params move in wrong direction
+            # With MISTAKE_PROB: apply a deliberately wrong value and schedule
+            # a correction step later. Three mistake types chosen uniformly:
+            #   overshoot  — go past the target (too far in the right direction)
+            #   undershoot — only go partway toward target
+            #   wrong dir  — move away from target
             is_param_mistake = False
-            if is_mistake and rng.random() < 0.25:
-                init_norm = _normalize(name, init_scalars_native.get(name, 0.0))
-                if init_norm is None:
-                    init_norm = 0.0
-                wrong_norm = init_norm - (target_norm - init_norm) * rng.uniform(0.3, 0.7)
+            applied_norm = target_norm
+            if rng.random() < MISTAKE_PROB:
+                mistake_type = rng.randint(0, 2)
+                if mistake_type == 0:  # overshoot
+                    overshoot = (target_norm - from_norm) * rng.uniform(0.3, 0.7)
+                    wrong_norm = target_norm + overshoot
+                elif mistake_type == 1:  # undershoot
+                    wrong_norm = from_norm + (target_norm - from_norm) * rng.uniform(0.2, 0.6)
+                else:  # wrong direction
+                    wrong_norm = from_norm - (target_norm - from_norm) * rng.uniform(0.2, 0.5)
                 wrong_norm = max(0.0, min(1.0, wrong_norm))
-                # Only flag as mistake if it actually moved away from target
-                if abs(wrong_norm - from_norm) > 0.01:
+                # Only flag if it actually differs from target by >0.02
+                if abs(wrong_norm - target_norm) > 0.02:
                     applied_norm = wrong_norm
                     is_param_mistake = True
-            elif rng.random() < NOISE_PROB:
-                # Noisy progression
-                applied_norm = target_norm + rng.gauss(0, NOISE_STD)
-                applied_norm = max(0.0, min(1.0, applied_norm))
+                    mistaken_params[name] = target_norm
 
             params_changed[name] = target_norm
             params_applied[name] = applied_norm
@@ -795,21 +834,6 @@ def generate_preset_path(
                 "target_norm": target_norm,
                 "mistake": is_param_mistake,
             })
-
-        # On the final step: silently close all remaining gaps so the saved
-        # preset == target and the rendered audio matches the GT exactly.
-        # Do NOT touch params_applied — the action_snippet should only show
-        # the natural params for this step, not a massive cleanup dump.
-        is_last = step_idx == n_iterations - 1
-        if is_last:
-            _skip = {"modulations", "lfos", "wavetables", "sample"}
-            for _k, _tgt_v in target["settings"].items():
-                if isinstance(_tgt_v, (list, dict)) or _k in _skip:
-                    continue
-                cumulative["settings"][_k] = _tgt_v
-            cumulative["settings"]["modulations"] = copy.deepcopy(
-                target["settings"].get("modulations", [])
-            )
 
         # Save cumulative preset to disk if requested
         cumulative_preset_path = None
@@ -846,7 +870,7 @@ def generate_preset_path(
         iterations.append({
             "step": step_num,
             "params_changed": params_changed,
-            "modulations_changed": modulations_changed if is_last else [],
+            "modulations_changed": modulations_changed,
             "cumulative_preset": cumulative_copy,
             "cumulative_preset_path": cumulative_preset_path,
             "action_snippet": action_snippet,
@@ -864,10 +888,87 @@ def generate_preset_path(
             "allowed_support_controls": planner.get("allowed_support_controls", []),
             "intended_edit_controls": planner.get("intended_edit_controls", []),
             "search_scope_type": planner.get("search_scope_type", "family"),
-            "is_mistake_step": is_mistake,
+            "is_mistake_step": False,
             "params_applied": params_applied,
             "params_delta": params_delta,
         })
+
+    # --- Build correction steps for any params that were set incorrectly ---
+    # Group mistaken params into batches and append as dedicated correction steps.
+    # Each correction step applies the correct target value, bringing cumulative
+    # preset back on track. This guarantees n_remaining == 0 after all steps.
+    correction_items = list(mistaken_params.items())  # [(name, target_norm), ...]
+    rng.shuffle(correction_items)
+    for batch_start in range(0, len(correction_items), CORRECTION_BATCH_SIZE):
+        batch = correction_items[batch_start: batch_start + CORRECTION_BATCH_SIZE]
+        step_num = len(iterations) + 1
+        corr_params_applied: dict[str, float] = {}
+        corr_params_delta: list[dict] = []
+        cumulative_settings_before = dict(cumulative["settings"])
+
+        for name, target_norm in batch:
+            from_norm = _normalize(
+                name,
+                cumulative["settings"].get(name, init_scalars_native.get(name, 0.0)),
+            ) or 0.0
+            cumulative["settings"][name] = _denormalize(name, target_norm)
+            corr_params_applied[name] = target_norm
+            corr_params_delta.append({
+                "name": name,
+                "from_norm": from_norm,
+                "to_norm": target_norm,
+                "target_norm": target_norm,
+                "mistake": False,
+            })
+
+        # Persist cumulative preset to disk if output_dir is set
+        corr_preset_path = None
+        if output_dir is not None:
+            preset_filename = f"{sample_id}_step{step_num}.vital"
+            preset_filepath = output_dir / preset_filename
+            with open(preset_filepath, "w") as f:
+                json.dump(copy.deepcopy(cumulative), f)
+            corr_preset_path = str(preset_filepath)
+
+        keyword = _search_keyword(list(corr_params_applied.keys()))
+        set_lines = [
+            "import reapy",
+            "with reapy.inside_reaper():",
+            "    fx = reapy.Project().tracks[0].fxs[0]",
+        ]
+        for name in sorted(corr_params_applied.keys()):
+            display = _json_key_to_display(name)
+            norm = corr_params_applied[name]
+            set_lines.append(f'    fx.params["{display}"].value = {norm:.4f}')
+        set_lines.append('    print("Done")')
+
+        iterations.append({
+            "step": step_num,
+            "params_changed": {n: tn for n, tn in batch},
+            "modulations_changed": [],
+            "cumulative_preset": None if output_dir is not None else copy.deepcopy(cumulative),
+            "cumulative_preset_path": corr_preset_path,
+            "action_snippet": "\n".join(set_lines),
+            "search_snippet": _build_search_snippet(keyword),
+            "search_result": _generate_search_result(keyword, cumulative_settings_before),
+            "search_keyword": keyword,
+            "primary_family": _param_family(batch[0][0]) if batch else "other",
+            "support_family": None,
+            "planner_stage": "correction",
+            "checkpoint_revisit": True,
+            "intent_tags": ["stage:correction"],
+            "planned_param_names": [n for n, _ in batch],
+            "planned_primary_names": [n for n, _ in batch],
+            "allowed_primary_controls": [n for n, _ in batch],
+            "allowed_support_controls": [],
+            "intended_edit_controls": [n for n, _ in batch],
+            "search_scope_type": "correction",
+            "is_mistake_step": False,
+            "params_applied": corr_params_applied,
+            "params_delta": corr_params_delta,
+        })
+
+    n_iterations = len(iterations)
 
     return {
         "sample_id": sample_id,
@@ -875,7 +976,8 @@ def generate_preset_path(
         "n_iterations": n_iterations,
         "n_changed_params": n_changed,
         "target_preset": target,
-        "has_mistake_step": has_mistake_step,
+        "has_mistake_step": len(mistaken_params) > 0,
+        "n_corrections": len(correction_items),
         "iterations": iterations,
     }
 
