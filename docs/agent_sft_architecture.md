@@ -39,7 +39,7 @@ Scope:
 - Orchestrates search fanout and report collection.
 - Calls judge to collapse candidate pool.
 - Executes iterative Vital parameter updates.
-- Re-listens after each update step.
+- **Audio-gated listening**: re-listens after steps where |CLAP delta| ≥ threshold (default 0.01). Sub-perceptual steps get PLAN-only turns — no audio, no HEARD/HYPOTHESIS.
 
 Output:
 - End-to-end orchestration trajectory suitable for SFT warm start.
@@ -51,8 +51,9 @@ All three datasets follow one strict schema:
 - Allowed roles only: `user`, `assistant`, `tool_call`, `tool_response`.
 - First message role is `user`, last is `assistant`.
 - No adjacent duplicate conversational roles (`user/user`, `assistant/assistant`).
-- Max one `<audio>` tag per message.
+- Max one `<audio>` tag per `user` or `assistant` message (tool_response may have one per audio result).
 - Total `<audio>` tag count equals `len(audios)`.
+- GT audio appears exactly once per record (block 0 preamble only, unless `--reanchor-gt-audio` is passed).
 
 Tools are represented in-message via:
 - `tool_call` content: JSON string like `{ "name": "bash", "arguments": {...} }`.

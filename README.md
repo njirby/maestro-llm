@@ -187,12 +187,14 @@ python scripts/build_main_agent_sft_v2.py \
     --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
     --wavetable-lib data/wavetable_lib.json \
     --out-jsonl data/prepared/agent_sft/main.jsonl \
-    --max-steps 13 \
+    --max-steps 24 \
     --omni-server http://localhost:8000 \
     --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --commentary-mode two_stage \
     --stage2-server http://localhost:8000 \
     --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --audio-gate-threshold 0.01 \
+    --window-tokens 12288 \
     --clap-device cuda:0
 ```
 
@@ -202,30 +204,47 @@ Each output record is a multi-turn ms-swift JSONL conversation. `--max-steps` ca
 
 ```
 user:       <audio> [GT clip]  "Recreate this {archetype} sound in Vital."
-assistant:  HEARD: [initial perceptual gap description]
-            HYPOTHESIS: [synthesis cause of the gap]
-            PLAN: [param inventory sentence]. [rationale sentence — no param names]
-            → tool_call: search "oscillator 1"
-tool_resp:  Oscillator 1 Level: 0.4063\nOscillator 1 Transpose: 0.5000\n...
-assistant:  → tool_call: set params
-tool_resp:  Done
-assistant:  → tool_call: render probe
-tool_resp:  <audio> [step N probe clip]
+assistant:  Spawning search shards...
+            ...wavetable search/judge turns...
+assistant:  → tool_call: render default preset (baseline listen)
+tool_resp:  <audio> [default clip]
 
-# repeated for each iteration step
+# Per iteration step — two variants:
 
+# LISTENING step (|CLAP delta| >= threshold — audio changed materially):
+assistant:  HEARD: [what changed since last listen + remaining timbral gap]
+            HYPOTHESIS: [synthesis cause, references remaining subsystems]
+            PLAN: Adjusting {param list}. [one sentence rationale]
+            "Executing step N parameter updates now."
+tool_call:  bash [set params]
+tool_resp:  {"status": "ok"}
+assistant:  "Listening to updated preset after step N."
+tool_call:  bash [render probe]
+tool_resp:  {"status": "ok", "iter_audio": "<audio>", ...}
+
+# PLANNING step (|CLAP delta| < threshold — sub-perceptual edit):
+assistant:  PLAN: Adjusting {param list}. [rationale for structural setup]
+            "Executing step N parameter updates now."
+tool_call:  bash [set params]
+tool_resp:  {"status": "ok", "note": "Sub-perceptual edit — no audio update."}
+
+# After all steps:
 assistant:  FINAL ASSESSMENT (complete): [2-sentence perceptual summary]
             — or —
             FINAL ASSESSMENT (budget exhausted): [summary of progress and remaining gap]
 ```
 
-Total audio per record: 2 + N clips (GT + default probe + N step probes). At ~94.5 tokens/sec, a 10-step conversation with typical clip lengths runs ~13–15K tokens total.
+The **audio gate** (`--audio-gate-threshold`, default 0.01) decides which variant each step gets. Steps where |CLAP cosine delta| < threshold are planning-only — no audio listen, no HEARD/HYPOTHESIS confabulation. This mirrors how Claude Code narrates a plan before writing code, and eliminates the "I heard nothing change" hallucination pattern on sub-perceptual edits (~40–50% of steps, mostly LFO/modulation routing).
 
-**Two-stage commentary** is the recommended mode. Stage 1 calls Omni with audio to generate HEARD (perceptual observation) and HYPOTHESIS (synthesis cause). Stage 2 calls a text model to write PLAN (param inventory + rationale). This separation keeps the audio-grounded reasoning clean from the parameter-naming task.
+Total audio per record: 2 + L clips (GT + default probe + L *listening* step probes, where L ≤ N). GT audio is heard exactly once — at the start of block 0. At ~94.5 tokens/sec, a 20-step conversation with ~50% listening rate runs ~10–13K tokens total.
 
-**GT-preset grounding for HYPOTHESIS**: at each step, the builder computes which subsystems still differ most between the cumulative preset and the ground-truth target (`compare_preset_path` in `path_gen.py`). The top-2 remaining subsystem names are injected into the HYPOTHESIS instruction prompt, forcing the model to reason about what actually still needs to change rather than hallucinating plausible-sounding causes. These are also stored in `meta.step_labels[].remaining_top_2` for offline grading.
+**Two-stage commentary** is the recommended mode. Stage 1 calls Omni with audio to generate HEARD (perceptual observation) and HYPOTHESIS (synthesis cause). Stage 2 calls a text model to write PLAN (param inventory + rationale). Planning steps skip Stage 1 entirely — a text-only Stage 2 call writes PLAN only. This separation keeps audio-grounded reasoning clean and avoids audio API calls for steps where nothing changed.
 
-**HYPOTHESIS style rotation**: 4 style hint templates rotate by step number so consecutive steps don't produce structurally identical reasoning (acoustic-evidence → mechanism-first → prior-step-contrast → hedged-language, cycling).
+**GT-preset grounding for HYPOTHESIS**: at each step, the builder computes which subsystems still differ most between the cumulative preset and the ground-truth target (`compare_preset_path` in `path_gen.py`). The top-2 remaining subsystem names are injected into the HYPOTHESIS instruction prompt, forcing the model to reason about what actually still needs to change rather than hallucinating plausible-sounding causes. These are stored in `meta.step_labels[].remaining_top_2` for offline grading. Planning steps have no HYPOTHESIS.
+
+**HYPOTHESIS style rotation**: 4 style hint templates rotate by step number so consecutive listening steps don't produce structurally identical reasoning (acoustic-evidence → mechanism-first → prior-step-contrast → hedged-language, cycling).
+
+**GT re-anchor** (`--reanchor-gt-audio`, default off): by default the GT audio is only included once in the conversation (block 0 preamble). Subsequent chunked blocks start with current-state audio only — the model is expected to hold the target in memory. Pass `--reanchor-gt-audio` to re-attach GT at the start of every block (old behaviour).
 
 **Step 3 — grade and filter** (requires Qwen3-Omni at localhost:8000):
 
@@ -242,13 +261,14 @@ python scripts/grade_agent_sft.py \
 
 | Dimension | Weight | What it measures |
 |---|---|---|
-| `plan_param_alignment` | 45% | LLM judge: does PLAN name the params that were actually changed? |
-| `section_structure` | 20% | HEARD / HYPOTHESIS / PLAN / FINAL ASSESSMENT all present each step |
-| `snake_case_clean` | 15% | No raw snake_case param names leaked into commentary text |
-| `hypothesis_grounding` | 15% | HYPOTHESIS mentions ≥1 of the top-2 remaining subsystem names from GT gap |
-| `format_consistent` | 5% | Consistent heading format across all steps |
+| `clap_net_improvement` | 30% | Did the path make net progress toward GT audio? (final − initial CLAP cosine delta) |
+| `plan_rationale_unique` | 25% | PLAN Sentence 2 rationale is distinct across steps (not boilerplate) |
+| `hypothesis_grounding` | 25% | HYPOTHESIS mentions ≥1 top-2 remaining subsystem from GT gap (listening steps only) |
+| `section_structure` | 10% | All 3 headers present in every listening step (planning steps are exempt by design) |
+| `snake_case_clean` | 5% | No raw snake_case param names in commentary text |
+| `format_consistent` | 5% | No **BOLD:** headers |
 
-`overall` is a weighted sum of the above (normalized). `commentary_diversity` is computed and stored for diagnostics but excluded from the overall score (structural ceiling ~0.67 regardless of quality). Typical scores on well-generated data: mean ~0.97, range 0.94–1.00.
+`overall` is a weighted sum. `commentary_diversity` (1 − mean pairwise Jaccard) and `plan_param_alignment` are computed and stored for diagnostics. Benchmark on smoke_64_v2 (n=180): overall mean 0.737. With audio gating enabled (smoke_gate_v1, n=9): 0.760, commentary_diversity +0.100, hypothesis_grounding +0.070.
 
 **Smoke test** (12 samples, fast iteration):
 
@@ -264,12 +284,14 @@ python scripts/build_main_agent_sft_v2.py \
     --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
     --wavetable-lib data/wavetable_lib.json \
     --out-jsonl outputs/smoke_test/main_agent_smoke.jsonl \
-    --max-samples 12 --max-steps 13 \
+    --max-samples 12 --max-steps 24 \
     --omni-server http://localhost:8000 \
     --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --commentary-mode two_stage \
     --stage2-server http://localhost:8000 \
     --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --audio-gate-threshold 0.01 \
+    --window-tokens 12288 \
     --clap-device cuda:0
 
 # Grade
@@ -391,7 +413,7 @@ python -m maestro.synth.wavetable_lib \
 
 **Param priority ordering** ensures the model learns to fix oscillators before envelopes before modulation routing — mirroring how a skilled sound designer approaches the problem.
 
-**Noise and mistake injection**: 35% of params in each step get Gaussian noise (σ=0.08 norm), 25% of paths get a deliberate mistake step to teach error recovery.
+**Mistake injection**: 8% of individual parameter assignments in each step are deliberately set to wrong values (`MISTAKE_PROB=0.08`), teaching error recovery without injecting full steps of noise. A correction step is appended at the end of paths that have mistakes.
 
 **Final-step convergence**: the last cumulative preset is silently snapped to exactly the target so all final audio clips match the GT.
 
@@ -531,8 +553,8 @@ configs/
 - Wavetable library builder and loader (568 unique wavetables)
 - N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
 - `render_iter_presets.py` — batch render of GT, default, and per-step probe clips; writes `manifest.jsonl`
-- `build_main_agent_sft_v2.py` — two-stage Omni commentary pipeline with GT-preset grounding and HYPOTHESIS style rotation
-- `grade_agent_sft.py` — heuristic + LLM-as-judge scoring with `hypothesis_grounding` metric
+- `build_main_agent_sft_v2.py` — two-stage Omni commentary pipeline with GT-preset grounding, HYPOTHESIS style rotation, audio-gated listening (planning-only steps for sub-perceptual edits), and optional GT re-anchor per block
+- `grade_agent_sft.py` — heuristic + LLM-as-judge scoring; grader correctly exempts planning-only steps from section_structure and hypothesis_grounding checks
 - Hierarchical wavetable-retrieval SFT builders (search / judge agents)
 - Lua tuple pipeline for melody transcription SFT data
 - MS-Swift LoRA training scripts for Qwen2.5-Omni
