@@ -93,9 +93,15 @@ def extract_track(midi_path: str, rng: random.Random):
 # Vital synth management
 # ---------------------------------------------------------------------------
 
+_VITAL_SYNTH_SINGLETON: "_vita.Synth | None" = None
+
+
 def _load_vital() -> _vita.Synth:
-    """Create a fresh Vita Synth instance (Vital C++ engine)."""
-    return _vita.Synth()
+    """Return the process-wide Vita Synth singleton (only ONE _vita.Synth() may exist per process)."""
+    global _VITAL_SYNTH_SINGLETON
+    if _VITAL_SYNTH_SINGLETON is None:
+        _VITAL_SYNTH_SINGLETON = _vita.Synth()
+    return _VITAL_SYNTH_SINGLETON
 
 
 def apply_preset(synth: _vita.Synth, preset_path: str) -> None:

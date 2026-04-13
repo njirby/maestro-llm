@@ -715,17 +715,32 @@ def generate_preset_path(
     # stores amounts as separate scalar keys: modulation_{i+1}_amount (1-indexed).
     target_mods = target["settings"].get("modulations", [])
     modulations_changed: list[dict] = []
+
+    # Build set of occupied slot numbers (1-indexed) — slots with actual routes.
+    # modulation_N_bypass/amount/stereo on empty slots (no source+destination) are
+    # meaningless noise: the route doesn't exist, so toggling bypass does nothing.
+    _occupied_slots: set[str] = set()
     for i, mod in enumerate(target_mods):
         source = mod.get("source", "")
         destination = mod.get("destination", "")
         if source or destination:
+            _occupied_slots.add(str(i + 1))
             amount_key = f"modulation_{i + 1}_amount"
             amount = float(target["settings"].get(amount_key, 0.0))
             modulations_changed.append({
                 "source": source,
                 "destination": destination,
                 "amount": amount,
+                "slot": str(i + 1),
             })
+
+    # Remove scalar modulation params for empty slots from changed_scalar_params.
+    _mod_scalar_re = re.compile(r"modulation_(\d+)_(bypass|amount|stereo|bipolar|power)")
+    changed_scalar_params = {
+        name: val
+        for name, val in changed_scalar_params.items()
+        if not (m := _mod_scalar_re.fullmatch(name)) or m.group(1) in _occupied_slots
+    }
 
     # --- Determine N iterations ---
     n_changed = len(changed_scalar_params)
@@ -850,20 +865,23 @@ def generate_preset_path(
                 json.dump(copy.deepcopy(cumulative), f)
             cumulative_preset_path = str(preset_filepath)
 
-        # --- action_snippet: reapy high-level API, display names, normalized values ---
-        # vital listen / render is NOT included here — added by the conversation
-        # builder so the training data shows the model explicitly choosing to listen.
-        set_lines = [
-            "import reapy",
-            "with reapy.inside_reaper():",
-            "    fx = reapy.Project().tracks[0].fxs[0]",
-        ]
-        for name in sorted(params_applied.keys()):
-            display = _json_key_to_display(name)
-            norm = params_applied[name]
-            set_lines.append(f'    fx.params["{display}"].value = {norm:.4f}')
-        set_lines.append('    print("Done")')
-        action_snippet = "\n".join(set_lines)
+        # --- action_snippet: VitalController.set_params, native JSON values ---
+        # Uses vital_tools.VitalController for a single atomic VST chunk round-trip.
+        # Parameter names are Vital's internal JSON keys (snake_case).
+        # Values are native (denormalized) Vital units — same as the preset JSON.
+        params_native = {name: cumulative["settings"][name] for name in params_applied}
+        params_repr = ", ".join(
+            f'"{name}": {val!r}' for name, val in sorted(params_native.items())
+        )
+        action_snippet = (
+            "import sys, json\n"
+            "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+            "from vital_tools import VitalController\n"
+            "vc = VitalController()\n"
+            "vc.discover()\n"
+            f"result = vc.set_params({{{params_repr}}})\n"
+            'print(json.dumps({"status": "ok", "applied": result["applied"], "not_found": result["not_found"]}))'
+        )
 
         # --- search_snippet + search_result: targeted param lookup before setting ---
         keyword = planner.get("search_keyword") or _search_keyword(list(params_applied.keys()))
@@ -937,16 +955,19 @@ def generate_preset_path(
             corr_preset_path = str(preset_filepath)
 
         keyword = _search_keyword(list(corr_params_applied.keys()))
-        set_lines = [
-            "import reapy",
-            "with reapy.inside_reaper():",
-            "    fx = reapy.Project().tracks[0].fxs[0]",
-        ]
-        for name in sorted(corr_params_applied.keys()):
-            display = _json_key_to_display(name)
-            norm = corr_params_applied[name]
-            set_lines.append(f'    fx.params["{display}"].value = {norm:.4f}')
-        set_lines.append('    print("Done")')
+        corr_params_native = {name: cumulative["settings"][name] for name in corr_params_applied}
+        corr_params_repr = ", ".join(
+            f'"{name}": {val!r}' for name, val in sorted(corr_params_native.items())
+        )
+        corr_snippet = (
+            "import sys, json\n"
+            "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+            "from vital_tools import VitalController\n"
+            "vc = VitalController()\n"
+            "vc.discover()\n"
+            f"result = vc.set_params({{{corr_params_repr}}})\n"
+            'print(json.dumps({"status": "ok", "applied": result["applied"], "not_found": result["not_found"]}))'
+        )
 
         iterations.append({
             "step": step_num,
@@ -954,7 +975,7 @@ def generate_preset_path(
             "modulations_changed": [],
             "cumulative_preset": None if output_dir is not None else copy.deepcopy(cumulative),
             "cumulative_preset_path": corr_preset_path,
-            "action_snippet": "\n".join(set_lines),
+            "action_snippet": corr_snippet,
             "search_snippet": _build_search_snippet(keyword),
             "search_result": _generate_search_result(keyword, cumulative_settings_before),
             "search_keyword": keyword,
