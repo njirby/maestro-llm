@@ -1084,7 +1084,7 @@ def test_stage2_prompt_no_revision_on_first_step(tmp_path):
     stage2_prompt = captured_prompts[-1]
     assert "prior hypothesis" not in stage2_prompt.lower(), \
         "First-step prompt should not contain prior hypothesis injection"
-    assert "most likely synthesis causes" in stage2_prompt, \
+    assert "timbral quality" in stage2_prompt.lower(), \
         "First-step prompt should use the default HYPOTHESIS instruction"
 
 
@@ -1271,30 +1271,6 @@ def test_group_params_for_plan_on_param_displays_as_on_off():
         f"Bare 'on' still present in result: {result}"
 
 
-def test_hypothesis_style_hint_varies_by_step_num():
-    """_HYPOTHESIS_STYLE_HINTS must have ≥4 entries and consecutive steps must use
-    different style hints."""
-    from scripts.build_main_agent_sft_v2 import _HYPOTHESIS_STYLE_HINTS
-
-    assert len(_HYPOTHESIS_STYLE_HINTS) >= 4, "Need at least 4 style hints to rotate"
-
-    # Verify no two consecutive step numbers (1-4) map to the same hint
-    seen = [_HYPOTHESIS_STYLE_HINTS[(s - 1) % len(_HYPOTHESIS_STYLE_HINTS)] for s in range(1, 5)]
-    for i in range(len(seen) - 1):
-        assert seen[i] != seen[i + 1], \
-            f"Steps {i+1} and {i+2} use the same style hint"
-
-    # Verify hints contain distinct opening directives
-    assert any("acoustic" in h or "hear" in h.lower() for h in _HYPOTHESIS_STYLE_HINTS), \
-        "Should have at least one acoustic-evidence style hint"
-    assert any("mechanism" in h.lower() or "responsible" in h.lower() for h in _HYPOTHESIS_STYLE_HINTS), \
-        "Should have at least one mechanism-first style hint"
-
-    # Every hint must reference {remaining} so the model reasons about what still needs fixing
-    for i, h in enumerate(_HYPOTHESIS_STYLE_HINTS):
-        assert "{remaining}" in h, \
-            f"Style hint {i} missing {{remaining}} placeholder: {h[:80]}"
-
 
 def test_extract_top_remaining_parses_context_string():
     from scripts.build_main_agent_sft_v2 import _extract_top_remaining
@@ -1315,17 +1291,6 @@ def test_extract_top_remaining_none_returns_fallback():
     assert _extract_top_remaining(None) == "the remaining parameters"
     assert _extract_top_remaining("none — preset converged to target") == "the remaining parameters"
 
-
-def test_style_hint_format_includes_remaining():
-    """The formatted style hint must contain the remaining subsystem text, not literal {remaining}."""
-    from scripts.build_main_agent_sft_v2 import _HYPOTHESIS_STYLE_HINTS, _extract_top_remaining
-    ctx = "filter 1 (8 params), envelope 2 (4 params)"
-    remaining = _extract_top_remaining(ctx)
-    for i, hint in enumerate(_HYPOTHESIS_STYLE_HINTS):
-        formatted = hint.format(primary="oscillator 1", support="filter 1", remaining=remaining)
-        assert "{remaining}" not in formatted, f"Hint {i} still has literal {{remaining}} after format"
-        assert "filter 1" in formatted or "envelope 2" in formatted or "the remaining" in formatted, \
-            f"Hint {i} doesn't contain the remaining subsystem text: {formatted[:100]}"
 
 
 # ---------------------------------------------------------------------------

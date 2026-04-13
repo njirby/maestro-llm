@@ -101,21 +101,6 @@ _SUBSYSTEM_DISPLAY = {
 
 # Rotating style hints for HYPOTHESIS instructions — indexed by (step_num - 1) % 4.
 # Each hint steers the model toward a different sentence-opening pattern AND explicitly
-# asks the model to reason about {remaining} — the subsystems that still need to change
-# according to the GT-preset gap. This prevents both uniform phrasing and the failure mode
-# where the model only discusses what was just applied rather than what still needs fixing.
-_HYPOTHESIS_STYLE_HINTS = (
-    "Use hedged language (likely/may/could). Explain why {remaining} haven't yet matched "
-    "the target, referencing {primary} as the most likely cause.",
-    "Begin with the acoustic evidence you hear that indicates {remaining} still need "
-    "adjustment (e.g. 'The [X] character in the audio suggests {remaining} are still off '). "
-    "Then name the synthesis mechanism responsible.",
-    "Begin with the synthesis mechanism directly: why {primary} alone isn't enough and "
-    "what {remaining} still need to do to close the remaining timbral gap.",
-    "Begin with what the previous step failed to fix (e.g. 'Despite [what last step "
-    "addressed], {remaining} still cause [perceptual problem] because...').",
-)
-
 
 def _extract_top_remaining(remaining_delta_context: str | None, n: int = 2) -> str:
     """Pull the top N subsystem names out of a remaining_delta_context string.
@@ -147,27 +132,58 @@ def _get_param_subsystem(key: str) -> str:
     return parts[0]
 
 
-def _group_params_for_plan(params_delta: list[dict]) -> str:
+def _group_params_for_plan(params_delta: list[dict], modulations_changed: list | None = None) -> str:
     """Convert params_delta to a natural-language string for PLAN prefix seeding.
 
     ≤5 params  → enumerate all display names.
     >5 params  → group by subsystem; small groups name the attributes, large groups
                  say "N subsystem parameters".
+
+    For modulation params, substitutes route descriptions (src→dst) instead of
+    raw slot numbers when modulations_changed is provided.
     """
+    import re as _re
     if not params_delta:
         return "these parameters"
 
-    if len(params_delta) <= 5:
-        names = [_json_key_to_display(d["name"]) for d in params_delta]
+    # Build slot→route lookup for modulation substitution.
+    _slot_to_route: dict[str, dict] = {}
+    for i, route in enumerate(modulations_changed or []):
+        slot_key = route.get("slot") or str(i + 1)
+        _slot_to_route[slot_key] = route
+
+    # Expand modulation params into route descriptions, deduplicated by slot.
+    _mod_slots_seen: set[str] = set()
+    expanded_delta: list[dict] = []
+    mod_routes_seen: list[str] = []
+    for d in params_delta:
+        name = d["name"]
+        _mod_match = _re.match(r"modulation_(\d+)_(bypass|amount|stereo|bipolar|power)", name)
+        if _mod_match and _slot_to_route:
+            slot_num = _mod_match.group(1)
+            if slot_num not in _mod_slots_seen:
+                _mod_slots_seen.add(slot_num)
+                route = _slot_to_route.get(slot_num)
+                if route:
+                    src, dst = route.get("source", ""), route.get("destination", "")
+                    if src or dst:
+                        mod_routes_seen.append(f"{src}→{dst}")
+        else:
+            expanded_delta.append(d)
+
+    if len(expanded_delta) <= 5 and not mod_routes_seen:
+        names = [_json_key_to_display(d["name"]) for d in expanded_delta]
+        if not names:
+            return "these parameters"
         if len(names) == 1:
             return names[0]
         if len(names) == 2:
             return f"{names[0]} and {names[1]}"
         return ", ".join(names[:-1]) + f", and {names[-1]}"
 
-    # Group by subsystem, preserving insertion order
+    # Group non-mod params by subsystem
     groups: dict[str, list[str]] = {}
-    for d in params_delta:
+    for d in expanded_delta:
         sub = _get_param_subsystem(d["name"])
         groups.setdefault(sub, []).append(d["name"])
 
@@ -178,13 +194,12 @@ def _group_params_for_plan(params_delta: list[dict]) -> str:
         if n == 1:
             parts.append(_json_key_to_display(keys[0]))
         elif n <= 3:
-            # Strip subsystem prefix to get just the attribute token(s)
             prefix = sub + "_"
             attrs = []
             for k in keys:
                 attr_key = k[len(prefix):] if k.startswith(prefix) else k
                 attr_disp = _json_key_to_display(attr_key).lower()
-                if attr_disp == "on":   # boolean enable/disable param
+                if attr_disp == "on":
                     attr_disp = "on/off"
                 attrs.append(attr_disp)
             if len(attrs) == 2:
@@ -194,6 +209,17 @@ def _group_params_for_plan(params_delta: list[dict]) -> str:
         else:
             parts.append(f"{n} {label} parameters")
 
+    # Append mod route descriptions
+    if mod_routes_seen:
+        if len(mod_routes_seen) <= 3:
+            parts.extend(mod_routes_seen)
+        else:
+            # Summarise: list first 3 routes + count remainder
+            shown = ", ".join(mod_routes_seen[:3])
+            parts.append(f"modulation routes {shown} (+{len(mod_routes_seen)-3} more)")
+
+    if not parts:
+        return "these parameters"
     if len(parts) == 1:
         return parts[0]
     if len(parts) == 2:
@@ -307,12 +333,27 @@ def _param_label(name: str) -> str:
     return "synth parameter"
 
 
-def _format_delta_context(params_delta: list, is_mistake_step: bool) -> str:
-    """Format params_delta list into a natural-language string for the Omni prompt."""
+def _format_delta_context(params_delta: list, is_mistake_step: bool, modulations_changed: list | None = None) -> str:
+    """Format params_delta list into a natural-language string for the Omni prompt.
+
+    When the step is modulation-heavy, substitutes raw modulation_N_bypass/amount entries
+    with human-readable source→destination route descriptions from modulations_changed.
+    """
     if not params_delta:
         return ""
+
+    # Build slot→route lookup.  Routes from _target_mod_routes always have a "slot" key;
+    # fall back to sequential i+1 indexing for legacy path files that lack it.
+    _slot_to_route: dict[str, dict] = {}
+    for i, route in enumerate((modulations_changed or [])):
+        slot_key = route.get("slot") or str(i + 1)
+        _slot_to_route[slot_key] = route
+
     lines = []
     mistake_params = []
+    mod_slots_seen: set[str] = set()
+    mod_route_lines: list[str] = []
+
     for d in params_delta:
         name = d["name"]
         display = _json_key_to_display(name)
@@ -327,6 +368,25 @@ def _format_delta_context(params_delta: list, is_mistake_step: bool) -> str:
         else:
             direction = "decreased"
         mag_str = "slightly" if magnitude < 0.15 else ("significantly" if magnitude > 0.35 else "moderately")
+
+        # For modulation slot params, emit route description instead of raw name.
+        import re as _re
+        _mod_match = _re.match(r"modulation_(\d+)_(bypass|amount|stereo|bipolar|power)", name)
+        if _mod_match and modulations_changed:
+            slot_num = _mod_match.group(1)
+            if slot_num not in mod_slots_seen:
+                mod_slots_seen.add(slot_num)
+                route = _slot_to_route.get(slot_num)
+                if route:
+                    src = route.get("source", "?")
+                    dst = route.get("destination", "?")
+                    amt = route.get("amount", 0.0)
+                    mistake_flag = " ⚠ moved away from target" if d.get("mistake") else ""
+                    mod_route_lines.append(f"- {src} → {dst} (amount {amt:+.2f}){mistake_flag}")
+                    if d.get("mistake"):
+                        mistake_params.append(f"{src}→{dst}")
+            continue  # handled via mod_route_lines
+
         if d.get("mistake"):
             lines.append(
                 f"- {display} ({label}): {direction} {mag_str} [{from_n:.2f}\u2192{to_n:.2f}] \u26a0 moved away from target"
@@ -334,7 +394,14 @@ def _format_delta_context(params_delta: list, is_mistake_step: bool) -> str:
             mistake_params.append(display)
         else:
             lines.append(f"- {display} ({label}): {direction} {mag_str} [{from_n:.2f}\u2192{to_n:.2f}]")
-    context = "Parameters being changed in this step:\n" + "\n".join(lines)
+
+    # Emit non-mod params first, then mod routes grouped under a header.
+    all_lines = lines[:]
+    if mod_route_lines:
+        all_lines.append(f"Modulation routes ({len(mod_route_lines)} active):")
+        all_lines.extend(mod_route_lines)
+
+    context = "Parameters being changed in this step:\n" + "\n".join(all_lines)
     if mistake_params:
         context += (
             f"\n\nNote: {', '.join(mistake_params)} moved in the wrong direction (overcorrection). "
@@ -343,15 +410,36 @@ def _format_delta_context(params_delta: list, is_mistake_step: bool) -> str:
     return context
 
 
-def _build_param_summary(params_delta: list[dict]) -> str:
-    """One-line step summary: top 4 changes by magnitude with ↑/↓ arrows."""
+def _build_param_summary(params_delta: list[dict], modulations_changed: list | None = None) -> str:
+    """One-line step summary: top 4 changes by magnitude with ↑/↓ arrows.
+
+    For modulation-heavy steps, substitutes raw modulation_N_* names with
+    source→destination route descriptions when modulations_changed is provided.
+    """
+    import re as _re
     if not params_delta:
         return "(no changes)"
+
+    _slot_to_route: dict[str, dict] = {}
+    for i, route in enumerate(modulations_changed or []):
+        slot_key = route.get("slot") or str(i + 1)
+        _slot_to_route[slot_key] = route
+
     top = sorted(params_delta, key=lambda d: abs(d.get("to_norm", 0) - d.get("from_norm", 0)), reverse=True)[:4]
     parts = []
     for d in top:
+        name = d["name"]
         arrow = "\u2191" if d.get("to_norm", 0) > d.get("from_norm", 0) else "\u2193"
-        parts.append(f"{_json_key_to_display(d['name'])} {arrow} {abs(d.get('to_norm', 0) - d.get('from_norm', 0)):.2f}")
+        mag = abs(d.get("to_norm", 0) - d.get("from_norm", 0))
+        _mod_match = _re.match(r"modulation_(\d+)_(bypass|amount|stereo|bipolar|power)", name)
+        if _mod_match and _slot_to_route:
+            route = _slot_to_route.get(_mod_match.group(1))
+            if route:
+                src = route.get("source", "?")
+                dst = route.get("destination", "?")
+                parts.append(f"{src}→{dst} {arrow} {mag:.2f}")
+                continue
+        parts.append(f"{_json_key_to_display(name)} {arrow} {mag:.2f}")
     suffix = f" (+{len(params_delta) - 4} more)" if len(params_delta) > 4 else ""
     return "; ".join(parts) + suffix
 
@@ -467,6 +555,39 @@ def _build_judge_result(
     }
 
 
+def _llm_post(server_url: str, payload: dict, timeout: float = 120.0, max_retries: int = 3) -> dict:
+    """POST to an OpenAI-compatible completions endpoint with retry on timeout/5xx/connect errors."""
+    import httpx, time
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client() as client:
+                resp = client.post(server_url, json=payload, timeout=timeout)
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.ConnectError) as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                time.sleep(3)
+    assert last_exc is not None
+    raise last_exc
+
+
+def _check_server_reachable(server_url: str, label: str) -> None:
+    """Raise a clear RuntimeError if the server is not reachable before the build starts."""
+    import httpx
+    base = server_url.rstrip("/").rsplit("/v1", 1)[0]
+    try:
+        with httpx.Client() as client:
+            resp = client.get(f"{base}/v1/models", timeout=5.0)
+            resp.raise_for_status()
+    except Exception as exc:
+        raise RuntimeError(
+            f"{label} server at {server_url} is not reachable: {exc}\n"
+            "Start the model server before running this script."
+        ) from exc
+
+
 def _wrap_as_bash(python_code: str) -> str:
     """Wrap bare Python code in a shell-executable heredoc."""
     stripped = python_code.strip()
@@ -475,10 +596,12 @@ def _wrap_as_bash(python_code: str) -> str:
     return f"python - <<'PY'\n{stripped}\nPY"
 
 
-def _step_commentary_fallback(step: dict, step_num: int) -> str:
+def _step_commentary_fallback(step: dict, step_num: int, is_planning_step: bool = False) -> str:
     keyword = str(step.get("search_keyword") or "target controls")
     primary = str(step.get("primary_family") or "synth")
     support = str(step.get("support_family") or "none")
+    if is_planning_step:
+        return f"PLAN: Adjusting {keyword} parameters. These structural changes set up the next audible step toward the target {primary} sound."
     return (
         f"HEARD: Step {step_num} still has mismatch in tone and movement.\n\n"
         f"HYPOTHESIS: Primary mismatch is in {primary}, with possible interaction from {support}.\n\n"
@@ -496,6 +619,7 @@ def _call_omni_commentary(
     model: str,
     prev_commentary: str | None = None,
     params_delta: list | None = None,
+    modulations_changed: list | None = None,
     is_mistake_step: bool = False,
     allowed_params: list | None = None,
     remaining_delta_context: str | None = None,
@@ -503,17 +627,17 @@ def _call_omni_commentary(
     clap_delta: float | None = None,  # unused in single-call mode
     is_planning_step: bool = False,
     planner_stage: str | None = None,
+    steps_since_last_listen: int = 1,  # unused in single-call mode
 ) -> str:
     """Call the hosted Omni model for grounded HEARD/HYPOTHESIS/PLAN commentary.
     Falls back to the template string if the server is unavailable."""
-    import httpx
 
     primary = str(step.get("primary_family") or "synth")
     support = str(step.get("support_family") or "none")
     keyword = str(step.get("search_keyword") or "target controls")
 
-    delta_ctx = _format_delta_context(params_delta or [], is_mistake_step)
-    param_summary = _build_param_summary(params_delta or [])
+    delta_ctx = _format_delta_context(params_delta or [], is_mistake_step, modulations_changed=modulations_changed)
+    param_summary = _build_param_summary(params_delta or [], modulations_changed=modulations_changed)
     allowed_str = ", ".join(allowed_params) if allowed_params else "all"
     mistake_note = (
         "MISTAKE STEP: these changes were intentional regressions for training robustness.\n"
@@ -527,7 +651,7 @@ def _call_omni_commentary(
     # Planning steps: text-only, PLAN section only — no HEARD/HYPOTHESIS, no audio.
     if is_planning_step:
         if params_delta:
-            params_str = _group_params_for_plan(params_delta)
+            params_str = _group_params_for_plan(params_delta, modulations_changed=modulations_changed)
             plan_sentence1 = f"Adjusting {params_str}."
         else:
             plan_sentence1 = "Applying parameter updates."
@@ -551,12 +675,8 @@ def _call_omni_commentary(
             "temperature": 0.4,
         }
         try:
-            with httpx.Client() as client:
-                resp = client.post(
-                    f"{omni_server}/v1/chat/completions", json=payload, timeout=60.0
-                )
-                resp.raise_for_status()
-                return resp.json()["choices"][0]["message"]["content"].strip()
+            result = _llm_post(f"{omni_server}/v1/chat/completions", payload, timeout=120.0)
+            return result["choices"][0]["message"]["content"].strip()
         except Exception:
             return f"PLAN: {plan_sentence1} These precision adjustments prepare the preset for the next audible improvement step."
 
@@ -613,12 +733,8 @@ def _call_omni_commentary(
         "temperature": 0.5,
     }
     try:
-        with httpx.Client() as client:
-            resp = client.post(
-                f"{omni_server}/v1/chat/completions", json=payload, timeout=90.0
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
+        result = _llm_post(f"{omni_server}/v1/chat/completions", payload, timeout=180.0)
+        return result["choices"][0]["message"]["content"].strip()
     except Exception:
         return _step_commentary_fallback(step, step_num)
 
@@ -635,6 +751,7 @@ def _call_omni_commentary_two_stage(
     stage2_model: str,
     prev_commentary: str | None = None,
     params_delta: list | None = None,
+    modulations_changed: list | None = None,
     is_mistake_step: bool = False,
     allowed_params: list | None = None,
     remaining_delta_context: str | None = None,
@@ -642,6 +759,7 @@ def _call_omni_commentary_two_stage(
     clap_delta: float | None = None,
     planner_stage: str | None = None,
     is_planning_step: bool = False,
+    steps_since_last_listen: int = 1,
 ) -> str:
     """Two-stage commentary: Stage 1 Omni describes audio only; Stage 2 text-only
     model integrates the description with params_delta to produce HEARD/HYPOTHESIS/PLAN.
@@ -655,13 +773,12 @@ def _call_omni_commentary_two_stage(
 
     Falls back to the single-call version if either stage fails.
     """
-    import httpx
 
     primary = str(step.get("primary_family") or "synth")
     support = str(step.get("support_family") or "none")
     keyword = str(step.get("search_keyword") or "target controls")
-    delta_ctx = _format_delta_context(params_delta or [], is_mistake_step)
-    param_summary = _build_param_summary(params_delta or [])
+    delta_ctx = _format_delta_context(params_delta or [], is_mistake_step, modulations_changed=modulations_changed)
+    param_summary = _build_param_summary(params_delta or [], modulations_changed=modulations_changed)
     allowed_str = ", ".join(allowed_params) if allowed_params else "all"
     mistake_note = (
         "MISTAKE STEP: these changes were intentional regressions for training robustness.\n"
@@ -675,7 +792,7 @@ def _call_omni_commentary_two_stage(
     # Planning steps: text-only Stage 2 call — PLAN section only, no HEARD/HYPOTHESIS, no audio.
     if is_planning_step:
         if params_delta:
-            params_str = _group_params_for_plan(params_delta)
+            params_str = _group_params_for_plan(params_delta, modulations_changed=modulations_changed)
             plan_sentence1 = f"Adjusting {params_str}."
         else:
             plan_sentence1 = "Applying parameter updates."
@@ -699,14 +816,25 @@ def _call_omni_commentary_two_stage(
             "temperature": 0.4,
         }
         try:
-            with httpx.Client() as client:
-                s2_resp = client.post(
-                    f"{stage2_server}/v1/chat/completions", json=s2_payload, timeout=60.0
-                )
-                s2_resp.raise_for_status()
-                return s2_resp.json()["choices"][0]["message"]["content"].strip()
+            result = _llm_post(f"{stage2_server}/v1/chat/completions", s2_payload, timeout=120.0)
+            return result["choices"][0]["message"]["content"].strip()
         except Exception:
             return f"PLAN: {plan_sentence1} These precision adjustments prepare the preset for the next audible improvement step."
+
+    # Build dynamic edit-range description for Stage 1A prompt and HEARD attribution.
+    # When multiple planning steps preceded this listen, name the full range of steps.
+    if steps_since_last_listen <= 1:
+        _edit_range_str = "the parameter edit just applied"
+        _s1a_before_label = "the preset BEFORE the last parameter edit"
+        _s1a_after_label = "the preset AFTER the last parameter edit"
+    else:
+        _first_step = step_num - steps_since_last_listen + 1
+        _edit_range_str = (
+            f"the {steps_since_last_listen} parameter edits applied since your last listen "
+            f"(steps {_first_step}–{step_num})"
+        )
+        _s1a_before_label = f"the preset BEFORE these edits (your last listened state)"
+        _s1a_after_label = f"the preset NOW (after steps {_first_step}–{step_num})"
 
     # --- Stage 1: audio-only perceptual description ---
     # Outputs two separate observations that Stage 2 will use distinctly:
@@ -743,9 +871,9 @@ def _call_omni_commentary_two_stage(
                 {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{prior_b64}"}},
                 {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{iter_b64}"}},
                 {"type": "text", "text": (
-                    "You are a music production AI. Listen to two synthesizer clips.\n"
-                    "AUDIO A: the preset BEFORE the last parameter edit.\n"
-                    "AUDIO B: the preset AFTER the last parameter edit.\n\n"
+                    f"You are a music production AI. Listen to two synthesizer clips.\n"
+                    f"AUDIO A: {_s1a_before_label}.\n"
+                    f"AUDIO B: {_s1a_after_label}.\n\n"
                     "Describe ONLY what changed between A and B: be specific about frequency region "
                     "(low/mid/high), envelope shape (attack/decay/sustain), harmonic character "
                     "(brightness, buzz, shimmer), or modulation movement.\n"
@@ -766,24 +894,13 @@ def _call_omni_commentary_two_stage(
                 )},
             ]
             try:
-                with httpx.Client() as client:
-                    s1a_resp = client.post(
-                        f"{omni_server}/v1/chat/completions",
-                        json={"model": omni_model, "messages": [{"role": "user", "content": s1a_content}],
-                              "max_tokens": 160, "temperature": 0.4},
-                        timeout=90.0,
-                    )
-                    s1a_resp.raise_for_status()
-                    step_change_obs = s1a_resp.json()["choices"][0]["message"]["content"].strip()
-
-                    s1b_resp = client.post(
-                        f"{omni_server}/v1/chat/completions",
-                        json={"model": omni_model, "messages": [{"role": "user", "content": s1b_content}],
-                              "max_tokens": 160, "temperature": 0.4},
-                        timeout=90.0,
-                    )
-                    s1b_resp.raise_for_status()
-                    remaining_gap_obs = s1b_resp.json()["choices"][0]["message"]["content"].strip()
+                url = f"{omni_server}/v1/chat/completions"
+                s1a_result = _llm_post(url, {"model": omni_model, "messages": [{"role": "user", "content": s1a_content}],
+                                             "max_tokens": 160, "temperature": 0.4}, timeout=180.0)
+                step_change_obs = s1a_result["choices"][0]["message"]["content"].strip()
+                s1b_result = _llm_post(url, {"model": omni_model, "messages": [{"role": "user", "content": s1b_content}],
+                                             "max_tokens": 160, "temperature": 0.4}, timeout=180.0)
+                remaining_gap_obs = s1b_result["choices"][0]["message"]["content"].strip()
             except Exception:
                 return _step_commentary_fallback(step, step_num)
 
@@ -805,15 +922,10 @@ def _call_omni_commentary_two_stage(
                 )},
             ]
             try:
-                with httpx.Client() as client:
-                    s1_resp = client.post(
-                        f"{omni_server}/v1/chat/completions",
-                        json={"model": omni_model, "messages": [{"role": "user", "content": s1_content}],
-                              "max_tokens": 220, "temperature": 0.4},
-                        timeout=90.0,
-                    )
-                    s1_resp.raise_for_status()
-                    remaining_gap_obs = s1_resp.json()["choices"][0]["message"]["content"].strip()
+                url = f"{omni_server}/v1/chat/completions"
+                s1_result = _llm_post(url, {"model": omni_model, "messages": [{"role": "user", "content": s1_content}],
+                                            "max_tokens": 220, "temperature": 0.4}, timeout=180.0)
+                remaining_gap_obs = s1_result["choices"][0]["message"]["content"].strip()
             except Exception:
                 return _step_commentary_fallback(step, step_num)
 
@@ -830,15 +942,10 @@ def _call_omni_commentary_two_stage(
                 )},
             ]
             try:
-                with httpx.Client() as client:
-                    s1_resp = client.post(
-                        f"{omni_server}/v1/chat/completions",
-                        json={"model": omni_model, "messages": [{"role": "user", "content": s1_content}],
-                              "max_tokens": 220, "temperature": 0.4},
-                        timeout=90.0,
-                    )
-                    s1_resp.raise_for_status()
-                    remaining_gap_obs = s1_resp.json()["choices"][0]["message"]["content"].strip()
+                url = f"{omni_server}/v1/chat/completions"
+                s1_result = _llm_post(url, {"model": omni_model, "messages": [{"role": "user", "content": s1_content}],
+                                            "max_tokens": 220, "temperature": 0.4}, timeout=180.0)
+                remaining_gap_obs = s1_result["choices"][0]["message"]["content"].strip()
             except Exception:
                 return _step_commentary_fallback(step, step_num)
 
@@ -854,18 +961,22 @@ def _call_omni_commentary_two_stage(
             f"[REMAINING GAP TO TARGET]\n{remaining_gap_obs}"
         )
         heard_base = (
-            "HEARD (2 sentences): Sentence 1 describes what the previous step changed, "
-            "drawn from [WHAT THE LAST STEP CHANGED]. "
-            "Sentence 2 states the most important remaining timbral gap, "
-            "drawn from [REMAINING GAP TO TARGET]. "
-            "Use specific sonic language (e.g. 'the attack softened', 'high-mid shimmer increased', "
-            "'filter cutoff moved lower') — avoid generic phrases like 'lacks texture' or 'still missing'."
+            "HEARD (2 sentences): "
+            f"Sentence 1 describes what {_edit_range_str} achieved, drawn from [WHAT THE LAST STEP CHANGED]. "
+            "Sentence 2 names the single most important remaining timbral gap, drawn from [REMAINING GAP TO TARGET] — "
+            "describe it as a positive quality the TARGET HAS (e.g. 'the target has a brighter upper harmonic shelf', "
+            "'the target has a sharper transient click') not as something the current preset lacks. "
+            "Use specific sonic language (frequency region, envelope shape, harmonic character). "
+            "BANNED phrases for Sentence 2: 'still lacks', 'still missing', 'still absent', "
+            "'still needs', 'still has no', 'remains absent', 'not yet present', 'continues to lack'."
         )
         if prior_heard:
             heard_instruction = (
                 heard_base + " "
                 f"The previous step's HEARD began: \"{prior_heard[:180]}\" "
-                f"— Sentence 1 must describe something DIFFERENT from this prior observation."
+                f"— Sentence 2 must describe a DIFFERENT remaining gap than what that step's Sentence 2 focused on. "
+                f"If the same raw gap persists, describe it from a different angle: different frequency region, "
+                f"different property (texture vs. envelope vs. movement), or different comparison point."
             )
         else:
             heard_instruction = heard_base
@@ -883,7 +994,12 @@ def _call_omni_commentary_two_stage(
         heard_instruction = (
             "HEARD (1-2 sentences): Describe the most prominent timbral gap between the current "
             "preset and the target, drawn from [REMAINING GAP TO TARGET]. "
-            "Use specific sonic language — avoid generic phrases like 'lacks texture'."
+            "Use specific sonic language — describe what the TARGET HAS as a positive quality "
+            "(e.g. 'the target has a brighter upper harmonic shelf', 'the target has a sharper "
+            "transient click') not as something the current preset lacks. "
+            "BANNED phrases: 'still lacks', 'still missing', 'still absent', 'still needs', "
+            "'still has no', 'remains absent', 'not yet present', 'continues to lack', "
+            "'has no', 'is missing'."
         )
 
     prev_context = (
@@ -900,55 +1016,63 @@ def _call_omni_commentary_two_stage(
     # Sentence 2 is the model's rationale (the actual training signal).
     # Splitting them keeps the "why" uncluttered by the param list.
     if params_delta:
-        params_str = _group_params_for_plan(params_delta)
+        params_str = _group_params_for_plan(params_delta, modulations_changed=modulations_changed)
         plan_instruction = (
             f"PLAN (2 sentences): "
             f"Sentence 1 — copy this exactly: \"Adjusting {params_str}.\" "
-            f"Sentence 2 — one sentence explaining how these changes address the remaining "
-            f"timbral gap. Do not name any parameter in Sentence 2."
+            f"Sentence 2 — one sentence explaining how these changes will address the remaining "
+            f"timbral gap. Do not name any parameter in Sentence 2. "
+            f"Use future tense only (will, should, needs to) — never use past tense to describe "
+            f"what will happen."
         )
     else:
         plan_instruction = (
-            "PLAN (1 sentence): Explain the rationale for the parameter adjustments listed above."
+            "PLAN (1 sentence): Explain the rationale for the parameter adjustments listed above. "
+            "Use future tense only."
         )
 
-    # HYPOTHESIS: rotate style hints by step_num so consecutive steps use different
-    # sentence-opening patterns. Each hint embeds {remaining} — the top subsystems that
-    # still differ from the GT preset — so the model reasons about what still needs fixing,
-    # not just what was applied in the current step.
+    # HYPOTHESIS: audio observation about the remaining gap — what you just heard reveals
+    # about the distance still left to close. NOT a prescription for the next step (that's PLAN).
+    # This keeps temporal logic clean: HYPOTHESIS reflects what was heard, PLAN says what to do.
     remaining_top = _extract_top_remaining(remaining_delta_context)
-    style_hint = _HYPOTHESIS_STYLE_HINTS[(step_num - 1) % len(_HYPOTHESIS_STYLE_HINTS)].format(
-        primary=primary, support=support, remaining=remaining_top
-    )
 
-    # When a prior hypothesis exists, require revision rather than restatement.
     prior_hypothesis = _extract_hypothesis(prev_commentary) if prev_commentary else None
     if planner_stage == "correction":
         # Correction steps fix params that were deliberately set wrong in an earlier step.
-        # Hypothesis must: (1) identify what was wrong from audio evidence, (2) explain the
-        # correction, and (3) note what timbral gap still remains after this fix.
         correction_params = [p["name"].replace("_", " ") for p in (params_delta or [])[:3]]
         correction_str = ", ".join(correction_params) if correction_params else "earlier parameters"
         hypothesis_instruction = (
-            f"HYPOTHESIS (2 sentences): Sentence 1 — based on what you hear, explain what was "
-            f"wrong with the earlier {correction_str} settings (too high, too low, wrong "
-            f"direction) and why correcting them helps close the gap. "
-            f"Sentence 2 — describe what timbral difference still remains between the current "
-            f"render and the target after this correction, referencing {remaining_top}."
+            f"HYPOTHESIS (1 sentence): Based on what you just heard, describe what the "
+            f"{correction_str} correction achieved perceptually, and what single timbral quality "
+            f"the audio reveals as the most prominent remaining gap. "
+            f"Ground it in the audio — name a specific perceptual quality. "
+            f"Start with a concrete audio observation, not 'Despite' or 'Although'."
         )
-    elif prior_hypothesis:
+    elif remaining_delta_context and not remaining_delta_context.startswith("none"):
+        # Standard case: describe what the audio reveals about the remaining gap.
+        prior_hyp_ctx = (
+            f" Prior hypothesis: \"{prior_hypothesis[:160]}\" — must describe a DIFFERENT timbral quality."
+            if prior_hypothesis else ""
+        )
         hypothesis_instruction = (
-            f"HYPOTHESIS (1-2 sentences): Revise your synthesis hypothesis in light of what "
-            f"this step's audio just revealed. The prior hypothesis was: "
-            f"\"{prior_hypothesis[:280]}\" "
-            f"— your new hypothesis must either update what still needs to change or identify "
-            f"a new cause for the remaining gap. Do not simply restate the prior hypothesis. "
-            f"{style_hint}"
+            f"HYPOTHESIS (1 sentence): Describe the most important timbral quality that still "
+            f"separates the current sound from the target, based on what you just heard. "
+            f"Ground it in the audio — name a specific perceptual quality "
+            f"(e.g. brightness, attack transient, movement speed, harmonic density).{prior_hyp_ctx} "
+            f"Use hedged language (appears to, seems to, suggests). "
+            f"Do NOT prescribe a next step, name a parameter family, or use 'Despite'/'Although'/'still lacks'."
         )
     else:
+        # Converged or no remaining context — brief honest summary.
+        prior_hyp_converged_ctx = (
+            f" Prior hypothesis: \"{prior_hypothesis[:160]}\" — "
+            f"revise: describe a DIFFERENT timbral quality if the gap has changed."
+            if prior_hypothesis else ""
+        )
         hypothesis_instruction = (
-            f"HYPOTHESIS (1-2 sentences): Describe the most likely synthesis causes for the "
-            f"remaining timbral gap. {style_hint}"
+            "HYPOTHESIS (1 sentence): Describe what timbral quality still separates the "
+            "current render from the target, if anything, based on what you hear. "
+            f"If the gap is very small, say so directly.{prior_hyp_converged_ctx}"
         )
 
     s2_prompt = (
@@ -977,12 +1101,8 @@ def _call_omni_commentary_two_stage(
 
     fallback_obs = step_change_obs or remaining_gap_obs or "No audio observation available."
     try:
-        with httpx.Client() as client:
-            s2_resp = client.post(
-                f"{stage2_server}/v1/chat/completions", json=s2_payload, timeout=90.0
-            )
-            s2_resp.raise_for_status()
-            return s2_resp.json()["choices"][0]["message"]["content"].strip()
+        result = _llm_post(f"{stage2_server}/v1/chat/completions", s2_payload, timeout=180.0)
+        return result["choices"][0]["message"]["content"].strip()
     except Exception:
         return (
             f"HEARD: {fallback_obs[:200]}\n\n"
@@ -1007,7 +1127,6 @@ def _call_omni_closing_eval(
     The prompt branches on convergence status so the agent's verdict is grounded
     in parameter-space truth rather than free-form speculation.
     """
-    import httpx
 
     with open(gt_wav, "rb") as f:
         gt_b64 = base64.b64encode(f.read()).decode()
@@ -1019,7 +1138,6 @@ def _call_omni_closing_eval(
             "Write 2-3 sentences: what aspects now match well, and what still differs most. "
             "Be specific about timbre, texture, or envelope."
         )
-        verdict_label = "FINAL ASSESSMENT:"
     elif convergence.get("converged"):
         verdict_instruction = (
             "All planned iterations have been applied. "
@@ -1027,7 +1145,6 @@ def _call_omni_closing_eval(
             "(note any timbral, textural, or envelope differences you can still hear), "
             "then confirm the iteration path is complete even if a small gap remains."
         )
-        verdict_label = "FINAL ASSESSMENT (complete):"
     else:
         n = convergence.get("n_remaining", 0)
         subs = list(convergence.get("by_subsystem", {}).keys())[:3]
@@ -1038,7 +1155,6 @@ def _call_omni_closing_eval(
             "Write 2 sentences: describe what timbral qualities were successfully recreated, "
             "then describe the most significant remaining gap."
         )
-        verdict_label = "FINAL ASSESSMENT (budget exhausted):"
 
     content = [
         {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{gt_b64}"}},
@@ -1046,8 +1162,7 @@ def _call_omni_closing_eval(
         {"type": "text", "text": (
             f"You are a music production AI agent doing a final review.\n"
             f"AUDIO A is the target {archetype} sound. AUDIO B is the final recreated preset.\n\n"
-            f"{verdict_instruction}\n"
-            f"Begin your response with \"{verdict_label}\""
+            f"{verdict_instruction}"
         )},
     ]
     payload = {
@@ -1057,12 +1172,8 @@ def _call_omni_closing_eval(
         "temperature": 0.4,
     }
     try:
-        with httpx.Client() as client:
-            resp = client.post(
-                f"{omni_server}/v1/chat/completions", json=payload, timeout=90.0
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
+        result = _llm_post(f"{omni_server}/v1/chat/completions", payload, timeout=180.0)
+        return result["choices"][0]["message"]["content"].strip()
     except Exception:
         if convergence and convergence.get("converged"):
             return "FINAL ASSESSMENT (complete): All planned iterations have been applied. The recreation path is complete."
@@ -1123,11 +1234,6 @@ def main() -> None:
     ap.add_argument("--audio-gate-threshold", type=float, default=0.01,
         help="Absolute CLAP delta threshold. Steps with |delta| below this get PLAN-only turns "
              "(no audio listen). Set to 0 to disable gating (listen every step). Default 0.01.")
-    ap.add_argument("--reanchor-gt-audio", action="store_true", default=False,
-        help="Re-attach GT audio to the intro of each chunked block 2+. Disabled by default: "
-             "the model is expected to reason from conversation context without re-listening to GT "
-             "every block, which produces higher-quality training signal and saves ~3000 tokens per block.")
-
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
     ap.add_argument("--omni-server", default="", help="Omni model server URL (empty = use template fallback).")
@@ -1148,20 +1254,15 @@ def main() -> None:
     )
     ap.add_argument("--stage2-server", default="", help="Stage 2 text model server URL (defaults to --omni-server).")
     ap.add_argument("--stage2-model", default="", help="Stage 2 model name (defaults to --omni-model).")
-    ap.add_argument(
-        "--window-tokens", type=int, default=None,
-        help="If set, split each conversation into blocks of at most this many tokens. "
-             "Each block re-includes GT audio + current-state audio as context prefix. "
-             "Requires soundfile + transformers tokenizer. Recommended: 12288.",
-    )
-    ap.add_argument(
-        "--audio-token-rate", type=float, default=94.5,
-        help="Tokens per second of audio for block budget estimation (default 94.5).",
-    )
     args = ap.parse_args()
 
     stage2_server = args.stage2_server or args.omni_server
     stage2_model = args.stage2_model or args.omni_model
+
+    if args.omni_server:
+        _check_server_reachable(args.omni_server, "Omni")
+        if stage2_server and stage2_server != args.omni_server:
+            _check_server_reachable(stage2_server, "Stage2")
 
     entries = load_manifest_entries(Path(args.manifest), max_samples=args.max_samples)
     index_rows = load_index_rows(args.index_meta)
@@ -1171,12 +1272,45 @@ def main() -> None:
     embedder = ClapEmbedder.create(args.clap_device)
     shortlist_data = build_clap_shortlist_data(args.index_npy, index_rows)
 
-    # Load tokenizer once if chunking is requested.
-    _tok = None
-    if args.window_tokens:
-        from transformers import AutoTokenizer
-        _tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Omni-7B", trust_remote_code=True)
-        print(f"Chunking enabled: window_tokens={args.window_tokens}, tokenizer loaded.")
+    # Pre-populate the CLAP embedding cache for all per-sample audio files (target, default,
+    # iter_wavs, existing candidate probes) sequentially in the main process BEFORE launching
+    # worker threads.  Running GPU CLAP on the main thread avoids worker-thread CUDA context
+    # issues (cudaErrorOperatingSystem / VA-space exhaustion) that arise after vLLM starts
+    # filling its KV cache.  After the batch precomputation the embedder is moved to CPU so
+    # any NEW probe files rendered at runtime (new candidate wavetables) can still be embedded
+    # safely without touching the GPU from worker threads.
+    _clap_audio_paths: list[Path] = []
+    for _e in entries:
+        for _key in ("gt_wav", "gt_probe_wav", "default_wav"):
+            _p = _e.get(_key)
+            if _p:
+                _clap_audio_paths.append(Path(_p))
+        for _p in _e.get("iter_wavs") or []:
+            _clap_audio_paths.append(Path(_p))
+    # Also pre-embed existing candidate probe files so workers hit the cache.
+    _probe_dir_path = Path(args.probe_dir)
+    if _probe_dir_path.exists():
+        for _pp in sorted(_probe_dir_path.glob("*.wav")):
+            _clap_audio_paths.append(_pp)
+    _clap_audio_paths = list(dict.fromkeys(_clap_audio_paths))  # deduplicate, preserve order
+    print(f"Pre-computing CLAP embeddings for {len(_clap_audio_paths)} audio files...", flush=True)
+    for _ap in _clap_audio_paths:
+        if _ap.exists():
+            try:
+                embedder.embed_audio_path(_ap)
+            except Exception as _ce:
+                print(f"  WARNING: CLAP embed failed for {_ap.name}: {_ce}")
+    print(f"CLAP pre-computation done ({len(embedder._cache)} embeddings cached).", flush=True)
+    # Move CLAP to CPU after GPU-accelerated precomputation.  Worker threads will call
+    # embed_audio_path for newly rendered probes that weren't pre-embedded; CPU is safe
+    # from the CUDA VA-space issues that affect worker threads.
+    if args.clap_device != "cpu":
+        try:
+            embedder.model = embedder.model.to("cpu")
+            embedder.device = "cpu"
+            print("CLAP model moved to CPU for worker-thread safety.", flush=True)
+        except Exception as _move_exc:
+            print(f"WARNING: could not move CLAP to CPU: {_move_exc}")
 
     # Shared mutable probe cache. Serialized via _serial_lock.
     candidate_audio: dict[str, Path] = {}
@@ -1184,189 +1318,6 @@ def main() -> None:
     # Serializes vita (probe rendering) and CLAP (GPU) calls. Omni HTTP calls run freely
     # outside this lock — they are the dominant bottleneck and benefit from parallelism.
     _serial_lock = threading.Lock()
-
-    def _estimate_block_tokens(messages: list[dict], audio_paths: list[str]) -> int:
-        """Estimate total token count (text + audio) for a block."""
-        import soundfile as _sf
-        text = sum(
-            len(_tok.encode(m["content"], add_special_tokens=False))
-            for m in messages
-            if isinstance(m.get("content"), str)
-        )
-        audio = 0
-        for p in audio_paths:
-            try:
-                audio += int(_sf.info(p).duration * args.audio_token_rate)
-            except Exception:
-                pass
-        return text + audio
-
-    def _make_block_intro(
-        current_state_audio: str,
-        steps_completed: int,
-        gt_audio_path: str | None = None,
-    ) -> tuple[list[dict], list[str]]:
-        """Build the 4-message intro for block 2+.
-
-        Mirrors the existing baseline-listen pattern so the format validator passes:
-          user → assistant → tool_call → tool_response (current state audio)
-
-        When gt_audio_path is provided, the user message includes a GT audio re-anchor
-        (<audio> tag) so the model can re-orient to the target. When None (default),
-        the GT audio is omitted — the model is expected to reason from context alone,
-        which produces higher-quality training signal and saves ~3000 tokens per block.
-        """
-        user_content = (
-            f"{'<audio>' + chr(10) if gt_audio_path else ''}"
-            f"{'Target sound re-established. ' if gt_audio_path else ''}"
-            f"Current preset state after "
-            f"{steps_completed} iteration{'s' if steps_completed != 1 else ''}. "
-            f"Continue iterating toward the target."
-        )
-        messages = [
-            {"role": "user", "content": user_content},
-            {"role": "assistant", "content": "Listening to current preset state."},
-            _tool_call("bash", {"command": _build_listen_probe_command(current_state_audio)}),
-            {
-                "role": "tool_response",
-                "content": json.dumps(
-                    {"status": "ok", "baseline_audio": "<audio>", "path": current_state_audio},
-                    ensure_ascii=False,
-                ),
-            },
-        ]
-        audios = ([gt_audio_path] if gt_audio_path else []) + [current_state_audio]
-        return messages, audios
-
-    def _chunk_into_blocks(
-        full_messages: list[dict],
-        full_audios: list[str],
-        preamble_msg_count: int,
-        preamble_audio_count: int,
-        step_boundaries: list[tuple[int, int, str | None]],
-        closing_messages: list[dict],
-        gt_audio_path: str,
-        default_audio_path: str | None,
-        base_record: dict,
-        reanchor_gt_audio: bool = False,
-    ) -> list[dict]:
-        """Split a fully-built record into window_tokens-sized blocks.
-
-        Each block gets current-state audio as a context prefix.
-        When reanchor_gt_audio=True, GT audio is also re-attached to block 2+ intros.
-        Block 1 includes the full search preamble; block 2+ get a synthetic intro.
-        The closing user+assistant turns appear only in the final block.
-
-        step_boundaries: list of (msg_start, msg_end, iter_audio_path) per step.
-          iter_audio_path may be None if no iter audio was emitted for that step.
-        """
-        preamble_messages = full_messages[:preamble_msg_count]
-        preamble_audios = full_audios[:preamble_audio_count]
-
-        blocks: list[dict] = []
-        block_idx = 0
-        current_state_audio = default_audio_path  # updated after each block flush
-        accumulated_msgs: list[dict] = []
-        accumulated_audios: list[str] = []
-        block_step_indices: list[int] = []  # which step indices are in current block
-        steps_completed_before_block = 0
-
-        def _flush_block(include_closing: bool) -> None:
-            nonlocal block_idx, accumulated_msgs, accumulated_audios, block_step_indices
-            nonlocal steps_completed_before_block, current_state_audio
-
-            if block_idx == 0:
-                intro_msgs = preamble_messages
-                intro_audios = preamble_audios
-            else:
-                intro_msgs, intro_audios = _make_block_intro(
-                    current_state_audio,
-                    steps_completed_before_block,
-                    gt_audio_path=gt_audio_path if reanchor_gt_audio else None,
-                )
-
-            block_messages = intro_msgs + accumulated_msgs
-            block_audio_list = intro_audios + accumulated_audios
-
-            if include_closing:
-                block_messages = block_messages + closing_messages
-            else:
-                # Non-final blocks must end with an assistant message (format constraint).
-                # Add a brief transition turn so the next block can start with a user message.
-                block_messages = block_messages + [
-                    {
-                        "role": "assistant",
-                        "content": "Iteration block complete. Continuing to the next set of edits.",
-                    }
-                ]
-
-            # Build per-block step_labels from the base record's full step_labels
-            full_step_labels = base_record["meta"]["step_labels"]
-            block_step_labels = [full_step_labels[i] for i in block_step_indices]
-
-            block_record = {
-                "id": f"{base_record['id']}_block{block_idx}",
-                "task_type": base_record["task_type"],
-                "tools": base_record["tools"],
-                "messages": block_messages,
-                "audios": block_audio_list,
-                "assets": base_record["assets"],
-                "labels": base_record["labels"],
-                "meta": {
-                    **{k: v for k, v in base_record["meta"].items() if k != "step_labels"},
-                    "block_idx": block_idx,
-                    "total_blocks": -1,  # filled in after all blocks known
-                    "source_sample_id": base_record["id"],
-                    "step_labels": block_step_labels,
-                },
-            }
-            assert_valid_ms_swift_multiturn_record(block_record)
-            blocks.append(block_record)
-
-            # Update state for next block
-            steps_completed_before_block += len(block_step_indices)
-            if block_step_indices:
-                last_step_i = block_step_indices[-1]
-                current_state_audio = step_boundaries[last_step_i][2] or current_state_audio
-            block_idx += 1
-            accumulated_msgs = []
-            accumulated_audios = []
-            block_step_indices = []
-
-        for step_i, (msg_start, msg_end, iter_audio) in enumerate(step_boundaries):
-            step_msgs = full_messages[msg_start:msg_end]
-            step_audios = [iter_audio] if iter_audio else []
-
-            # Decide context for projection
-            if block_idx == 0:
-                ctx_msgs = preamble_messages
-                ctx_audios = preamble_audios
-            else:
-                ctx_msgs, ctx_audios = _make_block_intro(
-                    gt_audio_path, current_state_audio, steps_completed_before_block
-                )
-
-            projected = _estimate_block_tokens(
-                ctx_msgs + accumulated_msgs + step_msgs + closing_messages,
-                ctx_audios + accumulated_audios + step_audios,
-            )
-
-            if projected > args.window_tokens and accumulated_msgs:
-                # Current step would overflow — flush what we have, start fresh
-                _flush_block(include_closing=False)
-
-            accumulated_msgs.extend(step_msgs)
-            accumulated_audios.extend(step_audios)
-            block_step_indices.append(step_i)
-
-        # Flush final block with closing turns
-        _flush_block(include_closing=True)
-
-        # Fill in total_blocks now that we know the count
-        for blk in blocks:
-            blk["meta"]["total_blocks"] = len(blocks)
-
-        return blocks
 
     def _process_entry(entry: dict) -> list[dict] | None:
         """Build one or more SFT records. Returns None if the entry should be skipped."""
@@ -1563,6 +1514,7 @@ def main() -> None:
         prev_iter_wav: str | None = str(default_audio_path) if default_audio_path else None
         prev_prev_iter_wav: str | None = None  # audio two steps back for 3-clip Stage 1A
         last_listened_iter_wav: str | None = None  # most recently heard audio (skip planning steps)
+        steps_since_last_listen: int = 0  # tracks how many steps back the last listen was
         _snum_is_planning: dict[int, bool] = {}  # step_num → True if audio gate suppressed listen
         prev_commentary: str | None = None
         # Load target_preset — in-memory for old smoke-test paths, on-disk for
@@ -1571,14 +1523,67 @@ def main() -> None:
         if target_preset is None and path_data.get("target_preset_path"):
             with open(path_data["target_preset_path"]) as _f:
                 target_preset = json.load(_f)
+        # Apply the selected wavetable to oscillator 1 so the selection is a real action.
+        # Pick the GT wavetable if it was selected (correct training signal); fall back to
+        # the top CLAP-ranked candidate.  The wavetable data is loaded from the target
+        # preset file on disk — never inlined — to keep the bash snippet readable.
+        _apply_preset_path = path_data.get("target_preset_path")
+        if selected_names and _apply_preset_path:
+            # GT-first selection: prefer a name that matches the ground-truth wavetable.
+            _gt_selected = [n for n in selected_names if n in gt_names]
+            # Ranking order for non-GT fallback: use judge_result["selected"] ordering.
+            _ranked_selected = [
+                name for cid in judge_result["selected"]
+                for name in candidate_names
+                if id_map[name] == cid
+            ]
+            _wt_name = _gt_selected[0] if _gt_selected else _ranked_selected[0]
+            _apply_wt_snippet = (
+                "import json\n"
+                f"with open({json.dumps(str(_apply_preset_path))}) as _f:\n"
+                "    _src = json.load(_f)\n"
+                "_wt = _src['settings']['wavetables'][0]\n"
+                "preset = vc.get_preset()\n"
+                "preset['settings']['wavetables'][0] = _wt\n"
+                "vc.set_preset(preset)\n"
+                f"print(json.dumps({{'status': 'ok', 'applied_wavetable': {json.dumps(_wt_name)}}}))"
+            )
+            messages.append({
+                "role": "assistant",
+                "content": (
+                    f"Having listened to the candidate previews, '{_wt_name}' matches the target "
+                    f"most closely. Applying it to oscillator 1."
+                ),
+            })
+            messages.append(_tool_call("bash", {"command": _wrap_as_bash(_apply_wt_snippet)}))
+            messages.append({
+                "role": "tool_response",
+                "content": json.dumps(
+                    {"status": "ok", "applied_wavetable": _wt_name}, ensure_ascii=False
+                ),
+            })
+
         step_gaps_cache: dict[int, dict | None] = {}  # step_num → remaining gap after that step
 
-        # Track per-step message boundaries and iter audio paths for chunking.
-        preamble_msg_count = len(messages)
-        step_boundaries: list[tuple[int, int, str | None]] = []  # (msg_start, msg_end, iter_audio)
+        # Build authoritative slot→route lookup from target preset (1-indexed slot number →
+        # {source, destination, amount}).  Used to annotate modulation_N_* params with their
+        # actual routing context rather than raw bypass/amount names.
+        _target_mod_routes: dict[str, dict] = {}
+        if target_preset:
+            for _i, _mod in enumerate(target_preset.get("settings", {}).get("modulations", [])):
+                _src = _mod.get("source", "")
+                _dst = _mod.get("destination", "")
+                if _src or _dst:
+                    _slot_key = str(_i + 1)
+                    _amt_key = f"modulation_{_slot_key}_amount"
+                    _target_mod_routes[_slot_key] = {
+                        "source": _src,
+                        "destination": _dst,
+                        "amount": float(target_preset["settings"].get(_amt_key, 0.0)),
+                        "slot": _slot_key,
+                    }
 
         for step in path_data.get("iterations", [])[: int(args.max_steps)]:
-            _step_msg_start = len(messages)
             step_num = int(step.get("step", 0))
             action_snippet = step.get("action_snippet") or step.get("python_script") or "print('noop')"
             prefix = (
@@ -1594,6 +1599,13 @@ def main() -> None:
                 or _abs_delta >= args.audio_gate_threshold
             )
             _snum_is_planning[step_num] = not _is_listening_step
+
+            # Always increment before generating commentary.
+            # Reset to 0 happens after the listen probe block (listening steps only).
+            # This way, for a listening step that follows 2 planning steps, the value
+            # is 3 (not 1), so Stage 1A correctly describes "the 3 edits since your
+            # last listen" rather than "the parameter edit just applied".
+            steps_since_last_listen += 1
 
             if args.omni_server:
                 # Compute remaining parameter gap from GT preset vs this step's cumulative
@@ -1612,16 +1624,25 @@ def main() -> None:
                     archetype=archetype,
                     prev_commentary=prev_commentary,
                     params_delta=step.get("params_delta") or [],
+                    modulations_changed=list(_target_mod_routes.values()),
                     is_mistake_step=bool(step.get("is_mistake_step", False)),
                     # planned_param_names is the closest proxy for allowed_params in path data
                     allowed_params=step.get("planned_param_names") or step.get("allowed_params"),
                     remaining_delta_context=remaining_delta_context,
-                    # Use last_listened_iter_wav for Stage 1A so the "before/after" comparison
-                    # reflects the last time audio actually changed, not the last rendered state.
-                    prior_iter_wav=last_listened_iter_wav,
+                    # Stage 1A "before/after": use last_listened_iter_wav as the prior.
+                    # When consecutive listening steps occur, last_listened_iter_wav == prev_iter_wav
+                    # (both point at iter_{N-1}), which would make Stage 1A compare a file to itself.
+                    # In that case fall back to prev_prev_iter_wav (iter_{N-2}) — a meaningful prior.
+                    prior_iter_wav=(
+                        prev_prev_iter_wav
+                        if (last_listened_iter_wav is not None
+                            and last_listened_iter_wav == prev_iter_wav)
+                        else last_listened_iter_wav
+                    ),
                     clap_delta=step_clap_deltas.get(step_num),
                     is_planning_step=not _is_listening_step,
                     planner_stage=step.get("planner_stage"),
+                    steps_since_last_listen=steps_since_last_listen,
                 )
                 if args.commentary_mode == "two_stage":
                     commentary = _call_omni_commentary_two_stage(
@@ -1639,7 +1660,33 @@ def main() -> None:
                     )
                 prev_commentary = commentary
             else:
-                commentary = _step_commentary_fallback(step, step_num)
+                commentary = _step_commentary_fallback(step, step_num, is_planning_step=not _is_listening_step)
+
+            # When planning steps preceded this listening step, the last message in
+            # context is {"status":"ok"} — not <audio>.  Emit a catch-up listen probe
+            # so HEARD+HYPOTHESIS immediately follows an <audio> tool_response.
+            if _is_listening_step and steps_since_last_listen > 1 and prev_iter_wav:
+                _n_planning = steps_since_last_listen - 1  # planning steps before this one
+                _first_planning = step_num - _n_planning
+                _catchup_label = (
+                    f"after steps {_first_planning}–{step_num - 1}"
+                    if _n_planning > 1
+                    else f"after step {step_num - 1}"
+                )
+                used_iter_audio_paths.append(prev_iter_wav)
+                messages.append({
+                    "role": "assistant",
+                    "content": f"Listening to accumulated changes {_catchup_label}.",
+                })
+                messages.append(_tool_call("bash", {"command": _build_listen_probe_command(Path(prev_iter_wav))}))
+                messages.append({
+                    "role": "tool_response",
+                    "content": json.dumps(
+                        {"status": "ok", "iter_audio": "<audio>", "path": prev_iter_wav},
+                        ensure_ascii=False,
+                    ),
+                })
+
             messages.append(
                 {
                     "role": "assistant",
@@ -1650,15 +1697,15 @@ def main() -> None:
                     ),
                 }
             )
+
             messages.append(_tool_call("bash", {"command": _wrap_as_bash(action_snippet)}))
             if _is_listening_step:
                 messages.append({"role": "tool_response", "content": json.dumps({"status": "ok"}, ensure_ascii=False)})
             else:
                 messages.append({"role": "tool_response", "content": json.dumps(
-                    {"status": "ok", "note": "Sub-perceptual edit — no significant timbral shift. No audio update."},
+                    {"status": "ok"},
                     ensure_ascii=False)})
 
-            _step_iter_audio: str | None = None
             if step_num - 1 < len(iter_wavs):
                 iter_audio = iter_wavs[step_num - 1]
                 prev_prev_iter_wav = prev_iter_wav  # always advance pointer (needed for Stage 1B)
@@ -1666,7 +1713,6 @@ def main() -> None:
                 if _is_listening_step:
                     used_iter_audio_paths.append(str(iter_audio))
                     last_listened_iter_wav = str(iter_audio)
-                    _step_iter_audio = str(iter_audio)
                     messages.append(
                         {
                             "role": "assistant",
@@ -1683,9 +1729,9 @@ def main() -> None:
                             ),
                         }
                     )
-                # planning steps: no audio messages, _step_iter_audio stays None
-
-            step_boundaries.append((_step_msg_start, len(messages), _step_iter_audio))
+                    # Reset counter now that we've listened — next planning steps start
+                    # accumulating from 0 again.
+                    steps_since_last_listen = 0
 
         # Determine convergence: a path is "complete" only when the final cumulative
         # preset actually matches GT (n_remaining == 0). Budget exhausted means we ran
@@ -1706,13 +1752,30 @@ def main() -> None:
             "by_subsystem": final_gap["by_subsystem"] if final_gap else {},
         }
 
-        # User turn that prompts the closing assessment (makes this a proper Q&A exchange).
-        messages.append(
-            {
+        # If the last step was a planning step (never listened), insert a final listen turn
+        # so the model hears its own last state before being asked to assess.
+        if prev_iter_wav is not None and prev_iter_wav != last_listened_iter_wav:
+            used_iter_audio_paths.append(prev_iter_wav)
+            last_listened_iter_wav = prev_iter_wav
+            messages.append({"role": "assistant", "content": "Listening to the final preset state."})
+            messages.append(_tool_call("bash", {"command": _build_listen_probe_command(Path(prev_iter_wav))}))
+            messages.append(
+                {
+                    "role": "tool_response",
+                    "content": json.dumps(
+                        {"status": "ok", "iter_audio": "<audio>", "path": prev_iter_wav},
+                        ensure_ascii=False,
+                    ),
+                }
+            )
+
+        # Budget-exhausted case: inject a user message so the model knows to wrap up.
+        # Convergence case: no user message — the model just listened and should conclude naturally.
+        if not path_complete:
+            messages.append({
                 "role": "user",
                 "content": "That completes the available iterations. Compare your final render to the target and give your final assessment.",
-            }
-        )
+            })
 
         if args.omni_server and used_iter_audio_paths:
             closing = _call_omni_closing_eval(
@@ -1725,27 +1788,18 @@ def main() -> None:
             )
         else:
             if convergence["converged"]:
-                closing = "FINAL ASSESSMENT (complete): All planned iterations have been applied. The recreation path is complete."
+                closing = "All planned iterations have been applied. The recreation path is complete."
             else:
                 subs = list(convergence["by_subsystem"].keys())[:2]
                 subs_str = ", ".join(subs) if subs else "several parameters"
-                closing = (
-                    f"FINAL ASSESSMENT (budget exhausted): Iterations exhausted — "
-                    f"{subs_str} still differ from the target."
-                )
+                closing = f"Iterations exhausted — {subs_str} still differ from the target."
         messages.append({"role": "assistant", "content": closing})
-        # Closing messages = last 2 messages (user prompt + assistant assessment).
-        closing_messages = messages[-2:]
-
         audio_assets = [str(target_audio_path)]
         if default_audio_path is not None:
             audio_assets.append(str(default_audio_path))
-        # Selected candidate probes appear right after default (matching selected_previews in judge response).
         for n in selected_names[: int(args.select_k)]:
             if n in candidate_audio:
                 audio_assets.append(str(candidate_audio[n]))
-        # preamble_audio_count = audios before the iter renders (gt + default + candidates).
-        preamble_audio_count = len(audio_assets)
         audio_assets.extend(used_iter_audio_paths)
 
         # Pre-compute the last main-loop step's remaining gap context for use as
@@ -1822,21 +1876,6 @@ def main() -> None:
             },
         }
         assert_valid_ms_swift_multiturn_record(record)
-
-        if args.window_tokens and _tok is not None:
-            # Chunk the full record into window-sized blocks.
-            return _chunk_into_blocks(
-                full_messages=messages,
-                full_audios=audio_assets,
-                preamble_msg_count=preamble_msg_count,
-                preamble_audio_count=preamble_audio_count,
-                step_boundaries=step_boundaries,
-                closing_messages=closing_messages,
-                gt_audio_path=str(target_audio_path),
-                default_audio_path=str(default_audio_path) if default_audio_path else None,
-                base_record=record,
-                reanchor_gt_audio=args.reanchor_gt_audio,
-            )
         return [record]
 
     # Process entries in parallel. Vita (probe rendering) and CLAP (GPU) are serialized
@@ -1858,7 +1897,7 @@ def main() -> None:
             total_blocks_written += len(recs)
             sid = recs[0]["meta"].get("sample_id", "?") if recs else "?"
             n_done = len(records_by_idx)
-            print(f"[{n_done}/{len(entries)}] {sid}: {len(recs)} block(s) written ({total_blocks_written} total)")
+            print(f"[{n_done}/{len(entries)}] {sid}: {len(recs)} block(s) written ({total_blocks_written} total)", flush=True)
 
     if args.workers > 1:
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -1887,7 +1926,7 @@ def main() -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
     n_source = len(records_by_idx)
-    print(f"Wrote {len(records)} records ({n_source} samples → {len(records)} blocks) to {out_path}")
+    print(f"Wrote {len(records)} records ({n_source} samples → {len(records)} blocks) to {out_path}", flush=True)
 
 
 if __name__ == "__main__":

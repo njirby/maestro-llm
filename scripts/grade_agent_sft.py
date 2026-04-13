@@ -354,25 +354,52 @@ def _score_hypothesis_grounding(
     commentary_turns: list[str],
     step_labels: list[dict],
 ) -> float | None:
-    """Score how well each step's HYPOTHESIS references the correct remaining subsystems.
+    """Score whether each listening step's HYPOTHESIS is a grounded audio observation.
 
-    For each step that has a remaining_top_2 label, checks whether the HYPOTHESIS text
-    mentions at least one of those subsystem names. Returns the fraction of assessable
-    steps that pass, or None if no steps have remaining_top_2 data.
+    The new HYPOTHESIS format is an observational sentence describing a perceptual
+    quality gap ("brightness", "attack transient", "harmonic density"), using hedged
+    language ("appears to", "seems to", "suggests"). It should NOT prescribe a next
+    step or name a parameter family.
+
+    Scoring per assessable step (one that has a non-empty HYPOTHESIS):
+      +1.0  if HYPOTHESIS contains a perceptual quality term AND uses hedged language
+        AND does not prescribe a next action
+      +0.5  if only perceptual terms present but no hedging (or vice versa)
+      +0.0  if HYPOTHESIS prescribes a next step or is absent
+
+    Returns mean over assessable steps, or None if none found.
     """
+    _PERCEPTUAL_TERMS = {
+        "bright", "dark", "warm", "harsh", "thin", "dense", "rich", "clean", "buzzy",
+        "shimmer", "shimmer", "glassy", "metallic", "hollow", "nasal", "sharp", "soft",
+        "attack", "decay", "sustain", "release", "transient", "envelope", "texture",
+        "harmonic", "overtone", "timbre", "timbral", "spectral", "frequency", "resonan",
+        "movement", "modulation", "motion", "evolv", "flutter", "tremolo", "vibrato",
+        "spatial", "stereo", "width", "presence", "body", "punch", "click", "crunch",
+        "smooth", "rough", "airy", "hollow", "percussive", "staccato", "legato",
+        "brightness", "heaviness", "crispness", "warmth", "loudness", "fullness",
+    }
+    _HEDGE_TERMS = ["appears to", "seems to", "suggests", "appear to", "seem to",
+                    "appears ", "seems ", "likely", "possibly", "probably"]
+    _PRESCRIPTIVE_TERMS = ["next step", "prioritize", "should adjust", "need to adjust",
+                           "should target", "focus on", "we should", "the next"]
+
     scores: list[float] = []
-    for turn, label in zip(commentary_turns, step_labels):
-        top2: str | None = label.get("remaining_top_2")
-        if not top2 or top2 == "the remaining parameters":
-            continue  # no ground-truth remaining info for this step
+    for turn in commentary_turns:
         hypo_text = _extract_section(turn, "HYPOTHESIS:").lower()
         if not hypo_text:
+            continue  # no HYPOTHESIS in this turn (planning step) — skip
+        has_perceptual = any(t in hypo_text for t in _PERCEPTUAL_TERMS)
+        has_hedge = any(t in hypo_text for t in _HEDGE_TERMS)
+        is_prescriptive = any(t in hypo_text for t in _PRESCRIPTIVE_TERMS)
+        if is_prescriptive:
             scores.append(0.0)
-            continue
-        # top2 is like "compressor and chorus" — split on " and " and ","
-        sub_names = [s.strip() for s in top2.replace(" and ", ",").split(",") if s.strip()]
-        mentioned = any(name in hypo_text for name in sub_names)
-        scores.append(1.0 if mentioned else 0.0)
+        elif has_perceptual and has_hedge:
+            scores.append(1.0)
+        elif has_perceptual or has_hedge:
+            scores.append(0.5)
+        else:
+            scores.append(0.0)
     if not scores:
         return None
     return round(sum(scores) / len(scores), 4)
@@ -473,14 +500,10 @@ def score_main_record(
     # of the free-form Sentence 2 rationale instead.
     plan_rationale_unique = _score_plan_rationale_unique(commentary_turns)
 
-    # 7. Hypothesis grounding — fraction of steps where HYPOTHESIS mentions a top remaining
-    # subsystem from the GT-preset gap. Requires remaining_top_2 in step_labels (built by
-    # build_main_agent_sft_v2 when target_preset is available).
-    # Only listening turns have HYPOTHESIS sections; planning-only turns are exempt.
-    listening_step_labels = [
-        lbl for lbl in step_labels if not lbl.get("is_planning_step", False)
-    ] if step_labels else step_labels
-    hypothesis_grounding = _score_hypothesis_grounding(listening_turns, listening_step_labels)
+    # 7. Hypothesis grounding — fraction of listening steps where HYPOTHESIS is a grounded
+    # audio observation: contains a perceptual quality term AND uses hedged language, and
+    # does NOT prescribe a next step. Planning-only turns (no HYPOTHESIS) are exempt.
+    hypothesis_grounding = _score_hypothesis_grounding(listening_turns, step_labels)
 
     # 8. CLAP net improvement — did the path make meaningful net progress toward GT audio?
     # Measures final-vs-initial CLAP delta normalized to [0,1]. Replaces clap_monotonic
