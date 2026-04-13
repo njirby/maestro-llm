@@ -194,7 +194,6 @@ python scripts/build_main_agent_sft_v2.py \
     --stage2-server http://localhost:8000 \
     --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --audio-gate-threshold 0.01 \
-    --window-tokens 12288 \
     --clap-device cuda:0
 ```
 
@@ -212,9 +211,14 @@ tool_resp:  <audio> [default clip]
 # Per iteration step — two variants:
 
 # LISTENING step (|CLAP delta| >= threshold — audio changed materially):
+# If planning steps preceded this listen, a catch-up probe is emitted first:
+assistant:  "Listening to accumulated changes after step(s) K–N-1."  [only if steps_since_last_listen > 1]
+tool_call:  bash [render probe of accumulated state]
+tool_resp:  {"status": "ok", "iter_audio": "<audio>", ...}
+# HEARD always immediately follows <audio>:
 assistant:  HEARD: [what changed since last listen + remaining timbral gap]
-            HYPOTHESIS: [synthesis cause, references remaining subsystems]
-            PLAN: Adjusting {param list}. [one sentence rationale]
+            HYPOTHESIS: [perceptual quality still separating current from target — audio observation, not a prescription]
+            PLAN: Adjusting {param list}. [one sentence future-tense rationale]
             "Executing step N parameter updates now."
 tool_call:  bash [set params]
 tool_resp:  {"status": "ok"}
@@ -226,7 +230,7 @@ tool_resp:  {"status": "ok", "iter_audio": "<audio>", ...}
 assistant:  PLAN: Adjusting {param list}. [rationale for structural setup]
             "Executing step N parameter updates now."
 tool_call:  bash [set params]
-tool_resp:  {"status": "ok", "note": "Sub-perceptual edit — no audio update."}
+tool_resp:  {"status": "ok"}
 
 # After all steps:
 assistant:  FINAL ASSESSMENT (complete): [2-sentence perceptual summary]
@@ -238,11 +242,14 @@ The **audio gate** (`--audio-gate-threshold`, default 0.01) decides which varian
 
 Total audio per record: 2 + L clips (GT + default probe + L *listening* step probes, where L ≤ N). GT audio is heard exactly once — at the start of block 0. At ~94.5 tokens/sec, a 20-step conversation with ~50% listening rate runs ~10–13K tokens total.
 
-**Two-stage commentary** is the recommended mode. Stage 1 calls Omni with audio to generate HEARD (perceptual observation) and HYPOTHESIS (synthesis cause). Stage 2 calls a text model to write PLAN (param inventory + rationale). Planning steps skip Stage 1 entirely — a text-only Stage 2 call writes PLAN only. This separation keeps audio-grounded reasoning clean and avoids audio API calls for steps where nothing changed.
+**Two-stage commentary** is the recommended mode. Stage 1 calls Omni with audio to produce perceptual observations (what changed, what gap remains). Stage 2 calls a text model to write the three commentary sections. Planning steps skip Stage 1 entirely — a text-only Stage 2 call writes PLAN only. This separation keeps audio-grounded reasoning clean and avoids audio API calls for steps where nothing changed.
 
-**GT-preset grounding for HYPOTHESIS**: at each step, the builder computes which subsystems still differ most between the cumulative preset and the ground-truth target (`compare_preset_path` in `path_gen.py`). The top-2 remaining subsystem names are injected into the HYPOTHESIS instruction prompt, forcing the model to reason about what actually still needs to change rather than hallucinating plausible-sounding causes. These are stored in `meta.step_labels[].remaining_top_2` for offline grading. Planning steps have no HYPOTHESIS.
+**Commentary section roles** (listening steps):
+- **HEARD**: what the last edit (or accumulated edits since last listen) changed + the single most important remaining timbral gap, described as a positive quality the target has.
+- **HYPOTHESIS**: one sentence describing the most important perceptual quality still separating current from target, grounded in what was just heard. Uses hedged language ("appears to", "seems to"). Does NOT prescribe a next step or name a parameter family — that's PLAN's job.
+- **PLAN**: Sentence 1 is the exact param inventory ("Adjusting Filter 1 Cutoff, Resonance."). Sentence 2 is a future-tense rationale for how these changes address the remaining gap.
 
-**HYPOTHESIS style rotation**: 4 style hint templates rotate by step number so consecutive listening steps don't produce structurally identical reasoning (acoustic-evidence → mechanism-first → prior-step-contrast → hedged-language, cycling).
+**GT-preset grounding**: at each step, the builder computes which subsystems still differ most between the cumulative preset and the ground-truth target. The remaining delta is injected into the Stage 2 prompt to ground HEARD Sentence 2 in parameter-space truth. These are stored in `meta.step_labels[].remaining_top_2` for offline grading.
 
 **GT re-anchor** (`--reanchor-gt-audio`, default off): by default the GT audio is only included once in the conversation (block 0 preamble). Subsequent chunked blocks start with current-state audio only — the model is expected to hold the target in memory. Pass `--reanchor-gt-audio` to re-attach GT at the start of every block (old behaviour).
 
@@ -263,12 +270,12 @@ python scripts/grade_agent_sft.py \
 |---|---|---|
 | `clap_net_improvement` | 30% | Did the path make net progress toward GT audio? (final − initial CLAP cosine delta) |
 | `plan_rationale_unique` | 25% | PLAN Sentence 2 rationale is distinct across steps (not boilerplate) |
-| `hypothesis_grounding` | 25% | HYPOTHESIS mentions ≥1 top-2 remaining subsystem from GT gap (listening steps only) |
+| `hypothesis_grounding` | 25% | HYPOTHESIS contains a perceptual quality term AND hedged language, does not prescribe a next step (listening steps only) |
 | `section_structure` | 10% | All 3 headers present in every listening step (planning steps are exempt by design) |
 | `snake_case_clean` | 5% | No raw snake_case param names in commentary text |
 | `format_consistent` | 5% | No **BOLD:** headers |
 
-`overall` is a weighted sum. `commentary_diversity` (1 − mean pairwise Jaccard) and `plan_param_alignment` are computed and stored for diagnostics. Benchmark on smoke_64_v2 (n=180): overall mean 0.737. With audio gating enabled (smoke_gate_v1, n=9): 0.760, commentary_diversity +0.100, hypothesis_grounding +0.070.
+`overall` is a weighted sum. `commentary_diversity` (1 − mean pairwise Jaccard) and `plan_param_alignment` are computed and stored for diagnostics. Benchmark on smoke_coherence_v3 (n=4, with causal-coherence fixes): overall mean **0.882**, commentary_diversity 0.761, hypothesis_grounding 0.880.
 
 **Smoke test** (12 samples, fast iteration):
 
@@ -291,7 +298,6 @@ python scripts/build_main_agent_sft_v2.py \
     --stage2-server http://localhost:8000 \
     --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --audio-gate-threshold 0.01 \
-    --window-tokens 12288 \
     --clap-device cuda:0
 
 # Grade
@@ -477,6 +483,81 @@ Note representation: `n("C4", m(12,3,"8t"), "q.", 90)` — bar/beat/offset token
 
 DeepSpeed config: `configs/deepspeed_zero3.json` — includes both `optimizer` and `scheduler` blocks to avoid HF/DeepSpeed LR scheduler group mismatches.
 
+### Megatron Sequence-Parallel Findings (April 8, 2026)
+
+All runs below used 4x24GB GPUs with LoRA (`rank=8`, `alpha=32`, `target_modules=all-linear`), `tensor_model_parallel_size=4`, `sequence_parallel=true`, `micro_batch_size=1`, packing enabled, and flash attention.
+
+`gbs` = `global_batch_size`.
+
+#### Qwen2.5-Omni-3B
+
+- 1-step probes (`gbs=4`) validated long context beyond 32k.
+- Verified passes at `32768`, `36864`, and `40960`.
+- `45056` was interrupted (SIGTERM), so the true upper bound was not finalized in that sweep.
+- Reference logs: `outputs/qwen25_omni_lora_megatron_probe/probe_20260408_171119/`.
+
+#### Qwen2.5-Omni-7B
+
+- `32768` succeeded for both:
+  - 1 step (`train_iters=1`), and
+  - 4 steps (`train_iters=4`) with checkpoint-4 written.
+- Observed training memory at 32k was ~`10.6 GiB` per GPU in these runs.
+- Artifacts:
+  - `outputs/qwen25_omni_lora_megatron_probe/omni7b_single/len32768_localhf/v0-20260408-173018/`
+  - `outputs/qwen25_omni_lora_megatron_probe/omni7b_single/len32768_localhf_4steps/v0-20260408-174044/`
+
+#### Qwen3-Omni-30B-A3B-Instruct (MoE)
+
+- Important: on 4 GPUs, this model required `--expert_model_parallel_size 4` for stable Megatron execution.
+- With `gbs=4`, 1-step search:
+  - `16384` pass
+  - `18432` pass
+  - `18688` OOM
+- Separate `gbs=4`, 4-step attempts at `16384` and `18432` did not complete to checkpoint in this session (runs ended early), so stability at `gbs=4` was not confirmed.
+- With `gbs=1`, 4-step stability search:
+  - `16896` pass
+  - `17152` pass
+  - `17280` pass
+  - `17408` OOM
+  - `17344` interrupted before completion
+- Current best verified 4-step stable context for 30B (`gbs=1`): **`17280`**.
+- Additional 4-step checks (same setup) that failed under memory pressure:
+  - `20000` OOM (failed after step 1)
+  - `19456` OOM (failed after step 1)
+  - `18432` failed at/after step 2 (rank crash under pressure)
+- Reference logs:
+  - `outputs/qwen25_omni_lora_megatron_probe/omni30b_seqfind_ep4/20260408_175533/`
+  - `outputs/qwen25_omni_lora_megatron_probe/omni30b_maxctx_gbs1_4steps/20260408_194108/`
+  - `outputs/qwen25_omni_lora_megatron_probe/omni30b_single/`
+
+#### QLoRA Note (Megatron Backend Behavior)
+
+- We tested `--quant_method bnb --quant_bits 4 --bnb_4bit_quant_type nf4 --bnb_4bit_use_double_quant true` on the same 30B Megatron setup.
+- In an apples-to-apples A/B at `max_length=16000`, `train_iters=1`:
+  - LoRA run: `memory(GiB)=21.21`
+  - "QLoRA" flag run: `memory(GiB)=21.23`
+- The live model structure still showed Megatron/TransformerEngine linear layers (`TE*` with `LoraParallelLinear`), not bitsandbytes `Linear4bit` modules.
+- Practical takeaway for this repo right now: on Megatron Omni path, treat `bnb` quant flags as offering no reliable VRAM savings unless backend support is explicitly confirmed.
+- A/B artifacts:
+  - `outputs/qwen25_omni_lora_megatron_probe/omni30b_lora_vs_qlora_ab/lora_len16000_1step/`
+  - `outputs/qwen25_omni_lora_megatron_probe/omni30b_lora_vs_qlora_ab/qlora_len16000_1step/`
+
+#### TP/CP Topology Probe (TP=2, CP=2)
+
+- We also tested `tensor_model_parallel_size=2` + `context_parallel_size=2` on the same 30B setup.
+- Outcome in this environment was unstable:
+  - `max_length=20000`, `train_iters=1` failed before a completed train-step metric with
+    `torch.distributed.DistBackendError` and `Failed to CUDA calloc async 4 bytes` (rank 2).
+  - `max_length=16000`, `train_iters=1` reached `iteration 1/1` (`memory(GiB)=21.84`) but then failed during distributed collectives with
+    `Failed to CUDA calloc async 40 bytes`.
+- Practical takeaway for now: this TP/CP topology is not yet a reliable path to longer context on this box without deeper NCCL/memory tuning.
+- Why this can happen even though CP should help long-context in theory:
+  - `CP=2` introduces additional distributed collectives; failures occurred inside those collectives (`broadcast`/`all_reduce`), not in forward math.
+  - `TP=2` changes per-rank tensor shard shapes vs `TP=4`; some temporary/comm buffers can become less favorable.
+  - With MoE (`expert_model_parallel_size=4`) layered on top, communicator complexity is higher, and this stack appears fragile in this topology on this machine.
+- Artifacts:
+  - `outputs/qwen25_omni_lora_megatron_probe/omni30b_tp_cp_experiments/`
+
 ---
 
 ## Environment Setup
@@ -533,7 +614,7 @@ scripts/
   train_qwen25_omni_lora.py   # MS-Swift LoRA training launcher
 
 tests/
-  test_agent_sft_contracts.py # Contract tests for build_main_agent_sft_v2 (144 tests)
+  test_agent_sft_contracts.py # Contract tests for build_main_agent_sft_v2 (83 tests)
   test_agent_sft_grading.py   # Tests for grade_agent_sft scoring logic
   test_path_gen_snippets.py   # Unit tests: display names, search/set snippets
   test_pipeline_v2.py         # Structural invariants: reapy API, no fictional CLI
@@ -553,7 +634,7 @@ configs/
 - Wavetable library builder and loader (568 unique wavetables)
 - N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
 - `render_iter_presets.py` — batch render of GT, default, and per-step probe clips; writes `manifest.jsonl`
-- `build_main_agent_sft_v2.py` — two-stage Omni commentary pipeline with GT-preset grounding, HYPOTHESIS style rotation, audio-gated listening (planning-only steps for sub-perceptual edits), and optional GT re-anchor per block
+- `build_main_agent_sft_v2.py` — two-stage Omni commentary pipeline with GT-preset grounding, causally-coherent HEARD placement (catch-up probes when planning steps precede a listen), observational HYPOTHESIS framing, audio-gated listening (planning-only steps for sub-perceptual edits), and wavetable apply as a real tool call
 - `grade_agent_sft.py` — heuristic + LLM-as-judge scoring; grader correctly exempts planning-only steps from section_structure and hypothesis_grounding checks
 - Hierarchical wavetable-retrieval SFT builders (search / judge agents)
 - Lua tuple pipeline for melody transcription SFT data
