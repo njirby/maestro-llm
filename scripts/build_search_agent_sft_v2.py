@@ -65,6 +65,80 @@ def _b64(path: str | Path) -> str:
         return base64.b64encode(f.read()).decode()
 
 
+from maestro.synth.path_gen import _normalize
+
+
+def describe_key_transforms(target_preset: dict) -> str:
+    """Summarize the most impactful processing transforms in the target preset.
+
+    Reads actual filter, envelope, modulation, and FX settings from the preset
+    to produce a dynamic, per-sample description of what transforms the raw
+    wavetable into the target sound.
+    """
+    s = target_preset.get("settings", {})
+    parts: list[str] = []
+
+    # Filter character
+    f1_on = float(s.get("filter_fx_on", 0)) > 0.5 or float(s.get("filter_1_on", 1)) > 0.5
+    cutoff_norm = _normalize("filter_1_cutoff", float(s.get("filter_1_cutoff", 80)))
+    res_norm = _normalize("filter_1_resonance", float(s.get("filter_1_resonance", 0)))
+    if cutoff_norm is not None and cutoff_norm < 0.65 and f1_on:
+        res_desc = f" with {'high' if res_norm and res_norm > 0.4 else 'moderate'} resonance" if res_norm and res_norm > 0.15 else ""
+        parts.append(f"filter darkens the tone (cutoff at {cutoff_norm:.0%}){res_desc}")
+    elif cutoff_norm is not None and cutoff_norm > 0.75 and f1_on:
+        parts.append(f"filter opens bright (cutoff at {cutoff_norm:.0%})")
+
+    # Envelope 1 (amplitude) shape
+    env1_attack = float(s.get("env_1_attack", 0))
+    env1_decay = float(s.get("env_1_decay", 0))
+    env1_sustain_norm = _normalize("env_1_sustain", float(s.get("env_1_sustain", 1.0)))
+    if env1_attack > 0.5:
+        parts.append(f"slow swelling attack ({env1_attack:.1f}s)")
+    elif env1_attack < 0.02:
+        parts.append("sharp, immediate attack")
+    if env1_sustain_norm is not None and env1_sustain_norm < 0.3 and env1_decay < 0.5:
+        parts.append("short plucky decay")
+    elif env1_sustain_norm is not None and env1_sustain_norm > 0.7:
+        parts.append("sustained, held tone")
+
+    # Envelope 2 (modulation) — often shapes filter
+    env2_attack = float(s.get("env_2_attack", 0))
+    if env2_attack > 0.3:
+        parts.append("modulation envelope with slow onset")
+
+    # Unison
+    voices = int(float(s.get("osc_1_unison_voices", 1)))
+    detune_norm = _normalize("osc_1_unison_detune", float(s.get("osc_1_unison_detune", 0)))
+    if voices > 1 and detune_norm and detune_norm > 0.05:
+        parts.append(f"{voices}-voice unison with detune")
+
+    # Active modulation routes (top 3)
+    mod_parts: list[str] = []
+    for mod in s.get("modulations", []):
+        src = mod.get("source", "")
+        dst = mod.get("destination", "")
+        if src and dst:
+            # Clean up source/destination names for readability
+            mod_parts.append(f"{src} → {dst}")
+            if len(mod_parts) >= 3:
+                break
+    if mod_parts:
+        parts.append("modulation: " + ", ".join(mod_parts))
+
+    # Active effects
+    fx_active: list[str] = []
+    for fx in ("chorus", "reverb", "delay", "distortion", "phaser", "flanger", "compressor"):
+        key = f"{fx}_on" if fx != "compressor" else "compressor_enabled"
+        if float(s.get(key, 0)) > 0.5:
+            fx_active.append(fx)
+    if fx_active:
+        parts.append(f"effects: {', '.join(fx_active)}")
+
+    if not parts:
+        return "minimal processing — the raw wavetable carries most of the target character"
+    return "; ".join(parts[:6])
+
+
 # ---------------------------------------------------------------------------
 # Omni calls for search agent
 # ---------------------------------------------------------------------------
@@ -124,23 +198,49 @@ def stage2_batch_notes(
     archetype: str,
     stage2_server: str,
     stage2_model: str,
+    gt_transform_description: str = "",
 ) -> str:
-    """Stage 2: clean up Omni's observations into shortlist-maintenance format."""
+    """Stage 2: clean up Omni's observations into shortlist-maintenance format.
+
+    When GT wavetables are in the batch, injects a per-sample processing-chain
+    description so the model learns to reason about raw→processed transformation.
+    """
     shortlist_str = ", ".join(f"'{n}'" for n in current_shortlist) if current_shortlist else "(empty)"
+
+    # GT grounding: inject processing chain context for GT wavetables in this batch
+    gt_context = ""
+    if gt_names_in_batch and gt_transform_description:
+        gt_list = ", ".join(f"'{n}'" for n in gt_names_in_batch)
+        gt_context = (
+            f"\nIMPORTANT CONTEXT: {gt_list} {'is' if len(gt_names_in_batch) == 1 else 'are'} "
+            f"the actual wavetable{'s' if len(gt_names_in_batch) > 1 else ''} used in the target "
+            f"preset. The raw probe sounds different from the target because the target preset "
+            f"applies: {gt_transform_description}. "
+            f"In your assessment of {gt_list}, explicitly name at least 2 of these specific "
+            f"transforms and explain how they would reshape the raw wavetable toward the target. "
+            f"Mark {'it' if len(gt_names_in_batch) == 1 else 'them'} as Shortlisted (not Skip).\n"
+        )
+
     prompt = (
         f"You are a sound design assistant searching for wavetable building blocks to "
         f"recreate a {archetype} sound.\n\n"
         f"Current shortlist: {shortlist_str}\n\n"
-        f"Batch {batch_number} candidate observations:\n{omni_observations}\n\n"
+        f"Batch {batch_number} candidate observations:\n{omni_observations}\n"
+        f"{gt_context}\n"
         f"Write batch notes in this format:\n"
-        f"- For each candidate, one line: '<name>': <short assessment>. Shortlisted / Skip.\n"
-        f"- Then: 'Current shortlist: [<comma-separated names>]'\n\n"
+        f"- EXACTLY ONE line per candidate: '<name>': <short assessment>. Shortlisted / Skip.\n"
+        f"  Use ONLY the wavetable name — no 'Audio N:' prefixes, no duplicates, no abbreviations.\n"
+        f"  Always use the FULL wavetable name exactly as given in the candidate list.\n"
+        f"  There are exactly {len(candidate_names)} candidates in this batch. Write exactly "
+        f"{len(candidate_names)} assessment lines, one per candidate.\n"
+        f"- Then: 'Current shortlist: [<comma-separated FULL names>]'\n\n"
         f"A candidate should be shortlisted if its raw harmonic character, texture, or "
         f"tonal quality could plausibly contribute to the target sound after synthesis "
-        f"processing (filtering, enveloping, effects). You don't need an exact match — "
-        f"look for compatible raw material.\n"
+        f"processing (filtering, enveloping, effects). Think about what the raw material "
+        f"would become after processing, not just how it sounds now.\n"
         f"If a new candidate is better than one on the shortlist, replace it. "
-        f"Keep the shortlist to 3-6 names. Be selective."
+        f"Keep the shortlist to 2-4 names. Be aggressive about skipping — only keep "
+        f"candidates whose raw character is genuinely compatible with the target."
     )
     try:
         r = _llm_post(
@@ -165,17 +265,24 @@ def stage2_batch_notes(
 def stage2_final_summary(
     shortlist: list[str],
     archetype: str,
+    prior_notes: list[str],
     stage2_server: str,
     stage2_model: str,
 ) -> str:
-    """Stage 2: write final candidate summary."""
+    """Stage 2: write final candidate summary grounded in the batch notes."""
     names_str = ", ".join(f"'{n}'" for n in shortlist)
+    recent_notes = "\n".join(prior_notes[-2:]) if prior_notes else ""
     prompt = (
         f"You are a sound design assistant. After evaluating multiple batches of "
         f"wavetable candidates for a {archetype} target sound, your final shortlist is:\n"
         f"[{names_str}]\n\n"
-        f"Write one line: 'Final candidates: [<names>]' followed by one sentence "
-        f"explaining why these were selected over others. Be concise."
+        f"Recent assessment notes:\n{recent_notes}\n\n"
+        f"Write one line: 'Final candidates: [{names_str}]'\n"
+        f"Then one sentence explaining what specifically each shortlisted candidate "
+        f"contributes — reference their individual sonic character (e.g. 'X provides "
+        f"the harmonic body, Y adds brightness'). Do NOT use generic phrases like "
+        f"'rich harmonic content' or 'dynamic evolution'. Be specific to these "
+        f"particular wavetables."
     )
     try:
         r = _llm_post(
@@ -213,6 +320,7 @@ def build_search_record(
     sample_id: str,
     archetype: str,
     target_audio_path: Path,
+    target_preset: dict,
     gt_wavetable_names: list[str],
     shard: list[str],
     candidate_audio: dict[str, Path],
@@ -229,6 +337,9 @@ def build_search_record(
 
     gt_set = set(gt_wavetable_names)
     gt_in_shard = [n for n in shard if n in gt_set]
+
+    # Compute processing chain description for GT grounding
+    gt_transform_desc = describe_key_transforms(target_preset) if gt_in_shard else ""
 
     # Arrange batches: GT should NOT appear in batch 1 (teach the model to search,
     # not get lucky). Place GT in batch 2 or later.
@@ -272,6 +383,7 @@ def build_search_record(
     # Build messages
     messages: list[dict] = []
     audio_assets: list[str] = [str(target_audio_path)]
+    all_batch_notes: list[str] = []  # collect batch notes for final summary context
 
     messages.append({
         "role": "user",
@@ -342,10 +454,29 @@ def build_search_record(
             archetype=archetype,
             stage2_server=stage2_server,
             stage2_model=stage2_model,
+            gt_transform_description=gt_transform_desc,
         )
 
-        # Parse shortlist from Stage 2 output (best-effort)
+        # Post-process: deduplicate assessment lines (Stage 2 sometimes emits
+        # duplicate entries for the GT wavetable when both Omni and GT-context mention it).
         import re
+        # Post-process: deduplicate lines + fix "Shortlisted / Skip" hedging
+        seen_names: set[str] = set()
+        deduped_lines: list[str] = []
+        for line in batch_notes.split("\n"):
+            name_match = re.match(r"['\"-]*([^'\":\-]+?)['\"]?\s*:", line.strip().lstrip("- "))
+            if name_match:
+                name = name_match.group(1).strip()
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+            # Fix hedging: "Shortlisted / Skip" → "Shortlisted" for GT wavetables
+            if "Shortlisted / Skip" in line or "Shortlisted/Skip" in line:
+                line = line.replace("Shortlisted / Skip", "Shortlisted").replace("Shortlisted/Skip", "Shortlisted")
+            deduped_lines.append(line)
+        batch_notes = "\n".join(deduped_lines)
+
+        # Parse shortlist from Stage 2 output (best-effort)
         sl_match = re.search(r"Current shortlist:\s*\[([^\]]*)\]", batch_notes)
         if sl_match:
             raw = sl_match.group(1)
@@ -358,12 +489,13 @@ def build_search_record(
             if gn not in shortlist:
                 shortlist.append(gn)
 
+        all_batch_notes.append(batch_notes)
         # Queue notes for merging into next batch intro (or final summary)
         pending_notes = batch_notes
 
     # Final summary — merge with pending batch notes
     if omni_server:
-        final_text = stage2_final_summary(shortlist, archetype, stage2_server, stage2_model)
+        final_text = stage2_final_summary(shortlist, archetype, all_batch_notes, stage2_server, stage2_model)
     else:
         final_text = f"Final candidates: [{', '.join(repr(n) for n in shortlist)}]"
 
@@ -454,6 +586,8 @@ def main() -> None:
         gt_names = list(extract_gt_wavetable_names(Path(target_preset_path)))
         if not gt_names:
             return []
+        with open(target_preset_path) as f:
+            target_preset = json.load(f)
 
         # Build candidate pool
         sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
@@ -493,6 +627,7 @@ def main() -> None:
                 sample_id=f"{sample_id}_agent{ai + 1}",
                 archetype=archetype,
                 target_audio_path=target_audio_path,
+                target_preset=target_preset,
                 gt_wavetable_names=gt_names,
                 shard=shard,
                 candidate_audio=candidate_audio,
