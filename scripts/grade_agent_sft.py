@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,230 @@ def _word_set(text: str) -> set[str]:
 def _jaccard(a: set, b: set) -> float:
     union = len(a | b)
     return len(a & b) / union if union else 0.0
+
+
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    """Best-effort parse of a JSON object from *text*."""
+    raw = text.strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        try:
+            parsed = json.loads(ln)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _normalise_path_string(path_str: str | None) -> str | None:
+    if not isinstance(path_str, str) or not path_str:
+        return None
+    return str(Path(path_str).expanduser())
+
+
+def _runtime_path_from_payload(payload: dict[str, Any] | None) -> str | None:
+    """Extract a comparable path from runtime JSON payloads."""
+    if not isinstance(payload, dict):
+        return None
+    if isinstance(payload.get("path"), str):
+        return _normalise_path_string(payload.get("path"))
+    listen_probe = payload.get("listen_probe")
+    if isinstance(listen_probe, dict) and isinstance(listen_probe.get("path"), str):
+        return _normalise_path_string(listen_probe.get("path"))
+    return None
+
+
+def _validate_bash_execution_against_expected(
+    command: str,
+    expected_payload: dict[str, Any] | None,
+    runtime_payload: dict[str, Any] | None,
+    exit_code: int,
+) -> list[str]:
+    """Schema + key-field validation for a bash tool execution."""
+    errors: list[str] = []
+    if exit_code != 0:
+        errors.append(f"nonzero_exit:{exit_code}")
+
+    if isinstance(expected_payload, dict):
+        expected_status = expected_payload.get("status")
+        if expected_status == "ok" and exit_code != 0:
+            errors.append("expected_status_ok_but_command_failed")
+        if expected_status is not None and isinstance(runtime_payload, dict) and "status" in runtime_payload:
+            if runtime_payload.get("status") != expected_status:
+                errors.append(
+                    f"status_mismatch:expected={expected_status!r}:got={runtime_payload.get('status')!r}"
+                )
+
+        if "path" in expected_payload:
+            expected_path = _normalise_path_string(expected_payload.get("path"))
+            got_path = _runtime_path_from_payload(runtime_payload)
+            if expected_path and got_path is None:
+                errors.append("missing_runtime_path")
+            elif expected_path and got_path and expected_path != got_path:
+                errors.append(f"path_mismatch:expected={expected_path}:got={got_path}")
+
+        if "applied_wavetable" in expected_payload:
+            if not isinstance(runtime_payload, dict):
+                errors.append("missing_runtime_json_for_applied_wavetable")
+            elif runtime_payload.get("applied_wavetable") != expected_payload.get("applied_wavetable"):
+                errors.append(
+                    "applied_wavetable_mismatch:"
+                    f"expected={expected_payload.get('applied_wavetable')!r}:"
+                    f"got={runtime_payload.get('applied_wavetable')!r}"
+                )
+        if "applied_tuple_id" in expected_payload:
+            if not isinstance(runtime_payload, dict):
+                errors.append("missing_runtime_json_for_applied_tuple_id")
+            elif runtime_payload.get("applied_tuple_id") != expected_payload.get("applied_tuple_id"):
+                errors.append(
+                    "applied_tuple_id_mismatch:"
+                    f"expected={expected_payload.get('applied_tuple_id')!r}:"
+                    f"got={runtime_payload.get('applied_tuple_id')!r}"
+                )
+
+    # "Intended effect" heuristics for common command families.
+    if "listen_probe" in command:
+        if not isinstance(runtime_payload, dict) or not isinstance(runtime_payload.get("listen_probe"), dict):
+            errors.append("listen_probe_payload_missing")
+        else:
+            lp = runtime_payload["listen_probe"]
+            if lp.get("exists") is False:
+                errors.append("listen_probe_reported_missing_file")
+            if isinstance(expected_payload, dict) and "path" in expected_payload:
+                expected_path = _normalise_path_string(expected_payload.get("path"))
+                got_path = _normalise_path_string(lp.get("path"))
+                if expected_path and got_path and expected_path != got_path:
+                    errors.append(
+                        f"listen_probe_path_mismatch:expected={expected_path}:got={got_path}"
+                    )
+
+    if "set_params(" in command:
+        if not isinstance(runtime_payload, dict):
+            errors.append("set_params_missing_runtime_json")
+        else:
+            if isinstance(runtime_payload.get("not_found"), list) and runtime_payload["not_found"]:
+                errors.append(f"set_params_not_found:{len(runtime_payload['not_found'])}")
+            if "applied" in runtime_payload and isinstance(runtime_payload.get("applied"), list):
+                if len(runtime_payload["applied"]) == 0:
+                    errors.append("set_params_applied_empty")
+            elif "status" not in runtime_payload:
+                errors.append("set_params_missing_status_or_applied")
+
+    return errors
+
+
+def _classify_bash_command(command: str) -> str:
+    if "listen_probe" in command:
+        return "listen_probe"
+    if "set_params(" in command:
+        return "set_params"
+    if "applied_wavetable" in command or "vc.set_preset(" in command:
+        return "apply_wavetable"
+    if "applied_tuple_id" in command:
+        return "apply_tuple"
+    return "bash_generic"
+
+
+def _check_live_exec_environment() -> None:
+    """Ensure a live REAPER + reapy session is reachable before executing checks."""
+    try:
+        import reapy  # noqa: PLC0415
+
+        with reapy.inside_reaper():
+            project = reapy.Project()
+            _ = len(project.tracks)
+    except Exception as exc:
+        raise RuntimeError(
+            "Live execution checks require a running REAPER session with reapy server available."
+        ) from exc
+
+
+def run_live_execution_checks_for_record(
+    record: dict[str, Any],
+    timeout_sec: float = 30.0,
+    max_calls: int | None = None,
+) -> dict[str, Any]:
+    """Execute bash tool calls and compare runtime output against paired tool_response."""
+    messages = record.get("messages", [])
+    checks: list[dict[str, Any]] = []
+    assessed = 0
+    passed = 0
+    call_budget = max_calls if (max_calls is not None and max_calls > 0) else None
+
+    for i, msg in enumerate(messages):
+        if call_budget is not None and assessed >= call_budget:
+            break
+        if msg.get("role") != "tool_call":
+            continue
+        tc = _parse_json_object(msg.get("content", ""))
+        if not isinstance(tc, dict) or tc.get("name") != "bash":
+            continue
+
+        command = tc.get("arguments", {}).get("command", "")
+        if not isinstance(command, str) or not command.strip():
+            continue
+
+        expected_payload: dict[str, Any] | None = None
+        if i + 1 < len(messages) and messages[i + 1].get("role") == "tool_response":
+            expected_payload = _parse_json_object(messages[i + 1].get("content", ""))
+
+        assessed += 1
+        category = _classify_bash_command(command)
+        try:
+            proc = subprocess.run(
+                ["bash", "-lc", command],
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+            runtime_payload = _parse_json_object(proc.stdout)
+            errors = _validate_bash_execution_against_expected(
+                command=command,
+                expected_payload=expected_payload,
+                runtime_payload=runtime_payload,
+                exit_code=int(proc.returncode),
+            )
+            ok = len(errors) == 0
+            if ok:
+                passed += 1
+            checks.append(
+                {
+                    "tool_call_index": i,
+                    "category": category,
+                    "ok": ok,
+                    "exit_code": int(proc.returncode),
+                    "errors": errors,
+                    "stderr_snippet": (proc.stderr or "").strip()[:300],
+                }
+            )
+        except subprocess.TimeoutExpired:
+            checks.append(
+                {
+                    "tool_call_index": i,
+                    "category": category,
+                    "ok": False,
+                    "exit_code": None,
+                    "errors": [f"timeout:{timeout_sec}s"],
+                    "stderr_snippet": "",
+                }
+            )
+
+    fidelity = (passed / assessed) if assessed > 0 else None
+    return {
+        "execution_fidelity": round(float(fidelity), 4) if fidelity is not None else None,
+        "execution_checks": checks,
+        "execution_calls_assessed": assessed,
+        "execution_calls_passed": passed,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -354,55 +579,47 @@ def _score_hypothesis_grounding(
     commentary_turns: list[str],
     step_labels: list[dict],
 ) -> float | None:
-    """Score whether each listening step's HYPOTHESIS is a grounded audio observation.
+    """Score HYPOTHESIS grounding against the labeled remaining subsystem hints.
 
-    The new HYPOTHESIS format is an observational sentence describing a perceptual
-    quality gap ("brightness", "attack transient", "harmonic density"), using hedged
-    language ("appears to", "seems to", "suggests"). It should NOT prescribe a next
-    step or name a parameter family.
-
-    Scoring per assessable step (one that has a non-empty HYPOTHESIS):
-      +1.0  if HYPOTHESIS contains a perceptual quality term AND uses hedged language
-        AND does not prescribe a next action
-      +0.5  if only perceptual terms present but no hedging (or vice versa)
-      +0.0  if HYPOTHESIS prescribes a next step or is absent
-
-    Returns mean over assessable steps, or None if none found.
+    For each step with a non-empty ``remaining_top_2`` label, this checks whether the
+    HYPOTHESIS text names at least one of those subsystem tokens.
+    Returns None when no step is assessable.
     """
-    _PERCEPTUAL_TERMS = {
-        "bright", "dark", "warm", "harsh", "thin", "dense", "rich", "clean", "buzzy",
-        "shimmer", "shimmer", "glassy", "metallic", "hollow", "nasal", "sharp", "soft",
-        "attack", "decay", "sustain", "release", "transient", "envelope", "texture",
-        "harmonic", "overtone", "timbre", "timbral", "spectral", "frequency", "resonan",
-        "movement", "modulation", "motion", "evolv", "flutter", "tremolo", "vibrato",
-        "spatial", "stereo", "width", "presence", "body", "punch", "click", "crunch",
-        "smooth", "rough", "airy", "hollow", "percussive", "staccato", "legato",
-        "brightness", "heaviness", "crispness", "warmth", "loudness", "fullness",
-    }
-    _HEDGE_TERMS = ["appears to", "seems to", "suggests", "appear to", "seem to",
-                    "appears ", "seems ", "likely", "possibly", "probably"]
-    _PRESCRIPTIVE_TERMS = ["next step", "prioritize", "should adjust", "need to adjust",
-                           "should target", "focus on", "we should", "the next"]
+    assessable = 0
+    hits = 0
 
-    scores: list[float] = []
-    for turn in commentary_turns:
+    for label, turn in zip(step_labels, commentary_turns):
+        remaining = label.get("remaining_top_2")
+        if not remaining:
+            continue
+
+        if isinstance(remaining, str):
+            cleaned = remaining.lower().replace("/", " and ").replace(",", " and ")
+            candidates = [part.strip() for part in re.split(r"\band\b", cleaned)]
+        elif isinstance(remaining, list):
+            candidates = [str(x).strip().lower() for x in remaining if str(x).strip()]
+        else:
+            continue
+
+        tokens = []
+        for c in candidates:
+            t = re.sub(r"[^a-z0-9 ]+", " ", c).strip()
+            if len(t) >= 3:
+                tokens.append(t)
+        if not tokens:
+            continue
+
+        assessable += 1
         hypo_text = _extract_section(turn, "HYPOTHESIS:").lower()
         if not hypo_text:
-            continue  # no HYPOTHESIS in this turn (planning step) — skip
-        has_perceptual = any(t in hypo_text for t in _PERCEPTUAL_TERMS)
-        has_hedge = any(t in hypo_text for t in _HEDGE_TERMS)
-        is_prescriptive = any(t in hypo_text for t in _PRESCRIPTIVE_TERMS)
-        if is_prescriptive:
-            scores.append(0.0)
-        elif has_perceptual and has_hedge:
-            scores.append(1.0)
-        elif has_perceptual or has_hedge:
-            scores.append(0.5)
-        else:
-            scores.append(0.0)
-    if not scores:
+            continue
+
+        if any(re.search(rf"\b{re.escape(tok)}\b", hypo_text) for tok in tokens):
+            hits += 1
+
+    if assessable == 0:
         return None
-    return round(sum(scores) / len(scores), 4)
+    return round(hits / assessable, 4)
 
 
 def score_main_record(
@@ -412,7 +629,8 @@ def score_main_record(
 ) -> dict[str, Any]:
     messages = record.get("messages", [])
     meta = record.get("meta", {})
-    step_labels: list[dict] = meta.get("step_labels", [])
+    labels = record.get("labels", {})
+    step_labels: list[dict] = meta.get("step_labels") or labels.get("step_labels", [])
 
     commentary_turns = [
         m["content"] for m in messages
@@ -500,9 +718,8 @@ def score_main_record(
     # of the free-form Sentence 2 rationale instead.
     plan_rationale_unique = _score_plan_rationale_unique(commentary_turns)
 
-    # 7. Hypothesis grounding — fraction of listening steps where HYPOTHESIS is a grounded
-    # audio observation: contains a perceptual quality term AND uses hedged language, and
-    # does NOT prescribe a next step. Planning-only turns (no HYPOTHESIS) are exempt.
+    # 7. Hypothesis grounding — fraction of labeled steps where HYPOTHESIS names
+    # at least one subsystem in remaining_top_2.
     hypothesis_grounding = _score_hypothesis_grounding(listening_turns, step_labels)
 
     # 8. CLAP net improvement — did the path make meaningful net progress toward GT audio?
@@ -510,32 +727,29 @@ def score_main_record(
     # which penalized intentional path_gen noise on intermediate steps.
     clap_net_improvement = _score_clap_net_improvement(step_labels)
 
-    # 9. Optional LLM judge — kept for diagnostics/transparency but excluded from overall
-    # score because plan_param_alignment is structurally guaranteed to be 1.0 (Sentence 1
-    # is pre-seeded with ground-truth params), so the judge score carries no signal.
+    # 9. Optional LLM judge — when enabled and available, use this for plan alignment
+    # in overall scoring (it can catch paraphrases missed by the heuristic matcher).
     llm_results: dict[str, Any] = {}
     if llm_judge_server:
         llm_results = llm_judge_main_record(record, llm_judge_server, llm_judge_model)
 
     llm_alignment: float | None = llm_results.get("llm_plan_alignment")
+    plan_alignment_for_overall = llm_alignment if llm_alignment is not None else plan_param_alignment
 
     # Overall weighted score.
-    # plan_param_alignment / llm_plan_alignment are excluded from the overall score because
-    # Sentence 1 of PLAN is pre-seeded with the ground-truth param inventory, making
-    # alignment structurally guaranteed — it carries no training-quality signal.
     # commentary_diversity is also excluded — it has a structural ceiling (~0.67) in this
     # domain regardless of content quality.
-    # section_structure is kept at a small weight as a correctness sanity check; it has
-    # been 1.0 in all observed data (format is reliable) so it carries minimal influence.
     weights = {
-        "clap_net_improvement":  0.30,
-        "plan_rationale_unique": 0.25,
-        "hypothesis_grounding":  0.25,
-        "section_structure":     0.10,
-        "snake_case_clean":      0.05,
-        "format_consistent":     0.05,
+        "plan_alignment_for_overall": 0.45,
+        "clap_net_improvement":       0.20,
+        "plan_rationale_unique":      0.15,
+        "hypothesis_grounding":       0.10,
+        "section_structure":          0.05,
+        "snake_case_clean":           0.025,
+        "format_consistent":          0.025,
     }
     raw = {
+        "plan_alignment_for_overall": plan_alignment_for_overall,
         "clap_net_improvement": clap_net_improvement,
         "plan_rationale_unique": plan_rationale_unique,
         "hypothesis_grounding": hypothesis_grounding,
@@ -661,19 +875,176 @@ def score_judge_record(record: dict[str, Any]) -> dict[str, Any]:
 # Dispatcher and summary
 # ---------------------------------------------------------------------------
 
+def score_main_v3_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Score a v3 pipeline main record.
+
+    v3 records use ``meta.batch_labels`` instead of ``step_labels`` and have
+    a DIAGNOSIS → subsystem-batch → CORRECTION → VERDICT topology.
+
+    Scoring dimensions:
+      clap_net_improvement    (20%) — same semantics as v2, uses batch_labels
+      diagnosis_subsystem_coverage (25%) — precision+recall of plan vs truth
+      batch_param_alignment   (30%) — each batch's set_params matches subsystem label
+      snake_case_clean        (2.5%) — no snake_case in assistant text
+      format_consistent       (2.5%) — no **BOLD:** headers
+      verdict_grounded        (10%) — FINAL ASSESSMENT names a residual subsystem
+      mistake_recovery        (10%, conditional) — correction block for mistake samples
+    """
+    meta = record.get("meta", {})
+    messages = record.get("messages", [])
+    batch_labels: list[dict] = meta.get("batch_labels", [])
+
+    # -- CLAP net improvement (from batch_labels[].clap_score_after_batch) --
+    clap_scores = [bl["clap_score_after_batch"] for bl in batch_labels
+                   if bl.get("clap_score_after_batch") is not None]
+    if len(clap_scores) >= 2:
+        delta = clap_scores[-1] - clap_scores[0]
+        clap_net_improvement: float | None = round(min(1.0, max(0.0, delta / 0.30)), 4)
+    else:
+        clap_net_improvement = None
+
+    # -- Diagnosis subsystem coverage (F1-style) --
+    truth = set(meta.get("diagnosis_subsystems_truth") or [])
+    mentioned = set(meta.get("diagnosis_subsystems_mentioned") or [])
+    if truth:
+        precision = len(mentioned & truth) / max(1, len(mentioned)) if mentioned else 0.0
+        recall = len(mentioned & truth) / len(truth)
+        f1 = 2 * precision * recall / max(1e-9, precision + recall)
+        diagnosis_subsystem_coverage: float | None = round(f1, 4)
+    else:
+        diagnosis_subsystem_coverage = 1.0  # nothing to predict
+
+    # -- Batch param alignment --
+    # For each regular batch, check if all params in the set_params tool call belong
+    # to the named subsystem. Uses _param_family from path_gen + v3's presentation mapping.
+    from scripts.build_main_agent_sft_v3 import presentation_subsystem
+    from maestro.synth.path_gen import _param_family
+
+    aligned_batches = 0
+    assessable_batches = 0
+    for bl in batch_labels:
+        if bl.get("is_correction"):
+            continue
+        assessable_batches += 1
+        param_names: list[str] = bl.get("param_names", [])
+        expected_sub = bl.get("subsystem", "")
+        if not param_names:
+            continue
+        all_match = all(
+            presentation_subsystem(_param_family(n)) == expected_sub
+            for n in param_names
+        )
+        if all_match:
+            aligned_batches += 1
+    batch_param_alignment: float | None = (
+        round(aligned_batches / assessable_batches, 4) if assessable_batches > 0 else None
+    )
+
+    # -- Snake case + format checks --
+    assistant_turns = [m["content"] for m in messages if m.get("role") == "assistant"]
+    snake_hits = sum(bool(_SNAKE_CASE_RE.search(t)) for t in assistant_turns)
+    snake_case_clean = 1.0 - min(1.0, snake_hits / max(1, len(assistant_turns)))
+    bold_hits = sum(bool(_BOLD_HEADER_RE.search(t)) for t in assistant_turns)
+    format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
+
+    # -- Verdict grounded: FINAL ASSESSMENT names a residual subsystem --
+    verdict_turn = ""
+    for m in reversed(messages):
+        if m.get("role") == "assistant" and "FINAL ASSESSMENT" in m.get("content", ""):
+            verdict_turn = m["content"]
+            break
+    residual_subs = list((meta.get("batch_labels", [{}])[-1] or {}).get("param_names", []))[:3]
+    # Try simpler: check that verdict mentions any subsystem name from SUBSYSTEM_ORDER
+    from scripts.build_main_agent_sft_v3 import _SUBSYSTEM_ALIASES
+    verdict_lower = verdict_turn.lower()
+    verdict_mentions_sub = any(
+        any(re.search(rf"\b{re.escape(alias)}\b", verdict_lower)
+            for alias in aliases)
+        for label, aliases in _SUBSYSTEM_ALIASES.items()
+    )
+    verdict_grounded: float = 1.0 if verdict_mentions_sub else 0.0
+
+    # -- Mistake recovery (conditional) --
+    mistake_recovery: float | None = None
+    if meta.get("injected_mistake") is not None:
+        mistake_recovery = 1.0 if meta.get("mistake_caught") else 0.0
+
+    # -- Overall --
+    weights: dict[str, float] = {
+        "batch_param_alignment": 0.30,
+        "diagnosis_subsystem_coverage": 0.25,
+        "clap_net_improvement": 0.20,
+        "verdict_grounded": 0.10,
+        "snake_case_clean": 0.025,
+        "format_consistent": 0.025,
+    }
+    if mistake_recovery is not None:
+        weights["mistake_recovery"] = 0.10
+    else:
+        # Redistribute 10% among other weights proportionally.
+        base = sum(weights.values())
+        weights = {k: v / base for k, v in weights.items()}
+
+    raw: dict[str, Any] = {
+        "clap_net_improvement": clap_net_improvement,
+        "diagnosis_subsystem_coverage": diagnosis_subsystem_coverage,
+        "batch_param_alignment": batch_param_alignment,
+        "snake_case_clean": snake_case_clean,
+        "format_consistent": format_consistent,
+        "verdict_grounded": verdict_grounded,
+        "mistake_recovery": mistake_recovery,
+    }
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for k, w in weights.items():
+        v = raw.get(k)
+        if v is not None:
+            weighted_sum += v * w
+            weight_sum += w
+    overall = round(weighted_sum / weight_sum, 4) if weight_sum > 0 else 0.0
+
+    return {**raw, "overall": overall}
+
+
 def score_record(
     record: dict[str, Any],
     llm_judge_server: str | None = None,
     llm_judge_model: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+    live_exec_check: bool = False,
+    live_exec_timeout_sec: float = 30.0,
+    live_exec_max_calls: int | None = None,
 ) -> dict[str, Any]:
     task = record.get("task_type", "")
-    if task == "main":
-        return score_main_record(record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model)
-    if task == "search":
-        return score_search_record(record)
-    if task == "judge":
-        return score_judge_record(record)
-    return {"overall": None, "error": f"unknown task_type: {task!r}"}
+    meta = record.get("meta", {})
+    # Branch: v3 pipeline records use a different scoring path.
+    if task == "main" and meta.get("pipeline_version") == "v3":
+        scores = score_main_v3_record(record)
+    elif task == "main":
+        scores = score_main_record(record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model)
+    elif task == "search":
+        scores = score_search_record(record)
+    elif task == "judge":
+        scores = score_judge_record(record)
+    else:
+        scores = {"overall": None, "error": f"unknown task_type: {task!r}"}
+
+    # Optional live runtime validation: execute bash tool calls and check that
+    # runtime outputs/effects align with emitted tool_response payloads.
+    if live_exec_check:
+        exec_results = run_live_execution_checks_for_record(
+            record,
+            timeout_sec=live_exec_timeout_sec,
+            max_calls=live_exec_max_calls,
+        )
+        scores.update(exec_results)
+        exec_fidelity = exec_results.get("execution_fidelity")
+        base_overall = scores.get("overall")
+        if exec_fidelity is not None and base_overall is not None:
+            # Keep existing quality signal dominant while making runtime fidelity
+            # a meaningful factor when live checks are enabled.
+            scores["overall"] = round((0.85 * float(base_overall)) + (0.15 * float(exec_fidelity)), 4)
+
+    return scores
 
 
 def grade_file(
@@ -684,6 +1055,9 @@ def grade_file(
     llm_judge_server: str | None = "http://localhost:8000",
     llm_judge_model: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
     workers: int = 1,
+    live_exec_check: bool = False,
+    live_exec_timeout_sec: float = 30.0,
+    live_exec_max_calls: int | None = None,
 ) -> dict[str, Any]:
     """Grade all records in *input_path*, write scored output to *output_path*.
 
@@ -698,6 +1072,12 @@ def grade_file(
     Returns a summary dict with per-task-type stats.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if live_exec_check:
+        _check_live_exec_environment()
+        if workers > 1:
+            # Live REAPER execution is stateful; serialise checks for determinism.
+            workers = 1
 
     rows: list[dict] = []
     with open(input_path) as f:
@@ -714,7 +1094,10 @@ def grade_file(
             futs = {
                 pool.submit(score_record, record,
                             llm_judge_server=llm_judge_server,
-                            llm_judge_model=llm_judge_model): i
+                            llm_judge_model=llm_judge_model,
+                            live_exec_check=live_exec_check,
+                            live_exec_timeout_sec=live_exec_timeout_sec,
+                            live_exec_max_calls=live_exec_max_calls): i
                 for i, record in enumerate(rows)
             }
             for fut in as_completed(futs):
@@ -727,7 +1110,12 @@ def grade_file(
     else:
         for i, record in enumerate(rows):
             scores_by_idx[i] = score_record(
-                record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model
+                record,
+                llm_judge_server=llm_judge_server,
+                llm_judge_model=llm_judge_model,
+                live_exec_check=live_exec_check,
+                live_exec_timeout_sec=live_exec_timeout_sec,
+                live_exec_max_calls=live_exec_max_calls,
             )
 
     scored: list[dict] = []
@@ -814,6 +1202,23 @@ def main() -> None:
         help="Number of records to score concurrently (default: 4). Each record's scoring "
              "is independent HTTP calls so threading scales well.",
     )
+    ap.add_argument(
+        "--live-exec-check",
+        action="store_true",
+        help="Execute bash tool calls live and score execution_fidelity from runtime output/effect checks.",
+    )
+    ap.add_argument(
+        "--live-exec-timeout-sec",
+        type=float,
+        default=30.0,
+        help="Timeout in seconds for each live-executed bash tool call (default: 30).",
+    )
+    ap.add_argument(
+        "--live-exec-max-calls",
+        type=int,
+        default=0,
+        help="Optional cap on executed bash tool calls per record for faster checks (0 = all).",
+    )
     args = ap.parse_args()
 
     summary = grade_file(
@@ -824,6 +1229,9 @@ def main() -> None:
         llm_judge_server=None if args.no_llm_judge else args.llm_judge_server,
         llm_judge_model=args.llm_judge_model,
         workers=args.workers,
+        live_exec_check=args.live_exec_check,
+        live_exec_timeout_sec=float(args.live_exec_timeout_sec),
+        live_exec_max_calls=(None if int(args.live_exec_max_calls) <= 0 else int(args.live_exec_max_calls)),
     )
     print(json.dumps(summary, indent=2))
 

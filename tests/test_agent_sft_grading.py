@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,11 +20,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripts.grade_agent_sft import (
     _extract_section,
     _has_all_sections,
+    _validate_bash_execution_against_expected,
     _param_mentioned_in_text,
     _llm_judge_plan_step,
     _score_clap_net_improvement,
     _score_hypothesis_grounding,
     _score_plan_rationale_unique,
+    run_live_execution_checks_for_record,
     llm_judge_main_record,
     score_main_record,
     score_search_record,
@@ -402,6 +405,89 @@ def test_judge_gt_recall_unknown():
     record = _make_judge_record(has_scores=True, has_cosine=True, gt_in_selected=None)
     scores = score_judge_record(record)
     assert scores["gt_recall"] is None
+
+
+# ---------------------------------------------------------------------------
+# Unit tests: live execution fidelity checks
+# ---------------------------------------------------------------------------
+
+def _make_live_exec_record(command: str, tool_response_payload: dict) -> dict:
+    return {
+        "id": "live_exec_test",
+        "task_type": "main",
+        "messages": [
+            {"role": "user", "content": "<audio>\nRecreate this sound."},
+            {"role": "assistant", "content": "Running update."},
+            {"role": "tool_call", "content": json.dumps({"name": "bash", "arguments": {"command": command}})},
+            {"role": "tool_response", "content": json.dumps(tool_response_payload)},
+            {"role": "assistant", "content": "Done."},
+        ],
+        "audios": ["/tmp/t.wav"],
+        "meta": {"step_labels": []},
+        "labels": {},
+    }
+
+
+def test_validate_bash_execution_matches_listen_probe_schema():
+    command = "python - <<'PY'\nprint('x')\nprint('{\"listen_probe\":{\"path\":\"/tmp/a.wav\",\"exists\":true}}')\nPY"
+    expected = {"status": "ok", "iter_audio": "<audio>", "path": "/tmp/a.wav"}
+    runtime = {"listen_probe": {"path": "/tmp/a.wav", "exists": True}}
+    errs = _validate_bash_execution_against_expected(command, expected, runtime, exit_code=0)
+    assert errs == []
+
+
+def test_validate_bash_execution_detects_path_mismatch():
+    command = "python - <<'PY'\nprint('{\"listen_probe\":{\"path\":\"/tmp/b.wav\",\"exists\":true}}')\nPY"
+    expected = {"status": "ok", "path": "/tmp/a.wav"}
+    runtime = {"listen_probe": {"path": "/tmp/b.wav", "exists": True}}
+    errs = _validate_bash_execution_against_expected(command, expected, runtime, exit_code=0)
+    assert any("path_mismatch" in e or "listen_probe_path_mismatch" in e for e in errs), errs
+
+
+def test_run_live_execution_checks_for_record_success():
+    command = "python - <<'PY'\nprint('{\"status\":\"ok\",\"applied_wavetable\":\"Sine\"}')\nPY"
+    record = _make_live_exec_record(command, {"status": "ok", "applied_wavetable": "Sine"})
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.stdout = '{"status":"ok","applied_wavetable":"Sine"}\n'
+    proc.stderr = ""
+    with patch("scripts.grade_agent_sft.subprocess.run", return_value=proc):
+        result = run_live_execution_checks_for_record(record, timeout_sec=1.0)
+    assert result["execution_calls_assessed"] == 1
+    assert result["execution_calls_passed"] == 1
+    assert result["execution_fidelity"] == 1.0
+    assert result["execution_checks"][0]["ok"] is True
+
+
+def test_run_live_execution_checks_for_record_timeout_marks_failure():
+    command = "python - <<'PY'\nprint('slow')\nPY"
+    record = _make_live_exec_record(command, {"status": "ok"})
+    with patch(
+        "scripts.grade_agent_sft.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="bash -lc slow", timeout=0.1),
+    ):
+        result = run_live_execution_checks_for_record(record, timeout_sec=0.1)
+    assert result["execution_calls_assessed"] == 1
+    assert result["execution_calls_passed"] == 0
+    assert result["execution_fidelity"] == 0.0
+    assert result["execution_checks"][0]["ok"] is False
+    assert any("timeout" in e for e in result["execution_checks"][0]["errors"])
+
+
+def test_score_record_blends_execution_fidelity_when_enabled():
+    record = _make_main_record([_make_commentary("x", "y", "z")], step_labels=[])
+    with patch("scripts.grade_agent_sft.score_main_record", return_value={"overall": 0.8}), patch(
+        "scripts.grade_agent_sft.run_live_execution_checks_for_record",
+        return_value={
+            "execution_fidelity": 0.2,
+            "execution_checks": [],
+            "execution_calls_assessed": 1,
+            "execution_calls_passed": 0,
+        },
+    ):
+        scores = score_record(record, live_exec_check=True)
+    assert scores["execution_fidelity"] == 0.2
+    assert scores["overall"] == pytest.approx(round((0.85 * 0.8) + (0.15 * 0.2), 4))
 
 
 # ---------------------------------------------------------------------------
@@ -1373,3 +1459,140 @@ def test_grade_file_parallel_score_values_match_serial(tmp_path):
     parallel_scores = [json.loads(l)["quality_scores"]["overall"] for l in open(out_p)]
     assert serial_scores == parallel_scores, \
         f"Score mismatch: serial={serial_scores}, parallel={parallel_scores}"
+
+
+# ---------------------------------------------------------------------------
+# v3 grading tests
+# ---------------------------------------------------------------------------
+
+from scripts.grade_agent_sft import score_main_v3_record
+
+
+def _make_v3_grading_record(
+    n_batches: int = 3,
+    truth: list[str] | None = None,
+    mentioned: list[str] | None = None,
+    has_mistake: bool = False,
+    mistake_caught: bool = False,
+    clap_scores: list[float] | None = None,
+) -> dict:
+    """Build a minimal v3 record for grading unit tests."""
+    if truth is None:
+        truth = ["oscillator", "filter", "lfo"]
+    if mentioned is None:
+        mentioned = ["oscillator", "filter", "lfo"]
+    if clap_scores is None:
+        clap_scores = [0.4, 0.6, 0.8]
+
+    batch_labels = []
+    for i in range(n_batches):
+        sub = truth[i % len(truth)]
+        fam_prefix = {
+            "oscillator": "osc_1_", "filter": "filter_1_", "envelope": "env_1_",
+            "lfo": "lfo_1_", "fx": "reverb_", "modulation": "modulation_1_", "macro": "polyphony",
+        }.get(sub, f"{sub}_")
+        batch_labels.append({
+            "index": i,
+            "subsystem": sub,
+            "param_names": [f"{fam_prefix}param_{i}"],
+            "clap_score_after_batch": clap_scores[i] if i < len(clap_scores) else 0.7,
+            "is_correction": False,
+        })
+
+    messages = [
+        {"role": "user", "content": "<audio>\nRecreate."},
+        {"role": "assistant", "content": "FINAL ASSESSMENT (complete): The oscillator matches well. The filter still differs slightly."},
+    ]
+    return {
+        "id": "v3_test",
+        "task_type": "main",
+        "messages": messages,
+        "audios": ["/tmp/gt.wav"],
+        "meta": {
+            "pipeline_version": "v3",
+            "batch_labels": batch_labels,
+            "diagnosis_subsystems_mentioned": mentioned,
+            "diagnosis_subsystems_truth": truth,
+            "injected_mistake": ({"batch_index": 1, "subsystem": "filter", "param": "filter_1_cutoff", "wrong_value": 0.2, "true_value": 0.6} if has_mistake else None),
+            "mistake_caught": mistake_caught if has_mistake else None,
+        },
+    }
+
+
+def test_v3_diagnosis_subsystem_coverage_perfect():
+    record = _make_v3_grading_record(truth=["oscillator", "filter"], mentioned=["oscillator", "filter"])
+    scores = score_main_v3_record(record)
+    assert scores["diagnosis_subsystem_coverage"] == 1.0
+
+
+def test_v3_diagnosis_subsystem_coverage_partial():
+    record = _make_v3_grading_record(truth=["oscillator", "filter", "lfo"], mentioned=["oscillator"])
+    scores = score_main_v3_record(record)
+    # recall = 1/3 ≈ 0.33, precision = 1/1 = 1.0, F1 = 0.5
+    assert scores["diagnosis_subsystem_coverage"] == 0.5
+
+
+def test_v3_batch_param_alignment_all_correct():
+    record = _make_v3_grading_record(n_batches=3)
+    scores = score_main_v3_record(record)
+    assert scores["batch_param_alignment"] == 1.0
+
+
+def test_v3_batch_param_alignment_mismatch():
+    record = _make_v3_grading_record(n_batches=2, truth=["oscillator", "filter"])
+    # Manually break alignment: put filter params in the oscillator batch
+    record["meta"]["batch_labels"][0]["param_names"] = ["filter_1_cutoff"]
+    scores = score_main_v3_record(record)
+    # batch 0: param is filter but labeled oscillator → mismatch
+    assert scores["batch_param_alignment"] < 1.0
+
+
+def test_v3_clap_net_improvement():
+    record = _make_v3_grading_record(clap_scores=[0.3, 0.5, 0.7])
+    scores = score_main_v3_record(record)
+    # delta = 0.7 - 0.3 = 0.4; 0.4 / 0.30 = 1.333 → clamped to 1.0
+    assert scores["clap_net_improvement"] == 1.0
+
+
+def test_v3_clap_net_improvement_negative():
+    record = _make_v3_grading_record(clap_scores=[0.8, 0.5, 0.3])
+    scores = score_main_v3_record(record)
+    assert scores["clap_net_improvement"] == 0.0
+
+
+def test_v3_mistake_recovery_caught():
+    record = _make_v3_grading_record(has_mistake=True, mistake_caught=True)
+    scores = score_main_v3_record(record)
+    assert scores["mistake_recovery"] == 1.0
+
+
+def test_v3_mistake_recovery_not_caught():
+    record = _make_v3_grading_record(has_mistake=True, mistake_caught=False)
+    scores = score_main_v3_record(record)
+    assert scores["mistake_recovery"] == 0.0
+
+
+def test_v3_mistake_recovery_none_when_no_mistake():
+    record = _make_v3_grading_record(has_mistake=False)
+    scores = score_main_v3_record(record)
+    assert scores["mistake_recovery"] is None
+
+
+def test_v3_verdict_grounded():
+    record = _make_v3_grading_record()
+    scores = score_main_v3_record(record)
+    assert scores["verdict_grounded"] == 1.0  # "oscillator" and "filter" appear in verdict
+
+
+def test_v3_overall_range():
+    record = _make_v3_grading_record()
+    scores = score_main_v3_record(record)
+    assert 0.0 <= scores["overall"] <= 1.0
+
+
+def test_v3_score_record_dispatches_correctly():
+    """score_record routes v3 records to score_main_v3_record."""
+    record = _make_v3_grading_record()
+    scores = score_record(record)
+    assert "batch_param_alignment" in scores
+    assert "hypothesis_grounding" not in scores  # v2-only
