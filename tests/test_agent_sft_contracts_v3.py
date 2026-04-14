@@ -169,22 +169,27 @@ def test_format_diff_summary_lists_subsystems():
 def _make_v3_record(n_batches=3, has_correction=False, has_mistake=False):
     """Build a synthetic v3 record for structural testing."""
     messages = [
-        {"role": "user", "content": "<audio>\nRecreate this keys target sound in Vital from default.\nListen first, write a subsystem plan, then execute by subsystem."},
-        # WT scaffold shortcut — minimal valid
+        {"role": "user", "content": "<audio>\nRecreate this keys target sound in Vital from default.\nSearch for matching wavetables, evaluate combinations, then execute by subsystem."},
+        # WT scaffold: baseline → search dispatch → collect → tuple eval → apply
         {"role": "assistant", "content": "Listening to current default preset baseline."},
         {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"echo probe"}}'},
         {"role": "tool_response", "content": '{"status":"ok","baseline_audio":"<audio>","path":"/tmp/d.wav"}'},
-        {"role": "assistant", "content": "Spawning disjoint search shards to gather wavetable proposals in parallel."},
-        {"role": "tool_call", "content": '{"name":"spawn_search_agents","arguments":{}}'},
-        {"role": "tool_response", "content": '{"jobs":[]}'},
-        {"role": "assistant", "content": "Collecting search-agent reports."},
+        {"role": "assistant", "content": "Searching for wavetable candidates across the library."},
+        {"role": "tool_call", "content": '{"name":"spawn_search_agents","arguments":{"num_agents":4}}'},
+        {"role": "tool_response", "content": '{"agents_spawned":4,"pool_size":48}'},
+        {"role": "assistant", "content": "Collecting search results."},
         {"role": "tool_call", "content": '{"name":"collect_search_reports","arguments":{}}'},
-        {"role": "tool_response", "content": '{"reports":[]}'},
-        {"role": "assistant", "content": "Judging candidates and selecting up to three for edits."},
-        {"role": "tool_call", "content": '{"name":"judge_candidates","arguments":{}}'},
-        {"role": "tool_response", "content": '{"ranking":[],"selected":[],"selected_previews":[]}'},
+        {"role": "tool_response", "content": '{"pooled_candidates":["01 Basic Shapes","Cymatics Chill 25","Pink Noise"]}'},
+        {"role": "assistant", "content": "The target uses 1 active oscillator. Evaluating 2 wavetable combinations."},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"# Render tuple 1"}}'},
+        {"role": "tool_response", "content": '{"tuple_audio":"<audio>","tuple_index":1,"wavetables":["01 Basic Shapes"]}'},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"# Render tuple 2"}}'},
+        {"role": "tool_response", "content": '{"tuple_audio":"<audio>","tuple_index":2,"wavetables":["Cymatics Chill 25"]}'},
+        {"role": "assistant", "content": "Tuple 1 best matches the target. Applying: oscillator 1 = \'01 Basic Shapes\'."},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"# Apply wavetable via library lookup"}}'},
+        {"role": "tool_response", "content": '{"status":"ok","applied":["01 Basic Shapes"]}'},
     ]
-    audios = ["/tmp/gt.wav", "/tmp/default.wav"]
+    audios = ["/tmp/gt.wav", "/tmp/default.wav", "/tmp/tuple1.wav", "/tmp/tuple2.wav"]
     diagnosis = "OBSERVATIONS: The target has brighter harmonics.\n\nPLAN:\n• Oscillator: add unison detune\n• Filter: lower cutoff\n• LFO: add movement\nExecuting plan by subsystem."
     batch_labels = []
     for bi in range(n_batches):
@@ -296,10 +301,9 @@ def test_v3_no_heard_hypothesis_headers():
 def test_v3_audio_count_matches_batch_labels():
     record = _make_v3_record(n_batches=3, has_correction=False)
     batch_labels = record["meta"]["batch_labels"]
-    n_batches = len(batch_labels)
-    n_corrections = sum(1 for b in batch_labels if b["is_correction"])
-    # GT + default + one per regular batch + one per correction listen
-    expected = 2 + (n_batches - n_corrections)  # GT, default, + regular batch listens
+    n_batches_reg = sum(1 for b in batch_labels if not b["is_correction"])
+    # GT + default + 2 tuple audios + one per regular batch
+    expected = 2 + 2 + n_batches_reg  # GT, default, tuples, batch listens
     assert len(record["audios"]) == expected, f"Expected {expected} audios, got {len(record['audios'])}"
 
 
@@ -308,7 +312,8 @@ def test_v3_audio_count_with_correction():
     batch_labels = record["meta"]["batch_labels"]
     n_regular = sum(1 for b in batch_labels if not b["is_correction"])
     n_corrections = sum(1 for b in batch_labels if b["is_correction"])
-    expected = 2 + n_regular + n_corrections  # GT, default, regular listens, correction listen
+    # GT + default + 2 tuple audios + regular listens + correction listen
+    expected = 2 + 2 + n_regular + n_corrections
     assert len(record["audios"]) == expected
 
 
@@ -343,3 +348,43 @@ def test_v3_batch_labels_have_required_fields():
         assert "param_names" in bl
         assert "clap_score_after_batch" in bl
         assert "is_correction" in bl
+
+
+# ---- WT scaffold tests ----
+
+def test_v3_wt_scaffold_has_search_dispatch():
+    record = _make_v3_record()
+    tool_calls = [m for m in record["messages"] if m["role"] == "tool_call"]
+    tool_names = [json.loads(m["content"])["name"] for m in tool_calls]
+    assert "spawn_search_agents" in tool_names
+    assert "collect_search_reports" in tool_names
+
+
+def test_v3_wt_scaffold_has_tuple_audio():
+    record = _make_v3_record()
+    tuple_responses = [
+        m for m in record["messages"]
+        if m["role"] == "tool_response" and "tuple_audio" in m["content"]
+    ]
+    assert len(tuple_responses) >= 2, "Should have at least 2 tuple audio evaluations"
+
+
+def test_v3_wt_apply_uses_library_lookup():
+    """The apply tool call should reference the wavetable library, not the target preset."""
+    record = _make_v3_record()
+    apply_responses = [
+        m for m in record["messages"]
+        if m["role"] == "tool_response" and '"applied"' in m["content"]
+    ]
+    assert apply_responses, "Should have an apply tool response"
+    parsed = json.loads(apply_responses[0]["content"])
+    assert "applied" in parsed
+    assert isinstance(parsed["applied"], list)
+
+
+def test_v3_wt_scaffold_no_judge_candidates():
+    """v3 should NOT have the old judge_candidates tool call."""
+    record = _make_v3_record()
+    tool_calls = [m for m in record["messages"] if m["role"] == "tool_call"]
+    tool_names = [json.loads(m["content"])["name"] for m in tool_calls]
+    assert "judge_candidates" not in tool_names
