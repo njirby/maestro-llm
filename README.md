@@ -442,32 +442,34 @@ python scripts/grade_agent_sft.py \
     --verbose
 ```
 
-### Hierarchical agent SFT builders (search / judge / main — wavetable retrieval)
+### Search agent SFT v2 (iterative batch-listening wavetable search)
 
-An earlier hierarchical pipeline builds datasets for three specialized agents that collaborate on wavetable selection (selecting the right oscillator wavetable from a 568-entry library given a target audio clip). This is distinct from the iterative preset recreation pipeline above.
+Trains a search agent to evaluate wavetable candidates by ear through iterative batch listening. Each search agent hears the target audio + batches of candidate wavetable probes (audio + name), builds a running shortlist, and returns candidate names for the main agent to assemble into tuples.
 
 ```bash
-# 1) Search-agent SFT
-python scripts/build_search_agent_sft.py \
-  --manifest outputs/wt_retrieval_eval15000_gt_wav_full/manifest.jsonl \
-  --out-jsonl data/prepared/agent_sft/search.jsonl \
-  --candidate-source oracle_mix8 --candidate-limit 24 \
-  --num-agents 4 --proposals-per-agent 3
-
-# 2) Judge-agent SFT (with candidate-order permutations)
-python scripts/build_judge_agent_sft.py \
-  --manifest outputs/wt_retrieval_eval15000_gt_wav_full/manifest.jsonl \
-  --out-jsonl data/prepared/agent_sft/judge.jsonl \
-  --candidate-source oracle_mix8 --candidate-limit 8 \
-  --select-k 3 --permutations 3
-
-# 3) Merge task datasets
-python scripts/merge_agent_sft.py \
-  --input data/prepared/agent_sft/search.jsonl \
-  --input data/prepared/agent_sft/judge.jsonl \
-  --output data/prepared/agent_sft/train_merged.jsonl \
-  --shuffle --seed 1337
+python scripts/build_search_agent_sft_v2.py \
+    --manifest outputs/iter_sft/manifest.jsonl \
+    --index-npy outputs/wt_retrieval_baseline/wt_index.npz \
+    --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
+    --wavetable-lib data/wavetable_lib.json \
+    --out-jsonl data/prepared/agent_sft/search_v2.jsonl \
+    --pool-top-k 48 --num-agents 4 --candidates-per-batch 8 \
+    --omni-server http://localhost:8000 \
+    --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct
 ```
+
+**Key design features:**
+- **Candidate pool** built from GT wavetable CLAP embeddings (apples-to-apples index comparison, top-K=48). CLAP is used only at build time for pool construction — the model never sees or uses CLAP.
+- **Iterative batch listening**: target + 6-8 candidates per round, multiple rounds, shortlist evolves across rounds.
+- **GT grounding**: when a GT wavetable appears, Stage 2 receives the target preset's processing chain (`describe_key_transforms`) and writes reasoning about how the raw wavetable transforms under that processing. The model learns to reason about raw→processed transformation.
+- **Names in token space**: each candidate has both `<audio>` and its wavetable name, so the model can reference it in code.
+- **No CLAP, no role-tagging, no tuple assembly** — just a shortlist of wavetable names that "sound like they belong."
+
+### Legacy hierarchical builders (search v1 / judge — superseded)
+
+Earlier search and judge agent builders used pre-computed CLAP rankings with template proposals. Superseded by search agent v2 (above) which teaches genuine perceptual comparison. Legacy scripts retained for reference:
+- `scripts/build_search_agent_sft.py` (v1, template proposals)
+- `scripts/build_judge_agent_sft.py` (listwise ranking from CLAP scores)
 
 ### Train
 
@@ -735,10 +737,13 @@ scripts/
   build_main_agent_sft_v3.py  # Primary SFT builder: diagnose → subsystem-batched execute
   build_main_agent_sft_v2.py  # Legacy SFT builder: per-step two-stage commentary
   grade_agent_sft.py          # Quality grader + LLM-as-judge filter (v2 + v3 scoring paths)
-  agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, probes
-  build_search_agent_sft.py   # Search-agent SFT: shard-parallel wavetable proposals
-  build_judge_agent_sft.py    # Judge-agent SFT: listwise candidate ranking
+  agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, GT-similarity pool
+  build_search_agent_sft_v2.py # Search-agent SFT v2: iterative batch-listening wavetable search
+  build_search_agent_sft.py   # Search-agent SFT v1 (legacy: template proposals)
+  build_judge_agent_sft.py    # Judge-agent SFT (legacy: listwise ranking from CLAP)
   merge_agent_sft.py          # Merge task JSONL files, shuffle
+  experiment_clap_wt_threshold.py  # CLAP GT-to-index threshold experiment
+  experiment_omni_batch_listen.py  # Omni batch audio comparison experiment
   build_iter_sft_dataset.py   # Earlier single-agent SFT assembler (Omni commentary)
   demo_iter_examples.py       # Generate demo conversations + render all audio
   verify_preset_path.py       # Diagnostic: compare target vs final cumulative preset
@@ -749,8 +754,9 @@ scripts/
   train_qwen25_omni_lora.py   # MS-Swift LoRA training launcher
 
 tests/
-  test_agent_sft_contracts_v3.py # Contract tests for v3 (subsystem batches, correction, verdict)
-  test_agent_sft_contracts.py # Contract tests for v2 (legacy)
+  test_search_agent_sft_v2.py  # Contract tests for search agent v2 (batch listening, shortlists)
+  test_agent_sft_contracts_v3.py # Contract tests for v3 main agent (subsystem batches, WT scaffold)
+  test_agent_sft_contracts.py # Contract tests for v2 main agent (legacy)
   test_agent_sft_grading.py   # Tests for grade_agent_sft scoring logic (v2 + v3)
   test_path_gen_snippets.py   # Unit tests: display names, search/set snippets
   test_pipeline_v2.py         # Structural invariants: reapy API, no fictional CLI
@@ -770,10 +776,11 @@ configs/
 - Wavetable library builder and loader (568 unique wavetables)
 - N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
 - `render_iter_presets.py` — batch render of GT, default, and per-step probe clips; writes `manifest.jsonl`
-- `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh vita-rendered per-batch audio, inline mistake correction, producer-style plan-then-execute flow (overall 0.930 on n=32 smoke, execution_fidelity 1.0)
+- `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh vita-rendered per-batch audio, inline mistake correction, producer-style plan-then-execute flow, GT-CLAP-similarity pool + tuple render+listen WT scaffold (overall 0.930 on n=32 smoke, execution_fidelity 1.0)
+- `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions
 - `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
 - `grade_agent_sft.py` — v2 + v3 scoring paths; heuristic + LLM-as-judge; live-exec-check against REAPER
-- Hierarchical wavetable-retrieval SFT builders (search / judge agents)
+- Legacy wavetable-retrieval SFT builders (search v1 / judge — superseded by search v2)
 - Lua tuple pipeline for melody transcription SFT data
 - MS-Swift LoRA training scripts for Qwen2.5-Omni
 
