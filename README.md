@@ -154,9 +154,143 @@ python scripts/build_iter_sft_dataset.py \
     --concurrency 8
 ```
 
-### Iterative preset recreation pipeline (main-agent SFT v2)
+### Diagnose → subsystem-batched execute pipeline (main-agent SFT v3)
 
-This is the primary SFT pipeline as of 2025. It generates multi-turn conversations where an audio-language model listens to a target sound, reasons about what parameters differ, and iteratively adjusts a Vital preset step-by-step until it converges.
+This is the primary SFT pipeline as of April 2026. It generates multi-turn conversations where an audio-language model listens to a target sound, writes an upfront subsystem plan, then executes by subsystem with one listen per batch. Replaces v2's per-step HEARD/HYPOTHESIS/PLAN narration, which produced shallow boilerplate commentary because the LLM was asked to post-hoc rationalize an oracle's 17-step plan one step at a time.
+
+**Step 1 — generate path data and render audio** (no GPU needed, same as v2):
+
+```bash
+python scripts/render_iter_presets.py \
+    --generate 1000 \
+    --archetypes bass lead pad keys pluck sequence \
+    --output-dir outputs/iter_sft \
+    --wavetable-lib data/wavetable_lib.json \
+    --jobs 24
+```
+
+**Step 2 — build SFT conversations** (requires Qwen3-Omni at localhost:8000):
+
+```bash
+python scripts/build_main_agent_sft_v3.py \
+    --manifest outputs/iter_sft/manifest.jsonl \
+    --index-npy outputs/wt_retrieval_baseline/wt_index.npz \
+    --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
+    --wavetable-lib data/wavetable_lib.json \
+    --out-jsonl data/prepared/agent_sft/main_v3.jsonl \
+    --max-batches 8 \
+    --mistake-rate 0.20 \
+    --omni-server http://localhost:8000 \
+    --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --stage2-server http://localhost:8000 \
+    --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --clap-device cuda:0
+```
+
+v3 does **not** use path_gen's per-step iterations for conversation structure. It diffs the target preset vs the init preset directly, buckets changed params by subsystem, and renders fresh per-batch audio using vita. This eliminates cross-subsystem leakage from path_gen's support-family fill mechanism.
+
+**Conversation structure:**
+
+```
+user:       <audio> [GT clip]  "Recreate this {archetype} sound in Vital."
+assistant:  → WT search / judge scaffold (spawn_search_agents → collect → judge → apply)
+tool_resp:  <audio> [default clip], <audio> [selected candidate previews]
+
+# DIAGNOSIS (one audio turn, one text turn):
+assistant:  OBSERVATIONS: [perceptual comparison of GT vs default, from Omni Stage 1]
+            PLAN:
+              • Oscillator: [qualitative change needed]
+              • Filter: [...]
+              • Envelope: [...]
+              ...
+            Executing plan by subsystem.
+            Applying oscillator changes.
+tool_call:  bash [set ALL oscillator params in one call]
+tool_resp:  {"status": "ok"}
+assistant:  Listening after oscillator batch.
+tool_call:  bash [render probe of cumulative state]
+tool_resp:  {"status": "ok", "batch_audio": "<audio>", ...}
+
+# Repeat for each non-empty subsystem: envelope, filter, lfo, fx, modulation, macro
+# Each batch: one-sentence grounded check → next batch intro (merged to avoid adjacent assistant)
+
+# CORRECTION (inline, ~20% of samples):
+assistant:  [batch check] Overshot on {subsystem} — backing off {param}.
+tool_call:  bash [set corrective value]
+tool_resp:  {"status": "ok"}
+assistant:  Listening to the corrected preset.
+tool_call:  bash [render probe]
+tool_resp:  {"status": "ok", "corrected_audio": "<audio>", ...}
+
+# FINAL ASSESSMENT:
+assistant:  FINAL ASSESSMENT (complete): [2-sentence grounded summary]
+            — or —
+            FINAL ASSESSMENT (budget_exhausted): [summary of progress and remaining gap]
+```
+
+**Key design decisions:**
+- **Subsystem batches, not per-param steps.** One batch per presentation subsystem (oscillator, envelope, filter, lfo, fx, modulation, macro). Params are bucketed by `_param_family()` — guarantees 100% batch-param alignment.
+- **Fresh vita-rendered audio per batch.** Each batch's audio reflects exactly the cumulative preset state after that batch. No audio leakage from path_gen's support-family mechanism.
+- **Inline mistake correction.** ~20% of samples get a deliberate overshoot in one param of one batch. The correction fires immediately after the listen (producer-style: notice the mistake, fix it, move on).
+- **Two-stage commentary.** DIAGNOSIS: Omni Stage 1 (audio) → Stage 2 (text + subsystem diff). Batch checks: Stage 2 only (grounded in remaining preset diff). Verdict: Omni Stage 1 (audio) → Stage 2 (text + residual diff).
+
+Total audio per record: 2 + B clips (GT + default + B batch listens, where B ≈ 5–7) + optional correction listen. At ~94.5 tokens/sec, a 7-batch conversation runs ~7–9K audio tokens — ~40% less than v2.
+
+**Step 3 — grade and filter:**
+
+```bash
+python scripts/grade_agent_sft.py \
+    --input data/prepared/agent_sft/main_v3.jsonl \
+    --output data/prepared/agent_sft/main_v3_graded.jsonl \
+    --no-llm-judge \
+    --live-exec-check \
+    --verbose
+```
+
+**Scoring dimensions for v3 `main` records:**
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| `batch_param_alignment` | 30% | Every param in each batch's set_params call matches the subsystem label |
+| `diagnosis_subsystem_coverage` | 25% | F1 of subsystems named in PLAN vs subsystems that actually differ |
+| `clap_net_improvement` | 20% | Net CLAP cosine improvement from first batch to last |
+| `mistake_recovery` | 10% (conditional) | Correction block appears and targets the correct param |
+| `verdict_grounded` | 10% | FINAL ASSESSMENT names a residual subsystem |
+| `snake_case_clean` | 2.5% | No raw snake_case param names in assistant text |
+| `format_consistent` | 2.5% | No **BOLD:** headers |
+
+`execution_fidelity` (from `--live-exec-check`) validates that generated bash tool calls run against a live REAPER session.
+
+Benchmark on smoke_v3 (n=32): overall mean **0.930**, batch_param_alignment 1.0, execution_fidelity 1.0, diagnosis_subsystem_coverage 1.0.
+
+**Smoke test** (32 samples):
+
+```bash
+python scripts/render_iter_presets.py --generate 32 \
+    --output-dir outputs/smoke_test --wavetable-lib data/wavetable_lib.json
+
+python scripts/build_main_agent_sft_v3.py \
+    --manifest outputs/smoke_test/manifest.jsonl \
+    --index-npy outputs/wt_retrieval_baseline/wt_index.npz \
+    --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
+    --wavetable-lib data/wavetable_lib.json \
+    --out-jsonl outputs/smoke_test/main_v3.jsonl \
+    --max-samples 32 --max-batches 8 --mistake-rate 0.20 \
+    --omni-server http://localhost:8000 \
+    --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --stage2-server http://localhost:8000 \
+    --stage2-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --clap-device cuda:0
+
+python scripts/grade_agent_sft.py \
+    --input outputs/smoke_test/main_v3.jsonl \
+    --output outputs/smoke_test/graded_v3.jsonl \
+    --no-llm-judge --live-exec-check --verbose
+```
+
+### Iterative preset recreation pipeline (main-agent SFT v2, legacy)
+
+Legacy pipeline. Generates multi-turn conversations where an audio-language model listens to a target sound, reasons about what parameters differ, and iteratively adjusts a Vital preset step-by-step until it converges. Superseded by v3 which eliminates per-step commentary confabulation.
 
 **Step 1 — generate path data and render audio** (no GPU needed):
 
@@ -598,8 +732,9 @@ maestro/
 
 scripts/
   render_iter_presets.py      # Batch-render GT + probe clips; write manifest.jsonl
-  build_main_agent_sft_v2.py  # Primary SFT builder: two-stage commentary + GT-grounding
-  grade_agent_sft.py          # Quality grader + LLM-as-judge filter
+  build_main_agent_sft_v3.py  # Primary SFT builder: diagnose → subsystem-batched execute
+  build_main_agent_sft_v2.py  # Legacy SFT builder: per-step two-stage commentary
+  grade_agent_sft.py          # Quality grader + LLM-as-judge filter (v2 + v3 scoring paths)
   agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, probes
   build_search_agent_sft.py   # Search-agent SFT: shard-parallel wavetable proposals
   build_judge_agent_sft.py    # Judge-agent SFT: listwise candidate ranking
@@ -614,8 +749,9 @@ scripts/
   train_qwen25_omni_lora.py   # MS-Swift LoRA training launcher
 
 tests/
-  test_agent_sft_contracts.py # Contract tests for build_main_agent_sft_v2 (83 tests)
-  test_agent_sft_grading.py   # Tests for grade_agent_sft scoring logic
+  test_agent_sft_contracts_v3.py # Contract tests for v3 (subsystem batches, correction, verdict)
+  test_agent_sft_contracts.py # Contract tests for v2 (legacy)
+  test_agent_sft_grading.py   # Tests for grade_agent_sft scoring logic (v2 + v3)
   test_path_gen_snippets.py   # Unit tests: display names, search/set snippets
   test_pipeline_v2.py         # Structural invariants: reapy API, no fictional CLI
   test_demo_iter.py           # Conversation builder tests
@@ -634,8 +770,9 @@ configs/
 - Wavetable library builder and loader (568 unique wavetables)
 - N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
 - `render_iter_presets.py` — batch render of GT, default, and per-step probe clips; writes `manifest.jsonl`
-- `build_main_agent_sft_v2.py` — two-stage Omni commentary pipeline with GT-preset grounding, causally-coherent HEARD placement (catch-up probes when planning steps precede a listen), observational HYPOTHESIS framing, audio-gated listening (planning-only steps for sub-perceptual edits), and wavetable apply as a real tool call
-- `grade_agent_sft.py` — heuristic + LLM-as-judge scoring; grader correctly exempts planning-only steps from section_structure and hypothesis_grounding checks
+- `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh vita-rendered per-batch audio, inline mistake correction, producer-style plan-then-execute flow (overall 0.930 on n=32 smoke, execution_fidelity 1.0)
+- `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
+- `grade_agent_sft.py` — v2 + v3 scoring paths; heuristic + LLM-as-judge; live-exec-check against REAPER
 - Hierarchical wavetable-retrieval SFT builders (search / judge agents)
 - Lua tuple pipeline for melody transcription SFT data
 - MS-Swift LoRA training scripts for Qwen2.5-Omni
