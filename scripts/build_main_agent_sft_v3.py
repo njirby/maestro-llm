@@ -23,6 +23,7 @@ import base64
 import copy
 import hashlib
 import json
+import random
 import re
 import sys
 import threading
@@ -39,8 +40,7 @@ from scripts.agent_sft_common import (
     ClapEmbedder,
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
-    build_disjoint_shards,
-    choose_candidate_pool,
+    build_gt_similarity_pool,
     ensure_candidate_probes_for_names,
     extract_gt_wavetable_names,
     load_index_rows,
@@ -50,9 +50,7 @@ from scripts.agent_sft_common import (
 )
 from scripts.build_main_agent_sft_v2 import (
     _TOOL_SPECS,
-    _build_judge_result,
     _build_listen_probe_command,
-    _build_search_reports,
     _check_server_reachable,
     _harden_vital_snippet_for_reapy,
     _llm_post,
@@ -624,7 +622,6 @@ def build_record(
     entry: dict,
     args: argparse.Namespace,
     embedder: ClapEmbedder,
-    universe_names: list[str],
     shortlist_data: dict,
     selected_by_name: dict,
     wavetable_lib: list[dict],
@@ -633,6 +630,8 @@ def build_record(
     stage2_server: str,
     stage2_model: str,
     serial_lock: threading.Lock,
+    synth: Any,
+    notes: list,
 ) -> dict | None:
     """Build one v3 SFT record. Returns None to skip."""
     sample_id = str(entry["sample_id"])
@@ -657,60 +656,79 @@ def build_record(
 
     init_preset = _init_preset()
 
-    # ---- WT search / judge scaffold ----
+    # Per-sample deterministic RNG
+    sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
+    sample_rng = random.Random(int(args.seed) + sid_seed)
+
+    # ---- WT search + tuple evaluation ----
     with serial_lock:
-        gt_names = set(extract_gt_wavetable_names(Path(target_preset_path)))
-        if not gt_names:
+        gt_names_list = list(extract_gt_wavetable_names(Path(target_preset_path)))
+        if not gt_names_list:
             return None
 
-        candidate_names = choose_candidate_pool(
-            sample_id=sample_id,
-            query_audio_path=target_audio_path,
-            gt_names=sorted(gt_names),
-            universe_names=universe_names,
-            candidate_source=args.candidate_source,
-            candidate_limit=int(args.candidate_limit),
-            oracle_hard_pool=int(args.oracle_hard_pool),
-            seed=int(args.seed),
-            clap_embedder=embedder,
-            selected_rows_meta=index_rows,
-            shortlist_data=shortlist_data,
+        # Build candidate pool using GT wavetable CLAP similarity
+        pool = build_gt_similarity_pool(
+            gt_wavetable_names=gt_names_list,
+            index_embeddings=shortlist_data["embeddings"],
+            index_norms=shortlist_data["norms"],
+            index_rows_meta=index_rows,
+            top_k=int(args.pool_top_k),
+            rng=sample_rng,
         )
-        if not candidate_names:
+        if not pool:
             return None
 
+        # Ensure candidate probes are rendered
         ensure_candidate_probes_for_names(
-            names=candidate_names,
+            names=pool,
             wavetable_lib=wavetable_lib,
             selected_rows=selected_by_name,
             out_dir=args.probe_dir,
             cache=candidate_audio,
-            probe_archetype=args.probe_archetype,
-            probe_tail_s=args.probe_tail_s,
-            trim_min_duration_s=args.trim_min_duration_s,
         )
 
-        clap_scores = {
-            n: embedder.cosine_paths(candidate_audio[n], target_audio_path)
-            for n in candidate_names
-        }
+    # Simulate search agent results: pooled candidates = GT + top hard negatives.
+    # At build time, search agents would have returned these. The main agent sees
+    # only the pooled shortlist — it doesn't know how the search was done.
+    n_search_results = min(12, len(pool))  # search agents return ~12 pooled candidates
+    # GT always in search results + fill with top pool members
+    search_results = list(gt_names_list)
+    for name in pool:
+        if name not in search_results and len(search_results) < n_search_results:
+            search_results.append(name)
+    sample_rng.shuffle(search_results)
 
-    id_map = {name: f"C{i}" for i, name in enumerate(candidate_names, start=1)}
-    candidate_assets = [
-        {"candidate_id": id_map[n], "wavetable_name": n, "audio_path": str(candidate_audio[n])}
-        for n in candidate_names
-    ]
+    # Determine active oscillators from target preset
+    active_oscs: list[int] = []
+    for osc_idx in range(3):
+        on_key = f"osc_{osc_idx + 1}_on"
+        level_key = f"osc_{osc_idx + 1}_level"
+        osc_on = float(target_preset.get("settings", {}).get(on_key, 0.0)) > 0.5
+        osc_level = float(target_preset.get("settings", {}).get(level_key, 0.0)) > 0.01
+        if osc_on and osc_level:
+            active_oscs.append(osc_idx)
+    if not active_oscs:
+        active_oscs = [0]  # fallback
 
-    shards = build_disjoint_shards(candidate_names, args.num_agents)
-    jobs = [
-        {"agent_id": f"sa_{i}", "candidate_shard": [id_map[n] for n in shard], "seed": int(args.seed) + i}
-        for i, shard in enumerate(shards, start=1)
-        if shard
-    ]
-    reports = _build_search_reports(shards, id_map, gt_names, clap_scores, args.proposals_per_agent)
-    judge_result = _build_judge_result(candidate_names, id_map, gt_names, clap_scores, args.select_k)
-    selected_ids = set(judge_result["selected"])
-    selected_names = [name for name in candidate_names if id_map[name] in selected_ids]
+    # Build 2-3 tuple candidates. GT tuple is always included.
+    gt_tuple: list[str | None] = [None, None, None]
+    for osc_idx in active_oscs:
+        wts = target_preset.get("settings", {}).get("wavetables", [])
+        if osc_idx < len(wts):
+            wt_name = wts[osc_idx].get("name", "")
+            if wt_name and wt_name in pool:
+                gt_tuple[osc_idx] = wt_name
+
+    # Alternative tuples: swap one GT wavetable with a non-GT candidate
+    alt_tuples: list[list[str | None]] = []
+    non_gt_in_results = [n for n in search_results if n not in gt_names_list]
+    for swap_idx in active_oscs[:1]:  # swap osc 1 only for simplicity
+        if non_gt_in_results and gt_tuple[swap_idx]:
+            alt = list(gt_tuple)
+            alt[swap_idx] = non_gt_in_results[0]
+            alt_tuples.append(alt)
+
+    all_tuples = [gt_tuple] + alt_tuples[:1]  # GT + 1 alternative
 
     # ---- Begin messages ----
     messages: list[dict] = []
@@ -720,11 +738,11 @@ def build_record(
         "role": "user",
         "content": (
             f"<audio>\nRecreate this {archetype} target sound in Vital from default.\n"
-            "Listen first, write a subsystem plan, then execute by subsystem."
+            "Search for matching wavetables, evaluate combinations, then execute by subsystem."
         ),
     })
 
-    # WT scaffold (block 0)
+    # Listen to baseline
     messages.append({"role": "assistant", "content": "Listening to current default preset baseline."})
     messages.append(_tool_call("bash", {"command": _build_listen_probe_command(default_audio_path)}))
     messages.append({
@@ -735,74 +753,103 @@ def build_record(
         ),
     })
 
-    messages.append({"role": "assistant", "content": "Spawning disjoint search shards to gather wavetable proposals in parallel."})
+    # Search dispatch + collect (simplified: 2 tool calls)
+    messages.append({"role": "assistant", "content": "Searching for wavetable candidates across the library."})
     messages.append(_tool_call("spawn_search_agents", {
         "sample_id": sample_id,
         "target_audio_path": str(target_audio_path),
-        "current_audio_path": str(default_audio_path),
-        "candidate_universe": [c["candidate_id"] for c in candidate_assets],
         "num_agents": int(args.num_agents),
-        "shard_strategy": "disjoint_round_robin",
-        "seed": int(args.seed),
     }))
-    messages.append({"role": "tool_response", "content": json.dumps({"jobs": jobs}, ensure_ascii=False)})
+    messages.append({"role": "tool_response", "content": json.dumps(
+        {"agents_spawned": int(args.num_agents), "pool_size": len(pool)}, ensure_ascii=False,
+    )})
 
-    messages.append({"role": "assistant", "content": "Collecting search-agent reports."})
-    messages.append(_tool_call("collect_search_reports", {"sample_id": sample_id, "jobs": jobs}))
-    messages.append({"role": "tool_response", "content": json.dumps({"reports": reports}, ensure_ascii=False)})
+    messages.append({"role": "assistant", "content": "Collecting search results."})
+    messages.append(_tool_call("collect_search_reports", {"sample_id": sample_id}))
+    messages.append({"role": "tool_response", "content": json.dumps(
+        {"pooled_candidates": search_results}, ensure_ascii=False,
+    )})
 
-    messages.append({"role": "assistant", "content": "Judging candidates and selecting up to three for edits."})
-    messages.append(_tool_call("judge_candidates", {
-        "sample_id": sample_id,
-        "target_audio_path": str(target_audio_path),
-        "candidate_audio": candidate_assets,
-        "max_select": int(args.select_k),
-    }))
-    previews = [
-        {"candidate_id": id_map[n], "wavetable_name": n, "audio_preview": "<audio>"}
-        for n in selected_names[: int(args.select_k)]
-        if n in candidate_audio
-    ]
-    for n in selected_names[: int(args.select_k)]:
-        if n in candidate_audio:
-            audio_assets.append(str(candidate_audio[n]))
-    messages.append({
-        "role": "tool_response",
-        "content": json.dumps({**judge_result, "selected_previews": previews}, ensure_ascii=False),
-    })
+    # Tuple evaluation: render and listen
+    n_active = len(active_oscs)
+    tuple_intro = (
+        f"The target uses {n_active} active oscillator{'s' if n_active > 1 else ''}. "
+        f"Evaluating {len(all_tuples)} wavetable combination{'s' if len(all_tuples) > 1 else ''}."
+    )
 
-    # Apply best wavetable (same pattern as v2)
-    if target_preset_path and selected_names:
-        ranked_selected = [
-            name for cid in judge_result["selected"]
-            for name in candidate_names if id_map[name] == cid
-        ]
-        wt_name = ranked_selected[0] if ranked_selected else selected_names[0]
-        apply_snippet = (
-            "import sys, json\n"
-            "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
-            "from vital_tools import VitalController\n"
-            "vc = VitalController()\n"
-            "vc.discover()\n"
-            f"with open({json.dumps(str(target_preset_path))}) as _f:\n"
-            "    _src = json.load(_f)\n"
-            "_wt = _src['settings']['wavetables'][0]\n"
-            "if _rpr is None:\n"
-            "    preset = vc.get_preset()\n"
-            "    preset['settings']['wavetables'][0] = _wt\n"
-            "    vc.set_preset(preset)\n"
-            f"print(json.dumps({{'status': 'ok', 'applied_wavetable': {json.dumps(wt_name)}}}))"
-        )
-        apply_snippet = _harden_vital_snippet_for_reapy(apply_snippet)
-        messages.append({
-            "role": "assistant",
-            "content": f"Selecting '{wt_name}' for oscillator 1 based on candidate previews.",
-        })
-        messages.append(_tool_call("bash", {"command": _wrap_as_bash(apply_snippet)}))
+    tuple_audio_dir = Path(args.out_jsonl).parent / "tuple_audio" / sample_id
+    tuple_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # Render each tuple as a full preset
+    tuple_wavs: list[Path] = []
+    wt_lib_by_name = {wt["name"]: wt for wt in wavetable_lib if "name" in wt}
+    for ti, tup in enumerate(all_tuples):
+        tuple_preset = copy.deepcopy(init_preset)
+        # Copy wavetables from library by name
+        for osc_idx in active_oscs:
+            wt_name = tup[osc_idx]
+            if wt_name and wt_name in wt_lib_by_name:
+                # Find the library entry and use its wavetable data
+                lib_entry = wt_lib_by_name[wt_name]
+                if osc_idx < len(tuple_preset["settings"].get("wavetables", [])):
+                    tuple_preset["settings"]["wavetables"][osc_idx] = lib_entry
+        # Render
+        tw = tuple_audio_dir / f"tuple_{ti}.wav"
+        with serial_lock:
+            render_cumulative_audio(synth, tuple_preset, notes, tw)
+        tuple_wavs.append(tw)
+
+    messages.append({"role": "assistant", "content": tuple_intro})
+
+    for ti, (tup, tw) in enumerate(zip(all_tuples, tuple_wavs)):
+        active_names = [tup[oi] for oi in active_oscs if tup[oi]]
+        names_str = ", ".join(f"'{n}'" for n in active_names)
+        messages.append(_tool_call("bash", {"command": f"# Render tuple {ti + 1}: [{names_str}]"}))
+        audio_assets.append(str(tw))
         messages.append({
             "role": "tool_response",
-            "content": json.dumps({"status": "ok", "applied_wavetable": wt_name}, ensure_ascii=False),
+            "content": json.dumps({
+                "tuple_audio": "<audio>",
+                "tuple_index": ti + 1,
+                "wavetables": active_names,
+            }, ensure_ascii=False),
         })
+
+    # Select GT tuple (oracle) with Omni-grounded reasoning
+    gt_active = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
+    gt_names_str = ", ".join(f"'{n}'" for n in gt_active)
+    osc_assignments = ", ".join(
+        f"oscillator {oi + 1} = '{gt_tuple[oi]}'" for oi in active_oscs if gt_tuple[oi]
+    )
+    selection_text = f"Tuple 1 best matches the target. Applying: {osc_assignments}."
+
+    # Library-lookup apply snippet
+    apply_names = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
+    apply_assignments = ", ".join(
+        f'({oi}, {json.dumps(gt_tuple[oi])})' for oi in active_oscs if gt_tuple[oi]
+    )
+    apply_snippet = (
+        "import sys, json\n"
+        "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+        "from vital_tools import VitalController\n"
+        "vc = VitalController()\n"
+        "vc.discover()\n"
+        f"wt_lib = json.load(open({json.dumps(str(args.wavetable_lib))}))\n"
+        "name_to_wt = {wt['name']: wt for wt in wt_lib}\n"
+        "preset = vc.get_preset()\n"
+        f"for osc_idx, wt_name in [{apply_assignments}]:\n"
+        "    if wt_name in name_to_wt:\n"
+        "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
+        "vc.set_preset(preset)\n"
+        f"print(json.dumps({{'status': 'ok', 'applied': {json.dumps(apply_names)}}}))"
+    )
+    apply_snippet = _harden_vital_snippet_for_reapy(apply_snippet)
+    messages.append({"role": "assistant", "content": selection_text})
+    messages.append(_tool_call("bash", {"command": _wrap_as_bash(apply_snippet)}))
+    messages.append({
+        "role": "tool_response",
+        "content": json.dumps({"status": "ok", "applied": apply_names}, ensure_ascii=False),
+    })
 
     # ---- DIAGNOSIS BLOCK (block 1) ----
     subsystem_truth_map = build_diagnosis_subsystem_truth(target_preset, init_preset)
@@ -839,11 +886,6 @@ def build_record(
     sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
     mistake_rng = _random.Random(int(args.seed) + sid_seed)
     injected_mistake = inject_mistake(batches, mistake_rng, args.mistake_rate)
-
-    # Pre-load vita synth + note sequence under serial lock.
-    with serial_lock:
-        synth = _load_vital()
-        notes = make_probe_notes(archetype, clip_duration_s=10.0)
 
     batch_labels: list[dict] = []
     prior_checks: list[str] = []
@@ -1029,34 +1071,30 @@ def build_record(
         "assets": {
             "target_audio": str(target_audio_path),
             "current_audio": str(default_audio_path),
-            "candidate_audio": candidate_assets,
-            "selected_candidates": [
-                {"candidate_id": id_map[n], "wavetable_name": n, "audio_path": str(candidate_audio[n])}
-                for n in selected_names[: int(args.select_k)]
-            ],
+            "candidate_audio": [],
+            "selected_candidates": [],
             "selected_tuples": [],
         },
         "labels": {
-            "judge_ranking": judge_result["ranking"],
-            "judge_selected": judge_result["selected"],
-            "gt_candidate_ids": [id_map[n] for n in candidate_names if n in gt_names],
-            "selected_tuple_id": None,
-            "acceptable_tuple_ids": [],
-            "tuple_members_by_id": {},
+            "gt_wavetable_names": gt_names_list,
+            "applied_wavetables": [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]],
+            "search_pool_size": len(pool),
+            "search_results_size": len(search_results),
         },
         "meta": {
             "pipeline_version": "v3",
             "pipeline_version_notes": (
+                "WT scaffold uses GT-CLAP-similarity pool + tuple render+listen. "
                 "Audio is rendered fresh per-batch using vita — each batch's audio "
-                "reflects exactly the cumulative preset state after that batch, with "
-                "no cross-subsystem leakage from path_gen's support-family mechanism."
+                "reflects exactly the cumulative preset state after that batch. "
+                "Wavetables applied via library lookup by name."
             ),
             "sample_id": sample_id,
             "archetype": archetype,
             "start_type": entry.get("start_type", "init"),
             "agent": "main",
             "num_agents": int(args.num_agents),
-            "candidate_source": args.candidate_source,
+            "pool_top_k": int(args.pool_top_k),
             "max_batches": int(args.max_batches),
             "mistake_rate": float(args.mistake_rate),
             "commentary_mode": "two_stage",
@@ -1090,16 +1128,10 @@ def main() -> None:
     ap.add_argument("--max-batches", type=int, default=6,
         help="Cap on regular (non-correction) subsystem batches per conversation.")
 
-    ap.add_argument("--candidate-source", choices=["all", "clap_topn", "oracle_mix8"], default="oracle_mix8")
-    ap.add_argument("--candidate-limit", type=int, default=8)
-    ap.add_argument("--oracle-hard-pool", type=int, default=64)
-    ap.add_argument("--num-agents", type=int, default=4)
-    ap.add_argument("--proposals-per-agent", type=int, default=3)
-    ap.add_argument("--select-k", type=int, default=3)
-
-    ap.add_argument("--probe-archetype", default="lead")
-    ap.add_argument("--probe-tail-s", type=float, default=1.0)
-    ap.add_argument("--trim-min-duration-s", type=float, default=0.5)
+    ap.add_argument("--pool-top-k", type=int, default=48,
+        help="Candidate pool size (top-K by CLAP similarity to GT wavetable).")
+    ap.add_argument("--num-agents", type=int, default=4,
+        help="Number of search agents (for spawn_search_agents tool call).")
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
 
     ap.add_argument("--mistake-rate", type=float, default=0.20,
@@ -1124,10 +1156,13 @@ def main() -> None:
     entries = load_manifest_entries(Path(args.manifest), max_samples=args.max_samples)
     index_rows = load_index_rows(args.index_meta)
     selected_by_name = select_probe_rows_by_name(index_rows)
-    universe_names = sorted(selected_by_name.keys(), key=lambda x: x.lower())
     wavetable_lib = load_wavetable_lib(args.wavetable_lib)
     embedder = ClapEmbedder.create(args.clap_device)
     shortlist_data = build_clap_shortlist_data(args.index_npy, index_rows)
+
+    # Pre-load vita synth + probe notes (singleton, serialized via lock)
+    _synth = _load_vital()
+    _notes = make_probe_notes("lead", clip_duration_s=10.0)
 
     # Pre-populate CLAP embedding cache (same dance as v2 — GPU in main thread).
     clap_paths: list[Path] = []
@@ -1164,7 +1199,6 @@ def main() -> None:
             entry=entry,
             args=args,
             embedder=embedder,
-            universe_names=universe_names,
             shortlist_data=shortlist_data,
             selected_by_name=selected_by_name,
             wavetable_lib=wavetable_lib,
@@ -1173,6 +1207,8 @@ def main() -> None:
             stage2_server=stage2_server,
             stage2_model=stage2_model,
             serial_lock=serial_lock,
+            synth=_synth,
+            notes=_notes,
         )
 
     out_path = Path(args.out_jsonl)

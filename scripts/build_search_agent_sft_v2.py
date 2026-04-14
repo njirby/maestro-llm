@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""Search-agent SFT v2 — iterative batch-listening wavetable search.
+
+Each search agent conversation:
+  1. Hears the target audio once
+  2. Iterates through batches of candidate wavetable probes (audio + name)
+  3. Maintains a running shortlist across batches
+  4. Returns a final set of wavetable names that "sound like they belong"
+
+The agent's skill: comparative perceptual evaluation of raw wavetable probes
+against a fully-processed target. At inference, this generalizes to any
+wavetable library — no memorization of names needed, just ears.
+
+Usage:
+    python scripts/build_search_agent_sft_v2.py \
+        --manifest outputs/smoke_test_v10/manifest.jsonl \
+        --index-npy outputs/wt_retrieval_baseline/wt_index.npz \
+        --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
+        --wavetable-lib data/wavetable_lib.json \
+        --out-jsonl outputs/search_agent_v2/search.jsonl \
+        --omni-server http://localhost:8000 \
+        --max-samples 4
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import random
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.agent_sft_common import (
+    assert_valid_ms_swift_multiturn_record,
+    build_clap_shortlist_data,
+    build_gt_similarity_pool,
+    ensure_candidate_probes_for_names,
+    extract_gt_wavetable_names,
+    load_index_rows,
+    load_manifest_entries,
+    load_wavetable_lib,
+    select_probe_rows_by_name,
+)
+from scripts.build_main_agent_sft_v2 import (
+    _check_server_reachable,
+    _llm_post,
+)
+
+
+# ---------------------------------------------------------------------------
+# Audio helpers
+# ---------------------------------------------------------------------------
+
+
+def _b64(path: str | Path) -> str:
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+
+# ---------------------------------------------------------------------------
+# Omni calls for search agent
+# ---------------------------------------------------------------------------
+
+
+def omni_batch_compare(
+    target_wav: Path,
+    candidate_names: list[str],
+    candidate_audio: dict[str, Path],
+    archetype: str,
+    omni_server: str,
+    omni_model: str,
+) -> str:
+    """Omni Stage 1: hear target + N candidates, write per-candidate comparison."""
+    content: list[dict] = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(target_wav)}"}},
+    ]
+    valid_names = [n for n in candidate_names if n in candidate_audio]
+    for name in valid_names:
+        content.append(
+            {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(candidate_audio[name])}"}}
+        )
+
+    candidate_list = "\n".join(
+        f"  Audio {i + 2}: \"{name}\"" for i, name in enumerate(valid_names)
+    )
+    content.append({"type": "text", "text": (
+        f"You are a sound design assistant. Audio 1 is the TARGET {archetype} sound.\n"
+        f"Audios 2-{len(valid_names) + 1} are candidate wavetables rendered through a "
+        f"default synthesizer preset.\n\n"
+        f"Candidate list:\n{candidate_list}\n\n"
+        f"For EACH candidate, write one sentence about how its raw character relates to "
+        f"the target — could this wavetable be a building block for recreating the target "
+        f"once filters, envelopes, and effects are applied?\n\n"
+        f"Format: '\"<name>\": <one sentence>'\n"
+        f"Be specific about harmonic character, brightness, texture, and attack shape."
+    )})
+
+    try:
+        r = _llm_post(
+            f"{omni_server}/v1/chat/completions",
+            {"model": omni_model, "messages": [{"role": "user", "content": content}],
+             "max_tokens": 500, "temperature": 0.4},
+            timeout=180.0,
+        )
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return "\n".join(f'"{n}": Candidate wavetable evaluated.' for n in valid_names)
+
+
+def stage2_batch_notes(
+    omni_observations: str,
+    candidate_names: list[str],
+    gt_names_in_batch: list[str],
+    current_shortlist: list[str],
+    batch_number: int,
+    archetype: str,
+    stage2_server: str,
+    stage2_model: str,
+) -> str:
+    """Stage 2: clean up Omni's observations into shortlist-maintenance format."""
+    shortlist_str = ", ".join(f"'{n}'" for n in current_shortlist) if current_shortlist else "(empty)"
+    prompt = (
+        f"You are a sound design assistant searching for wavetable building blocks to "
+        f"recreate a {archetype} sound.\n\n"
+        f"Current shortlist: {shortlist_str}\n\n"
+        f"Batch {batch_number} candidate observations:\n{omni_observations}\n\n"
+        f"Write batch notes in this format:\n"
+        f"- For each candidate, one line: '<name>': <short assessment>. Shortlisted / Skip.\n"
+        f"- Then: 'Current shortlist: [<comma-separated names>]'\n\n"
+        f"A candidate should be shortlisted if its raw harmonic character, texture, or "
+        f"tonal quality could plausibly contribute to the target sound after synthesis "
+        f"processing (filtering, enveloping, effects). You don't need an exact match — "
+        f"look for compatible raw material.\n"
+        f"If a new candidate is better than one on the shortlist, replace it. "
+        f"Keep the shortlist to 3-6 names. Be selective."
+    )
+    try:
+        r = _llm_post(
+            f"{stage2_server}/v1/chat/completions",
+            {"model": stage2_model, "messages": [{"role": "user", "content": prompt}],
+             "max_tokens": 400, "temperature": 0.4},
+            timeout=120.0,
+        )
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        # Fallback: shortlist GT if present, keep existing
+        new_shortlist = list(current_shortlist)
+        for gn in gt_names_in_batch:
+            if gn not in new_shortlist:
+                new_shortlist.append(gn)
+        lines = [f"- '{n}': Evaluated. {'Shortlisted' if n in new_shortlist else 'Skip'}."
+                 for n in candidate_names]
+        lines.append(f"\nCurrent shortlist: [{', '.join(repr(n) for n in new_shortlist)}]")
+        return "\n".join(lines)
+
+
+def stage2_final_summary(
+    shortlist: list[str],
+    archetype: str,
+    stage2_server: str,
+    stage2_model: str,
+) -> str:
+    """Stage 2: write final candidate summary."""
+    names_str = ", ".join(f"'{n}'" for n in shortlist)
+    prompt = (
+        f"You are a sound design assistant. After evaluating multiple batches of "
+        f"wavetable candidates for a {archetype} target sound, your final shortlist is:\n"
+        f"[{names_str}]\n\n"
+        f"Write one line: 'Final candidates: [<names>]' followed by one sentence "
+        f"explaining why these were selected over others. Be concise."
+    )
+    try:
+        r = _llm_post(
+            f"{stage2_server}/v1/chat/completions",
+            {"model": stage2_model, "messages": [{"role": "user", "content": prompt}],
+             "max_tokens": 120, "temperature": 0.4},
+            timeout=120.0,
+        )
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return f"Final candidates: [{names_str}]"
+
+
+# ---------------------------------------------------------------------------
+# Record builder
+# ---------------------------------------------------------------------------
+
+
+_TOOL_SPECS = json.dumps([{
+    "type": "function",
+    "function": {
+        "name": "bash",
+        "description": "Execute shell/Python commands to render and evaluate wavetable candidates.",
+        "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+    },
+}], ensure_ascii=False)
+
+
+def _tool_call(name: str, arguments: dict) -> dict:
+    return {"role": "tool_call", "content": json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)}
+
+
+def build_search_record(
+    *,
+    sample_id: str,
+    archetype: str,
+    target_audio_path: Path,
+    gt_wavetable_names: list[str],
+    shard: list[str],
+    candidate_audio: dict[str, Path],
+    omni_server: str,
+    omni_model: str,
+    stage2_server: str,
+    stage2_model: str,
+    rng: random.Random,
+    candidates_per_batch: int = 8,
+) -> dict | None:
+    """Build one search agent SFT record with iterative batch listening."""
+    if not shard:
+        return None
+
+    gt_set = set(gt_wavetable_names)
+    gt_in_shard = [n for n in shard if n in gt_set]
+
+    # Arrange batches: GT should NOT appear in batch 1 (teach the model to search,
+    # not get lucky). Place GT in batch 2 or later.
+    non_gt = [n for n in shard if n not in gt_set]
+    rng.shuffle(non_gt)
+
+    # Build batch sequence: batch 1 = all non-GT, batch 2+ = include GT
+    all_ordered = []
+    gt_inserted = False
+    batch_idx = 0
+    ptr = 0
+    while ptr < len(non_gt) or not gt_inserted:
+        batch = []
+        # First batch: only non-GT
+        if batch_idx == 0:
+            batch = non_gt[ptr:ptr + candidates_per_batch]
+            ptr += len(batch)
+        else:
+            # Insert GT candidates into this batch if not yet done
+            if not gt_inserted and gt_in_shard:
+                batch = list(gt_in_shard)
+                gt_inserted = True
+                remaining_slots = candidates_per_batch - len(batch)
+                batch.extend(non_gt[ptr:ptr + remaining_slots])
+                ptr += remaining_slots
+            else:
+                batch = non_gt[ptr:ptr + candidates_per_batch]
+                ptr += len(batch)
+        if not batch:
+            break
+        rng.shuffle(batch)
+        all_ordered.append(batch)
+        batch_idx += 1
+
+    if not all_ordered:
+        return None
+
+    # If GT wasn't in shard at all, that's fine — the agent legitimately finds nothing
+    # from this shard that matches. This is realistic for some shards.
+
+    # Build messages
+    messages: list[dict] = []
+    audio_assets: list[str] = [str(target_audio_path)]
+
+    messages.append({
+        "role": "user",
+        "content": (
+            f"<audio>\nListen to this target {archetype} sound. You will receive batches "
+            f"of candidate wavetables to evaluate. For each batch, listen to every candidate "
+            f"and decide which ones could be building blocks for recreating the target. "
+            f"Maintain a shortlist across batches."
+        ),
+    })
+
+    shortlist: list[str] = []
+    pending_notes: str | None = None  # queued batch notes for merging
+
+    for bi, batch in enumerate(all_ordered):
+        batch_num = bi + 1
+        gt_in_batch = [n for n in batch if n in gt_set]
+
+        render_cmd = (
+            f"# Render and listen to batch {batch_num} candidates\n"
+            f"# Target: {archetype} sound\n"
+            f"candidates = {json.dumps(batch)}\n"
+            f"for name in candidates:\n"
+            f"    render_wavetable_probe(name)\n"
+        )
+
+        candidate_entries = []
+        for name in batch:
+            if name in candidate_audio:
+                audio_assets.append(str(candidate_audio[name]))
+                candidate_entries.append({"name": name, "audio": "<audio>"})
+            else:
+                candidate_entries.append({"name": name, "audio": None})
+
+        # Intro line — merge pending notes from prior batch to avoid adjacent assistant
+        intro = f"Listening to batch {batch_num}{' of candidate wavetables' if bi == 0 else ''}."
+        if pending_notes:
+            intro = f"{pending_notes}\n\n{intro}"
+            pending_notes = None
+
+        messages.append({"role": "assistant", "content": intro})
+        messages.append(_tool_call("bash", {"command": render_cmd}))
+        messages.append({
+            "role": "tool_response",
+            "content": json.dumps({"batch": batch_num, "candidates": candidate_entries}, ensure_ascii=False),
+        })
+
+        # Omni Stage 1: batch comparison
+        if omni_server:
+            omni_obs = omni_batch_compare(
+                target_wav=target_audio_path,
+                candidate_names=batch,
+                candidate_audio=candidate_audio,
+                archetype=archetype,
+                omni_server=omni_server,
+                omni_model=omni_model,
+            )
+        else:
+            omni_obs = "\n".join(f'"{n}": Candidate evaluated.' for n in batch)
+
+        # Stage 2: shortlist maintenance
+        batch_notes = stage2_batch_notes(
+            omni_observations=omni_obs,
+            candidate_names=batch,
+            gt_names_in_batch=gt_in_batch,
+            current_shortlist=shortlist,
+            batch_number=batch_num,
+            archetype=archetype,
+            stage2_server=stage2_server,
+            stage2_model=stage2_model,
+        )
+
+        # Parse shortlist from Stage 2 output (best-effort)
+        import re
+        sl_match = re.search(r"Current shortlist:\s*\[([^\]]*)\]", batch_notes)
+        if sl_match:
+            raw = sl_match.group(1)
+            parsed = [s.strip().strip("'\"") for s in raw.split(",") if s.strip()]
+            if parsed:
+                shortlist = parsed
+
+        # Ensure GT wavetables stay on shortlist once found (oracle constraint)
+        for gn in gt_in_batch:
+            if gn not in shortlist:
+                shortlist.append(gn)
+
+        # Queue notes for merging into next batch intro (or final summary)
+        pending_notes = batch_notes
+
+    # Final summary — merge with pending batch notes
+    if omni_server:
+        final_text = stage2_final_summary(shortlist, archetype, stage2_server, stage2_model)
+    else:
+        final_text = f"Final candidates: [{', '.join(repr(n) for n in shortlist)}]"
+
+    if pending_notes:
+        final_text = f"{pending_notes}\n\n{final_text}"
+        pending_notes = None
+
+    messages.append({"role": "assistant", "content": final_text})
+
+    record = {
+        "id": f"{sample_id}_search",
+        "task_type": "search_v2",
+        "tools": _TOOL_SPECS,
+        "messages": messages,
+        "audios": audio_assets,
+        "meta": {
+            "pipeline_version": "v2_search",
+            "sample_id": sample_id,
+            "archetype": archetype,
+            "shard_size": len(shard),
+            "n_batches": len(all_ordered),
+            "candidates_per_batch": candidates_per_batch,
+            "gt_in_shard": gt_in_shard,
+            "final_shortlist": shortlist,
+            "gt_on_shortlist": [n for n in shortlist if n in gt_set],
+        },
+    }
+
+    assert_valid_ms_swift_multiturn_record(record)
+    return record
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Build search-agent SFT v2 (iterative batch listening).")
+    ap.add_argument("--manifest", required=True, type=Path)
+    ap.add_argument("--index-npy", type=Path, default=Path("outputs/wt_retrieval_baseline/wt_index.npz"))
+    ap.add_argument("--index-meta", type=Path, default=Path("outputs/wt_retrieval_baseline/wt_index_meta.json"))
+    ap.add_argument("--wavetable-lib", type=Path, default=Path("data/wavetable_lib.json"))
+    ap.add_argument("--out-jsonl", required=True, type=Path)
+    ap.add_argument("--max-samples", type=int, default=256)
+    ap.add_argument("--pool-top-k", type=int, default=48)
+    ap.add_argument("--num-agents", type=int, default=4)
+    ap.add_argument("--candidates-per-batch", type=int, default=8)
+    ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
+    ap.add_argument("--seed", type=int, default=1337)
+    ap.add_argument("--omni-server", default="")
+    ap.add_argument("--omni-model", default="Qwen/Qwen3-Omni-30B-A3B-Instruct")
+    ap.add_argument("--stage2-server", default="")
+    ap.add_argument("--stage2-model", default="")
+    ap.add_argument("--workers", type=int, default=1)
+    args = ap.parse_args()
+
+    stage2_server = args.stage2_server or args.omni_server
+    stage2_model = args.stage2_model or args.omni_model
+
+    if args.omni_server:
+        _check_server_reachable(args.omni_server, "Omni")
+
+    entries = load_manifest_entries(args.manifest, max_samples=args.max_samples)
+    index_rows = load_index_rows(args.index_meta)
+    selected_by_name = select_probe_rows_by_name(index_rows)
+    wavetable_lib = load_wavetable_lib(args.wavetable_lib)
+    shortlist_data = build_clap_shortlist_data(args.index_npy, index_rows)
+
+    candidate_audio: dict[str, Path] = {}
+    serial_lock = threading.Lock()
+
+    def _process(entry: dict) -> list[dict]:
+        sample_id = str(entry["sample_id"])
+        archetype = str(entry.get("archetype", "synth"))
+        target_audio_path = Path(entry.get("gt_wav") or entry.get("gt_probe_wav"))
+
+        # Resolve GT wavetable names
+        target_preset_path = entry.get("target_preset_path")
+        if not target_preset_path:
+            path_file = entry.get("path_file")
+            if path_file:
+                with open(path_file) as f:
+                    pd = json.load(f)
+                target_preset_path = pd.get("target_preset_path")
+        if not target_preset_path:
+            return []
+        gt_names = list(extract_gt_wavetable_names(Path(target_preset_path)))
+        if not gt_names:
+            return []
+
+        # Build candidate pool
+        sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
+        rng = random.Random(args.seed + sid_seed)
+
+        pool = build_gt_similarity_pool(
+            gt_wavetable_names=gt_names,
+            index_embeddings=shortlist_data["embeddings"],
+            index_norms=shortlist_data["norms"],
+            index_rows_meta=index_rows,
+            top_k=args.pool_top_k,
+            rng=rng,
+        )
+
+        # Ensure probe audio exists for all pool candidates
+        with serial_lock:
+            ensure_candidate_probes_for_names(
+                names=pool,
+                wavetable_lib=wavetable_lib,
+                selected_rows=selected_by_name,
+                out_dir=args.probe_dir,
+                cache=candidate_audio,
+            )
+
+        # Split pool into shards (disjoint round-robin)
+        shards: list[list[str]] = [[] for _ in range(args.num_agents)]
+        for i, name in enumerate(pool):
+            shards[i % args.num_agents].append(name)
+
+        # Build one record per search agent
+        records = []
+        for ai, shard in enumerate(shards):
+            if not shard:
+                continue
+            agent_rng = random.Random(args.seed + sid_seed + ai + 1)
+            rec = build_search_record(
+                sample_id=f"{sample_id}_agent{ai + 1}",
+                archetype=archetype,
+                target_audio_path=target_audio_path,
+                gt_wavetable_names=gt_names,
+                shard=shard,
+                candidate_audio=candidate_audio,
+                omni_server=args.omni_server,
+                omni_model=args.omni_model,
+                stage2_server=stage2_server,
+                stage2_model=stage2_model,
+                rng=agent_rng,
+                candidates_per_batch=args.candidates_per_batch,
+            )
+            if rec:
+                records.append(rec)
+
+        return records
+
+    out_path = args.out_jsonl
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    all_records: list[dict] = []
+
+    for i, entry in enumerate(entries):
+        try:
+            recs = _process(entry)
+            all_records.extend(recs)
+            print(f"[{i + 1}/{len(entries)}] {entry['sample_id']}: {len(recs)} search records", flush=True)
+        except Exception as exc:
+            import traceback
+            print(f"WARNING: {entry.get('sample_id', '?')} failed: {exc}")
+            traceback.print_exc()
+
+    with open(out_path, "w") as f:
+        for r in all_records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    print(f"Wrote {len(all_records)} records to {out_path}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -258,6 +258,100 @@ def load_wavetable_lib(path: Path) -> list[dict[str, Any]]:
     return _load_wavetable_lib(path)
 
 
+def build_gt_similarity_pool(
+    gt_wavetable_names: list[str],
+    index_embeddings: np.ndarray,
+    index_norms: np.ndarray,
+    index_rows_meta: list[dict[str, Any]],
+    top_k: int = 48,
+    rng: random.Random | None = None,
+) -> list[str]:
+    """Build a candidate pool from the top-K wavetables most CLAP-similar to any GT wavetable.
+
+    Uses the wavetable index (bare probes through default preset) for apples-to-apples
+    comparison. GT wavetables are always included. Returns wavetable names, shuffled.
+
+    Parameters
+    ----------
+    gt_wavetable_names : list[str]
+        1-3 GT wavetable names (from the target preset's active oscillators).
+    index_embeddings : np.ndarray
+        (N_rows, dim) CLAP embeddings from wt_index.npz.
+    index_norms : np.ndarray
+        (N_rows,) L2 norms of index_embeddings (with epsilon).
+    index_rows_meta : list[dict]
+        Per-row metadata from wt_index_meta.json (wavetable_name, frame_idx, etc.).
+    top_k : int
+        Maximum pool size (default 48). GT wavetables count toward this.
+    rng : random.Random | None
+        For shuffling. If None, pool is returned in similarity order.
+
+    Returns
+    -------
+    list[str]
+        Wavetable names (unique, shuffled if rng provided). GT names always included.
+    """
+    from collections import defaultdict as _defaultdict
+
+    # Build name → row indices
+    name_to_rows: dict[str, list[int]] = _defaultdict(list)
+    for i, row in enumerate(index_rows_meta):
+        name_to_rows[row["wavetable_name"]].append(i)
+
+    all_names = sorted(set(r["wavetable_name"] for r in index_rows_meta))
+
+    # Per-name embedding (mean-pool across frames)
+    name_embs: dict[str, np.ndarray] = {}
+    for name, idxs in name_to_rows.items():
+        name_embs[name] = index_embeddings[idxs].mean(axis=0)
+
+    # Find GT embeddings
+    gt_name_set = set(gt_wavetable_names)
+    gt_emb_list = []
+    for gn in gt_wavetable_names:
+        if gn in name_embs:
+            emb = name_embs[gn]
+            gt_emb_list.append(emb / (np.linalg.norm(emb) + 1e-12))
+
+    if not gt_emb_list:
+        # GT not in index — return GT names + random fill
+        pool = list(gt_wavetable_names)
+        others = [n for n in all_names if n not in gt_name_set]
+        if rng:
+            rng.shuffle(others)
+        pool.extend(others[: max(0, top_k - len(pool))])
+        if rng:
+            rng.shuffle(pool)
+        return pool
+
+    gt_stack = np.stack(gt_emb_list)  # (n_gt, dim)
+
+    # Cosine similarity: each GT against all names
+    name_emb_matrix = np.stack([name_embs[n] for n in all_names])
+    name_norms_vec = np.linalg.norm(name_emb_matrix, axis=1, keepdims=True) + 1e-12
+    name_emb_normed = name_emb_matrix / name_norms_vec
+
+    sim_matrix = gt_stack @ name_emb_normed.T  # (n_gt, n_names)
+    max_sim = sim_matrix.max(axis=0)  # (n_names,)
+
+    # Rank by max similarity, excluding GT
+    scored = [
+        (all_names[i], float(max_sim[i]))
+        for i in range(len(all_names))
+        if all_names[i] not in gt_name_set
+    ]
+    scored.sort(key=lambda x: -x[1])
+
+    # Build pool: GT first, then top-K hard negatives
+    pool = list(gt_wavetable_names)
+    for name, _ in scored[: max(0, top_k - len(pool))]:
+        pool.append(name)
+
+    if rng:
+        rng.shuffle(pool)
+    return pool
+
+
 ALLOWED_MESSAGE_ROLES = {"user", "assistant", "tool_call", "tool_response"}
 
 
