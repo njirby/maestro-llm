@@ -239,6 +239,95 @@ def _build_search_snippet(keyword: str) -> str:
     )
 
 
+_LEGACY_VITAL_SNIPPET_PREFIX = (
+    "import sys, json\n"
+    "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+    "from vital_tools import VitalController\n"
+    "vc = VitalController()\n"
+    "vc.discover()\n"
+)
+
+
+def _vital_reapy_bootstrap() -> str:
+    """Return robust VitalController setup code for both ReaScript and external Python."""
+    return (
+        "import sys, json\n"
+        "import atexit\n"
+        "try:\n"
+        "    from maestro.reaper.vital_tools import VitalController\n"
+        "except Exception:\n"
+        "    sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+        "    from vital_tools import VitalController\n"
+        "_rpr = None\n"
+        "_vc_ctx = None\n"
+        "if 'RPR_CountTracks' in globals():\n"
+        "    vc = VitalController()\n"
+        "else:\n"
+        "    import reapy\n"
+        "    _vc_ctx = reapy.inside_reaper()\n"
+        "    _vc_ctx.__enter__()\n"
+        "    _api = reapy.reascript_api\n"
+        "    _rpr = {f'RPR_{fn}': getattr(_api, fn) for fn in dir(_api) if not fn.startswith('_')}\n"
+        "    vc = VitalController(_rpr=_rpr)\n"
+        "def _rpr_call(_name, *_args):\n"
+        "    if _rpr is not None and _name in _rpr:\n"
+        "        return _rpr[_name](*_args)\n"
+        "    _fn = globals().get(_name)\n"
+        "    if _fn is None:\n"
+        "        raise RuntimeError(f'RPR function {_name!r} unavailable')\n"
+        "    return _fn(*_args)\n"
+        "def _ensure_vital_loaded():\n"
+        "    try:\n"
+        "        vc.discover()\n"
+        "        return\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    _proj = 0\n"
+        "    if int(_rpr_call('RPR_CountTracks', _proj)) == 0:\n"
+        "        _rpr_call('RPR_InsertTrackAtIndex', 0, True)\n"
+        "    _track = _rpr_call('RPR_GetTrack', _proj, 0)\n"
+        "    for _fx_name in (\n"
+        "        'Vital',\n"
+        "        'VST3i: Vital',\n"
+        "        'VSTi: Vital',\n"
+        "        'VST3: Vital (Vital Audio)',\n"
+        "        'VST3i: Vital (Vital Audio)',\n"
+        "        'VST3: Vital',\n"
+        "    ):\n"
+        "        _idx = _rpr_call('RPR_TrackFX_AddByName', _track, _fx_name, False, 1)\n"
+        "        if isinstance(_idx, (tuple, list)):\n"
+        "            _idx = _idx[0] if _idx else -1\n"
+        "        if int(_idx) >= 0:\n"
+        "            break\n"
+        "    vc.discover()\n"
+        "_ensure_vital_loaded()\n"
+        "if _vc_ctx is not None:\n"
+        "    atexit.register(lambda: _vc_ctx.__exit__(None, None, None))\n"
+    )
+
+
+def _harden_vital_snippet_for_reapy(python_code: str) -> str:
+    """Rewrite legacy VitalController snippets to run via reapy when outside ReaScript."""
+    stripped = python_code.strip()
+    if "from vital_tools import VitalController" not in stripped or "vc.discover()" not in stripped:
+        return stripped
+
+    if stripped.startswith(_LEGACY_VITAL_SNIPPET_PREFIX):
+        body = stripped[len(_LEGACY_VITAL_SNIPPET_PREFIX):]
+        return f"{_vital_reapy_bootstrap()}{body}"
+
+    body = stripped
+    for line in (
+        "import sys, json\n",
+        "sys.path.append('/home/nate/.config/REAPER/Scripts')\n",
+        "from vital_tools import VitalController\n",
+        "vc = VitalController()\n",
+        "vc.discover()\n",
+    ):
+        body = body.replace(line, "", 1)
+    return f"{_vital_reapy_bootstrap()}{body.strip()}"
+
+
 def _plan_step_groups(
     changed_scalar_params: dict[str, float],
     init_scalars_native: dict[str, float],
@@ -882,6 +971,7 @@ def generate_preset_path(
             f"result = vc.set_params({{{params_repr}}})\n"
             'print(json.dumps({"status": "ok", "applied": result["applied"], "not_found": result["not_found"]}))'
         )
+        action_snippet = _harden_vital_snippet_for_reapy(action_snippet)
 
         # --- search_snippet + search_result: targeted param lookup before setting ---
         keyword = planner.get("search_keyword") or _search_keyword(list(params_applied.keys()))
@@ -968,6 +1058,7 @@ def generate_preset_path(
             f"result = vc.set_params({{{corr_params_repr}}})\n"
             'print(json.dumps({"status": "ok", "applied": result["applied"], "not_found": result["not_found"]}))'
         )
+        corr_snippet = _harden_vital_snippet_for_reapy(corr_snippet)
 
         iterations.append({
             "step": step_num,

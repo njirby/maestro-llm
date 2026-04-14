@@ -320,6 +320,69 @@ class TestSetParam:
         assert 0.0 <= norm_val <= 1.0
 
 
+class TestSetParamAliases:
+    def setup_method(self):
+        preset = _make_preset()
+        self.param_names = [
+            "EQ Switch",
+            "Chorus Mix",
+            "LFO 3 Transpose",
+            "High Lower Ratio",
+            "Oscillator 1 Phase Randomization",
+            "Oscillator 1 Frequency Morph Amount",
+            "Oscillator 1 Spectral Unison",
+            "Portamento Force",
+            "Reverb High Gain",
+            "Chorus Filter Cutoff",
+            "Chorus Filter Spread",
+            "Phaser Mix",
+        ]
+        self.rpr, self.state = _make_rpr(
+            preset=preset,
+            n_params=len(self.param_names),
+            param_names=self.param_names,
+            param_values=[0.0] * len(self.param_names),
+        )
+        self.vc = VitalController(_rpr=self.rpr)
+        self.vc.discover()
+
+    def _assert_key_maps_to_param(self, json_key: str, expected_name: str):
+        expected_idx = self.param_names.index(expected_name)
+        before = len(self.state["set_param_calls"])
+        assert self.vc.set_param(json_key, 0.5) is True
+        assert len(self.state["set_param_calls"]) == before + 1
+        _, _, got_idx, _ = self.state["set_param_calls"][-1]
+        assert got_idx == expected_idx
+
+    def test_maps_on_to_switch(self):
+        self._assert_key_maps_to_param("eq_on", "EQ Switch")
+
+    def test_maps_dry_wet_to_mix(self):
+        self._assert_key_maps_to_param("chorus_dry_wet", "Chorus Mix")
+
+    def test_maps_keytrack_transpose(self):
+        self._assert_key_maps_to_param("lfo_3_keytrack_transpose", "LFO 3 Transpose")
+
+    def test_maps_compressor_ratio_without_prefix(self):
+        self._assert_key_maps_to_param("compressor_high_lower_ratio", "High Lower Ratio")
+
+    def test_maps_random_phase_and_morph_aliases(self):
+        self._assert_key_maps_to_param("osc_1_random_phase", "Oscillator 1 Phase Randomization")
+        self._assert_key_maps_to_param(
+            "osc_1_spectral_morph_amount", "Oscillator 1 Frequency Morph Amount"
+        )
+
+    def test_maps_unison_blend_alias(self):
+        self._assert_key_maps_to_param("osc_1_unison_blend", "Oscillator 1 Spectral Unison")
+
+    def test_maps_portamento_and_effect_aliases(self):
+        self._assert_key_maps_to_param("portamento_on", "Portamento Force")
+        self._assert_key_maps_to_param("reverb_high_shelf_gain", "Reverb High Gain")
+        self._assert_key_maps_to_param("chorus_cutoff", "Chorus Filter Cutoff")
+        self._assert_key_maps_to_param("chorus_spread", "Chorus Filter Spread")
+        self._assert_key_maps_to_param("phaser_dry_wet", "Phaser Mix")
+
+
 # ---------------------------------------------------------------------------
 # 4. set_params()
 # ---------------------------------------------------------------------------

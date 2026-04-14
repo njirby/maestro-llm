@@ -65,9 +65,21 @@ def _build_rank_labels(
 
 
 def _build_audition_bundle_tool_command(
-    candidate_assets: list[dict[str, str]], target_audio_path: str
+    candidate_assets: list[dict[str, str]],
+    target_audio_path: str,
+    include_similarity_scores: bool = True,
 ) -> str:
     payload = {"candidates": candidate_assets, "target": target_audio_path}
+    sim_line = (
+        "            item['cosine_vs_target'] = round(_cos(x, tgt), 4)\n"
+        if include_similarity_scores
+        else ""
+    )
+    sim_none_line = (
+        "            item['cosine_vs_target'] = None\n"
+        if include_similarity_scores
+        else ""
+    )
     return (
         "python - <<'PY'\n"
         "import json, numpy as np\n"
@@ -95,10 +107,10 @@ def _build_audition_bundle_tool_command(
         "            x, sr = sf.read(p, always_2d=True)\n"
         "            x = x.mean(axis=1).astype(np.float32)\n"
         "            item['duration_s'] = round(float(len(x) / max(1, sr)), 4)\n"
-        "            item['cosine_vs_target'] = round(_cos(x, tgt), 4)\n"
+        f"{sim_line}"
         "        except Exception:\n"
         "            item['duration_s'] = None\n"
-        "            item['cosine_vs_target'] = None\n"
+        f"{sim_none_line}"
         "    bundle.append(item)\n"
         "print(json.dumps({'audition_bundle': bundle}, ensure_ascii=False))\n"
         "PY"
@@ -127,7 +139,13 @@ def main() -> None:
 
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
+    ap.add_argument(
+        "--hide-similarity-scores",
+        action="store_true",
+        help="Hide numeric similarity fields from model-visible tool responses/reasons.",
+    )
     args = ap.parse_args()
+    expose_similarity_scores = not bool(args.hide_similarity_scores)
 
     entries = load_manifest_entries(Path(args.manifest), max_samples=args.max_samples)
     index_rows = load_index_rows(args.index_meta)
@@ -237,7 +255,13 @@ def main() -> None:
             tool_call_payload = json.dumps(
                 {
                     "name": "bash",
-                    "arguments": {"command": _build_audition_bundle_tool_command(candidate_assets, str(target_audio_path))},
+                    "arguments": {
+                        "command": _build_audition_bundle_tool_command(
+                            candidate_assets,
+                            str(target_audio_path),
+                            include_similarity_scores=expose_similarity_scores,
+                        )
+                    },
                     "id": tool_call_id,
                 },
                 ensure_ascii=False,
@@ -245,12 +269,20 @@ def main() -> None:
             # Single tool_response with all candidate audio previews bundled.
             # Each entry carries one <audio> tag; MS-Swift matches them to the audios list in order.
             audition_results = [
-                {
-                    "candidate_id": c["candidate_id"],
-                    "wavetable_name": c["wavetable_name"],
-                    "audio_preview": "<audio>",
-                    "cosine_vs_target": round(float(clap_scores.get(c["wavetable_name"], 0.0)), 4),
-                }
+                (
+                    {
+                        "candidate_id": c["candidate_id"],
+                        "wavetable_name": c["wavetable_name"],
+                        "audio_preview": "<audio>",
+                        "cosine_vs_target": round(float(clap_scores.get(c["wavetable_name"], 0.0)), 4),
+                    }
+                    if expose_similarity_scores
+                    else {
+                        "candidate_id": c["candidate_id"],
+                        "wavetable_name": c["wavetable_name"],
+                        "audio_preview": "<audio>",
+                    }
+                )
                 for c in candidate_assets
             ]
             tool_response_payload = json.dumps(
@@ -261,16 +293,22 @@ def main() -> None:
 
             # Build a score-informed reason referencing the actual CLAP scores so the
             # model learns to ground rankings in audible similarity values.
-            top_scored = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)
-            score_summary = ", ".join(f"{cid} ({s:.3f})" for cid, s in top_scored[:4])
-            gt_note = (
-                f" GT candidate: {gt_ids[0]}." if gt_ids else ""
-            )
-            rank_reason = (
-                f"Ranked by CLAP similarity to target. "
-                f"Top scores: {score_summary}.{gt_note} "
-                f"Selected top {len(selected_ids)}."
-            )
+            if expose_similarity_scores:
+                top_scored = sorted(score_map.items(), key=lambda kv: kv[1], reverse=True)
+                score_summary = ", ".join(f"{cid} ({s:.3f})" for cid, s in top_scored[:4])
+                gt_note = (
+                    f" GT candidate: {gt_ids[0]}." if gt_ids else ""
+                )
+                rank_reason = (
+                    f"Ranked by CLAP similarity to target. "
+                    f"Top scores: {score_summary}.{gt_note} "
+                    f"Selected top {len(selected_ids)}."
+                )
+            else:
+                rank_reason = (
+                    "Ranked by audible source plausibility from candidate previews. "
+                    f"Selected top {len(selected_ids)}."
+                )
             messages.append(
                 {
                     "role": "assistant",
@@ -315,6 +353,7 @@ def main() -> None:
                     "permutation_idx": perm_idx,
                     "candidate_source": args.candidate_source,
                     "select_k": int(args.select_k),
+                    "score_visibility": "hidden" if not expose_similarity_scores else "explicit",
                 },
             }
             assert_valid_ms_swift_multiturn_record(record)

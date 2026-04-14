@@ -1445,6 +1445,39 @@ def test_remaining_delta_context_uses_gt_preset_gap():
         "step_gap result not used in main()"
 
 
+def test_apply_wavetable_snippet_initializes_vc_before_use():
+    """The generated apply-wavetable snippet must initialize `vc` before vc.get_preset()."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert "vc = VitalController()" in src, "apply snippet missing VitalController initialization"
+    assert "vc.discover()" in src, "apply snippet missing vc.discover()"
+    assert "preset = vc.get_preset()" in src, "apply snippet missing vc.get_preset()"
+
+    init_pos = src.index("vc = VitalController()")
+    get_pos = src.index("preset = vc.get_preset()")
+    assert init_pos < get_pos, "vc must be initialized before vc.get_preset()"
+
+
+def test_main_builder_hardens_vital_snippets_for_reapy():
+    """main() should route Vital snippets through the reapy hardening helper."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2.main)
+    assert "_harden_vital_snippet_for_reapy(_apply_wt_snippet)" in src
+    assert "action_snippet = _harden_vital_snippet_for_reapy(action_snippet)" in src
+
+
+def test_vital_hardening_bootstrap_uses_reapy_context():
+    """The hardening helper should enter reapy.inside_reaper and inject RPR mappings."""
+    import inspect
+    from scripts import build_main_agent_sft_v2
+    src = inspect.getsource(build_main_agent_sft_v2._vital_reapy_bootstrap)
+    assert "reapy.inside_reaper()" in src
+    assert "VitalController(_rpr=_rpr)" in src
+    assert "vc.discover()" in src
+
+
 # ---------------------------------------------------------------------------
 # Parallel builder tests
 # ---------------------------------------------------------------------------

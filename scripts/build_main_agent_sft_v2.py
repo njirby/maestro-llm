@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import random
 import sys
 import threading
+from itertools import combinations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -524,6 +526,200 @@ def _build_search_reports(
     return reports
 
 
+def _build_tuple_candidates(
+    candidate_names: list[str],
+    *,
+    max_tuple_size: int,
+    max_tuples: int,
+    seed: int,
+    preferred_names: list[str] | None = None,
+) -> list[dict[str, object]]:
+    """Build tuple candidates (size 1..max_tuple_size) from candidate names."""
+    if not candidate_names:
+        return []
+    max_tuple_size = max(1, min(3, int(max_tuple_size)))
+    max_tuples = max(1, int(max_tuples))
+
+    rng = random.Random(int(seed))
+    top_pool = list(candidate_names)[: min(len(candidate_names), 12)]
+
+    tuples: list[tuple[str, ...]] = []
+    for sz in range(1, max_tuple_size + 1):
+        tuples.extend(list(combinations(top_pool, sz)))
+    rng.shuffle(tuples)
+
+    out: list[dict[str, object]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    pref = [n for n in (preferred_names or []) if n in candidate_names]
+    if pref:
+        pref_tuple = tuple(pref[:max_tuple_size])
+        if pref_tuple:
+            seen.add(pref_tuple)
+            out.append({"tuple_id": "T1", "members": list(pref_tuple)})
+
+    for t in tuples:
+        if len(out) >= max_tuples:
+            break
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append({"tuple_id": f"T{len(out) + 1}", "members": list(t)})
+    return out
+
+
+def _tuple_teacher_score(members: list[str], clap_scores: dict[str, float]) -> float:
+    vals = [float(clap_scores.get(n, 0.0)) for n in members]
+    if not vals:
+        return 0.0
+    # Slightly reward richer tuples while keeping single-table options competitive.
+    return float(sum(vals) / len(vals) + (0.01 * (len(members) - 1)))
+
+
+def _role_hints_for_tuple_size(n: int) -> list[str]:
+    if n <= 1:
+        return ["fundamental"]
+    if n == 2:
+        return ["fundamental", "harmonic_texture"]
+    return ["fundamental", "harmonic_texture", "air_noise"]
+
+
+def _acceptable_tuple_ids(
+    tuple_rows: list[dict[str, object]],
+    tuple_scores: dict[str, float],
+    *,
+    epsilon: float,
+    max_accept: int,
+) -> list[str]:
+    if not tuple_rows:
+        return []
+    ranked = sorted(
+        [str(t["tuple_id"]) for t in tuple_rows],
+        key=lambda tid: float(tuple_scores.get(tid, 0.0)),
+        reverse=True,
+    )
+    best = float(tuple_scores.get(ranked[0], 0.0))
+    band = [tid for tid in ranked if float(tuple_scores.get(tid, 0.0)) >= (best - float(epsilon))]
+    if len(band) < 2:
+        band = ranked[: min(2, len(ranked))]
+    return band[: max(1, int(max_accept))]
+
+
+def _build_tuple_search_reports(
+    shards: list[list[str]],
+    tuple_members_by_id: dict[str, list[str]],
+    tuple_scores: dict[str, float],
+    proposals_per_agent: int,
+    name_to_candidate_id: dict[str, str],
+) -> list[dict]:
+    reports: list[dict] = []
+    for i, shard in enumerate(shards, start=1):
+        if not shard:
+            continue
+        ranked = sorted(shard, key=lambda tid: float(tuple_scores.get(tid, 0.0)), reverse=True)
+        selected = ranked[: max(1, int(proposals_per_agent))]
+        proposals: list[dict[str, object]] = []
+        for tid in selected:
+            members = tuple_members_by_id.get(tid, [])
+            candidate_ids = [name_to_candidate_id[m] for m in members if m in name_to_candidate_id]
+            proposals.append(
+                {
+                    "tuple_id": tid,
+                    "candidate_ids": candidate_ids,
+                    "role_hints": _role_hints_for_tuple_size(len(members)),
+                    "confidence_band": (
+                        "high"
+                        if float(tuple_scores.get(tid, 0.0)) >= 0.60
+                        else "medium" if float(tuple_scores.get(tid, 0.0)) >= 0.45
+                        else "low"
+                    ),
+                    "reason": (
+                        "Closest overall source blend across transient/body/sustain."
+                        if len(members) >= 2
+                        else "Strong foundational source candidate."
+                    ),
+                }
+            )
+        reports.append(
+            {
+                "agent_id": f"sa_{i}",
+                "considered": len(shard),
+                "uncertainty": "low" if len(selected) >= 2 else "medium",
+                "proposed_tuples": proposals,
+            }
+        )
+    return reports
+
+
+def _build_tuple_judge_result(
+    tuple_rows: list[dict[str, object]],
+    tuple_scores: dict[str, float],
+    *,
+    select_k: int,
+) -> dict[str, object]:
+    ranked = sorted(
+        [str(t["tuple_id"]) for t in tuple_rows],
+        key=lambda tid: float(tuple_scores.get(tid, 0.0)),
+        reverse=True,
+    )
+    selected = ranked[: max(1, int(select_k))]
+    return {
+        "ranking": ranked,
+        "selected": selected,
+        "reason": "Ranked by audible source plausibility across search reports. Selected top blends.",
+    }
+
+
+def _ensure_tuple_preview_audio(
+    *,
+    sample_id: str,
+    tuple_id: str,
+    member_names: list[str],
+    candidate_audio: dict[str, Path],
+    out_dir: Path,
+    cache: dict[str, Path],
+) -> Path | None:
+    """Create a mixed preview wav for a tuple from rendered candidate probes."""
+    import numpy as np
+    import soundfile as sf
+
+    cache_key = f"{sample_id}:{tuple_id}"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    paths = [candidate_audio[n] for n in member_names if n in candidate_audio]
+    if not paths:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{sample_id}_{tuple_id}.wav"
+    if out_path.exists():
+        cache[cache_key] = out_path
+        return out_path
+
+    waves = []
+    sr_ref = None
+    for p in paths:
+        x, sr = sf.read(p, always_2d=True)
+        if sr_ref is None:
+            sr_ref = sr
+        if sr != sr_ref:
+            continue
+        waves.append(x.astype(np.float32))
+    if not waves:
+        return None
+
+    min_len = min(w.shape[0] for w in waves)
+    min_ch = min(w.shape[1] for w in waves)
+    stack = np.stack([w[:min_len, :min_ch] for w in waves], axis=0)
+    mix = np.mean(stack, axis=0)
+    peak = float(np.max(np.abs(mix))) if mix.size else 0.0
+    if peak > 1e-6:
+        mix = 0.95 * (mix / peak)
+    sf.write(out_path, mix, sr_ref or 44100)
+    cache[cache_key] = out_path
+    return out_path
+
+
 def _build_judge_result(
     candidate_names: list[str],
     id_map: dict[str, str],
@@ -553,6 +749,15 @@ def _build_judge_result(
         "selected": selected,
         "reason": reason,
     }
+
+
+def _assert_no_similarity_score_leak(messages: list[dict]) -> None:
+    """Guardrail for no-score-leak tuple-search mode."""
+    banned = ("cosine_vs_target", "top scores:", "clap similarity")
+    for i, msg in enumerate(messages):
+        content = str(msg.get("content", "")).lower()
+        if any(token in content for token in banned):
+            raise ValueError(f"score_leak_detected_at_message_{i}")
 
 
 def _llm_post(server_url: str, payload: dict, timeout: float = 120.0, max_retries: int = 3) -> dict:
@@ -594,6 +799,95 @@ def _wrap_as_bash(python_code: str) -> str:
     if stripped.startswith("python"):
         return stripped  # already a shell command
     return f"python - <<'PY'\n{stripped}\nPY"
+
+
+_LEGACY_VITAL_SNIPPET_PREFIX = (
+    "import sys, json\n"
+    "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+    "from vital_tools import VitalController\n"
+    "vc = VitalController()\n"
+    "vc.discover()\n"
+)
+
+
+def _vital_reapy_bootstrap() -> str:
+    """Return robust VitalController setup code for both ReaScript and external Python."""
+    return (
+        "import sys, json\n"
+        "import atexit\n"
+        "try:\n"
+        "    from maestro.reaper.vital_tools import VitalController\n"
+        "except Exception:\n"
+        "    sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+        "    from vital_tools import VitalController\n"
+        "_rpr = None\n"
+        "_vc_ctx = None\n"
+        "if 'RPR_CountTracks' in globals():\n"
+        "    vc = VitalController()\n"
+        "else:\n"
+        "    import reapy\n"
+        "    _vc_ctx = reapy.inside_reaper()\n"
+        "    _vc_ctx.__enter__()\n"
+        "    _api = reapy.reascript_api\n"
+        "    _rpr = {f'RPR_{fn}': getattr(_api, fn) for fn in dir(_api) if not fn.startswith('_')}\n"
+        "    vc = VitalController(_rpr=_rpr)\n"
+        "def _rpr_call(_name, *_args):\n"
+        "    if _rpr is not None and _name in _rpr:\n"
+        "        return _rpr[_name](*_args)\n"
+        "    _fn = globals().get(_name)\n"
+        "    if _fn is None:\n"
+        "        raise RuntimeError(f'RPR function {_name!r} unavailable')\n"
+        "    return _fn(*_args)\n"
+        "def _ensure_vital_loaded():\n"
+        "    try:\n"
+        "        vc.discover()\n"
+        "        return\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    _proj = 0\n"
+        "    if int(_rpr_call('RPR_CountTracks', _proj)) == 0:\n"
+        "        _rpr_call('RPR_InsertTrackAtIndex', 0, True)\n"
+        "    _track = _rpr_call('RPR_GetTrack', _proj, 0)\n"
+        "    for _fx_name in (\n"
+        "        'Vital',\n"
+        "        'VST3i: Vital',\n"
+        "        'VSTi: Vital',\n"
+        "        'VST3: Vital (Vital Audio)',\n"
+        "        'VST3i: Vital (Vital Audio)',\n"
+        "        'VST3: Vital',\n"
+        "    ):\n"
+        "        _idx = _rpr_call('RPR_TrackFX_AddByName', _track, _fx_name, False, 1)\n"
+        "        if isinstance(_idx, (tuple, list)):\n"
+        "            _idx = _idx[0] if _idx else -1\n"
+        "        if int(_idx) >= 0:\n"
+        "            break\n"
+        "    vc.discover()\n"
+        "_ensure_vital_loaded()\n"
+        "if _vc_ctx is not None:\n"
+        "    atexit.register(lambda: _vc_ctx.__exit__(None, None, None))\n"
+    )
+
+
+def _harden_vital_snippet_for_reapy(python_code: str) -> str:
+    """Rewrite legacy VitalController snippets to run via reapy when outside ReaScript."""
+    stripped = python_code.strip()
+    if "from vital_tools import VitalController" not in stripped or "vc.discover()" not in stripped:
+        return stripped
+
+    if stripped.startswith(_LEGACY_VITAL_SNIPPET_PREFIX):
+        body = stripped[len(_LEGACY_VITAL_SNIPPET_PREFIX):]
+        return f"{_vital_reapy_bootstrap()}{body}"
+
+    body = stripped
+    for line in (
+        "import sys, json\n",
+        "sys.path.append('/home/nate/.config/REAPER/Scripts')\n",
+        "from vital_tools import VitalController\n",
+        "vc = VitalController()\n",
+        "vc.discover()\n",
+    ):
+        body = body.replace(line, "", 1)
+    return f"{_vital_reapy_bootstrap()}{body.strip()}"
 
 
 def _step_commentary_fallback(step: dict, step_num: int, is_planning_step: bool = False) -> str:
@@ -1230,6 +1524,16 @@ def main() -> None:
     ap.add_argument("--probe-tail-s", type=float, default=1.0)
     ap.add_argument("--trim-min-duration-s", type=float, default=0.5)
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
+    ap.add_argument(
+        "--tuple-search-v2",
+        action="store_true",
+        help="Enable tuple-based parallel search traces (1..3 wavetable tuples, no similarity-score leakage).",
+    )
+    ap.add_argument("--tuple-max-size", type=int, default=3, help="Max tuple size for tuple-search-v2 (default: 3).")
+    ap.add_argument("--tuple-max-candidates", type=int, default=28, help="Max tuple candidates per sample (default: 28).")
+    ap.add_argument("--tuple-epsilon", type=float, default=0.015, help="Acceptable-set score band epsilon (default: 0.015).")
+    ap.add_argument("--tuple-accept-max", type=int, default=6, help="Max acceptable tuple labels per sample (default: 6).")
+    ap.add_argument("--tuple-preview-dir", type=Path, default=Path("outputs/agent_sft/tuple_previews"))
 
     ap.add_argument("--audio-gate-threshold", type=float, default=0.01,
         help="Absolute CLAP delta threshold. Steps with |delta| below this get PLAN-only turns "
@@ -1314,6 +1618,7 @@ def main() -> None:
 
     # Shared mutable probe cache. Serialized via _serial_lock.
     candidate_audio: dict[str, Path] = {}
+    tuple_preview_cache: dict[str, Path] = {}
 
     # Serializes vita (probe rendering) and CLAP (GPU) calls. Omni HTTP calls run freely
     # outside this lock — they are the dominant bottleneck and benefit from parallelism.
@@ -1409,21 +1714,74 @@ def main() -> None:
             {"candidate_id": id_map[name], "wavetable_name": name, "audio_path": str(candidate_audio[name])}
             for name in candidate_names
         ]
+        use_tuple_search = bool(args.tuple_search_v2)
 
-        shards = build_disjoint_shards(candidate_names, args.num_agents)
-        jobs = [
-            {
-                "agent_id": f"sa_{i}",
-                "candidate_shard": [id_map[n] for n in shard],
-                "seed": int(args.seed) + i,
+        tuple_rows: list[dict[str, object]] = []
+        tuple_members_by_id: dict[str, list[str]] = {}
+        tuple_scores: dict[str, float] = {}
+        tuple_preview_paths: dict[str, Path] = {}
+        acceptable_tuple_ids: list[str] = []
+        selected_tuple_ids: list[str] = []
+
+        if use_tuple_search:
+            pref = [n for n in candidate_names if n in gt_names]
+            tuple_rows = _build_tuple_candidates(
+                candidate_names,
+                max_tuple_size=int(args.tuple_max_size),
+                max_tuples=int(args.tuple_max_candidates),
+                seed=int(args.seed),
+                preferred_names=pref,
+            )
+            tuple_members_by_id = {
+                str(t["tuple_id"]): [str(x) for x in list(t.get("members", []))]
+                for t in tuple_rows
             }
-            for i, shard in enumerate(shards, start=1)
-            if shard
-        ]
-        reports = _build_search_reports(shards, id_map, gt_names, clap_scores, args.proposals_per_agent)
-        judge_result = _build_judge_result(candidate_names, id_map, gt_names, clap_scores, args.select_k)
-        selected_ids = set(judge_result["selected"])
-        selected_names = [name for name in candidate_names if id_map[name] in selected_ids]
+            tuple_scores = {
+                tid: _tuple_teacher_score(members, clap_scores)
+                for tid, members in tuple_members_by_id.items()
+            }
+            acceptable_tuple_ids = _acceptable_tuple_ids(
+                tuple_rows,
+                tuple_scores,
+                epsilon=float(args.tuple_epsilon),
+                max_accept=int(args.tuple_accept_max),
+            )
+            tuple_ids = [str(t["tuple_id"]) for t in tuple_rows]
+            tuple_shards = build_disjoint_shards(tuple_ids, args.num_agents)
+            jobs = [
+                {
+                    "agent_id": f"sa_{i}",
+                    "candidate_shard": shard,
+                    "seed": int(args.seed) + i,
+                }
+                for i, shard in enumerate(tuple_shards, start=1)
+                if shard
+            ]
+            reports = _build_tuple_search_reports(
+                tuple_shards,
+                tuple_members_by_id,
+                tuple_scores,
+                args.proposals_per_agent,
+                id_map,
+            )
+            judge_result = _build_tuple_judge_result(tuple_rows, tuple_scores, select_k=args.select_k)
+            selected_tuple_ids = [str(x) for x in list(judge_result["selected"])]
+            selected_names = []  # handled through selected tuples
+        else:
+            shards = build_disjoint_shards(candidate_names, args.num_agents)
+            jobs = [
+                {
+                    "agent_id": f"sa_{i}",
+                    "candidate_shard": [id_map[n] for n in shard],
+                    "seed": int(args.seed) + i,
+                }
+                for i, shard in enumerate(shards, start=1)
+                if shard
+            ]
+            reports = _build_search_reports(shards, id_map, gt_names, clap_scores, args.proposals_per_agent)
+            judge_result = _build_judge_result(candidate_names, id_map, gt_names, clap_scores, args.select_k)
+            selected_ids = set(judge_result["selected"])
+            selected_names = [name for name in candidate_names if id_map[name] in selected_ids]
 
         messages: list[dict] = []
         used_iter_audio_paths: list[str] = []
@@ -1438,7 +1796,12 @@ def main() -> None:
                 "role": "user",
                 "content": (
                     f"<audio>\n{start_phrase}\n"
-                    "Run hierarchical wavetable search, keep <=3 candidates, then continue iterative edits."
+                    +
+                    (
+                        "Run hierarchical tuple search, keep <=3 wavetable tuples, then continue iterative edits."
+                        if use_tuple_search
+                        else "Run hierarchical wavetable search, keep <=3 candidates, then continue iterative edits."
+                    )
                 ),
             }
         )
@@ -1469,7 +1832,11 @@ def main() -> None:
                     "sample_id": sample_id,
                     "target_audio_path": str(target_audio_path),
                     "current_audio_path": str(default_audio_path) if default_audio_path else None,
-                    "candidate_universe": [c["candidate_id"] for c in candidate_assets],
+                    "candidate_universe": (
+                        [str(t["tuple_id"]) for t in tuple_rows]
+                        if use_tuple_search
+                        else [c["candidate_id"] for c in candidate_assets]
+                    ),
                     "num_agents": int(args.num_agents),
                     "shard_strategy": "disjoint_round_robin",
                     "seed": int(args.seed),
@@ -1482,30 +1849,72 @@ def main() -> None:
         messages.append(_tool_call("collect_search_reports", {"sample_id": sample_id, "jobs": jobs}))
         messages.append({"role": "tool_response", "content": json.dumps({"reports": reports}, ensure_ascii=False)})
 
-        messages.append({"role": "assistant", "content": "Judging candidates and selecting up to three for edits."})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "Judging tuple proposals and selecting up to three for edits."
+                    if use_tuple_search
+                    else "Judging candidates and selecting up to three for edits."
+                ),
+            }
+        )
         messages.append(
             _tool_call(
                 "judge_candidates",
                 {
                     "sample_id": sample_id,
                     "target_audio_path": str(target_audio_path),
-                    "candidate_audio": candidate_assets,
+                    "candidate_audio": candidate_assets if not use_tuple_search else None,
+                    "tuple_candidates": (
+                        [
+                            {
+                                "tuple_id": str(t["tuple_id"]),
+                                "candidate_ids": [id_map[n] for n in tuple_members_by_id.get(str(t["tuple_id"]), []) if n in id_map],
+                            }
+                            for t in tuple_rows
+                        ]
+                        if use_tuple_search
+                        else None
+                    ),
                     "max_select": int(args.select_k),
                 },
             )
         )
-        # Include audio previews for selected candidates so the main agent hears
-        # what was chosen before starting iterative edits.
-        selected_previews = [
-            {
-                "candidate_id": id_map[n],
-                "wavetable_name": n,
-                "audio_preview": "<audio>",
-            }
-            for n in selected_names[: int(args.select_k)]
-            if n in candidate_audio
-        ]
-        judge_response_content = {**judge_result, "selected_previews": selected_previews}
+        # Include selected previews so the main agent can hear what was chosen before edits.
+        if use_tuple_search:
+            selected_previews = []
+            for tid in selected_tuple_ids[: int(args.select_k)]:
+                members = tuple_members_by_id.get(tid, [])
+                preview = _ensure_tuple_preview_audio(
+                    sample_id=sample_id,
+                    tuple_id=tid,
+                    member_names=members,
+                    candidate_audio=candidate_audio,
+                    out_dir=args.tuple_preview_dir,
+                    cache=tuple_preview_cache,
+                )
+                if preview is not None:
+                    tuple_preview_paths[tid] = preview
+                    selected_previews.append(
+                        {
+                            "tuple_id": tid,
+                            "candidate_ids": [id_map[m] for m in members if m in id_map],
+                            "audio_preview": "<audio>",
+                        }
+                    )
+            judge_response_content = {**judge_result, "selected_tuple_previews": selected_previews}
+        else:
+            selected_previews = [
+                {
+                    "candidate_id": id_map[n],
+                    "wavetable_name": n,
+                    "audio_preview": "<audio>",
+                }
+                for n in selected_names[: int(args.select_k)]
+                if n in candidate_audio
+            ]
+            judge_response_content = {**judge_result, "selected_previews": selected_previews}
         messages.append(
             {"role": "tool_response", "content": json.dumps(judge_response_content, ensure_ascii=False)}
         )
@@ -1523,45 +1932,91 @@ def main() -> None:
         if target_preset is None and path_data.get("target_preset_path"):
             with open(path_data["target_preset_path"]) as _f:
                 target_preset = json.load(_f)
-        # Apply the selected wavetable to oscillator 1 so the selection is a real action.
-        # Pick the GT wavetable if it was selected (correct training signal); fall back to
-        # the top CLAP-ranked candidate.  The wavetable data is loaded from the target
-        # preset file on disk — never inlined — to keep the bash snippet readable.
+        # Apply selected source tuple/wavetable so search output is a real action.
         _apply_preset_path = path_data.get("target_preset_path")
-        if selected_names and _apply_preset_path:
-            # GT-first selection: prefer a name that matches the ground-truth wavetable.
-            _gt_selected = [n for n in selected_names if n in gt_names]
-            # Ranking order for non-GT fallback: use judge_result["selected"] ordering.
-            _ranked_selected = [
-                name for cid in judge_result["selected"]
-                for name in candidate_names
-                if id_map[name] == cid
-            ]
-            _wt_name = _gt_selected[0] if _gt_selected else _ranked_selected[0]
-            _apply_wt_snippet = (
-                "import json\n"
+        selected_tuple_id: str | None = selected_tuple_ids[0] if selected_tuple_ids else None
+        selected_tuple_members: list[str] = tuple_members_by_id.get(selected_tuple_id, []) if selected_tuple_id else []
+        if _apply_preset_path:
+            if use_tuple_search and selected_tuple_members:
+                wt_payload = []
+                for n in selected_tuple_members[:3]:
+                    row = selected_by_name.get(n)
+                    if not row:
+                        continue
+                    src_idx = int(row["source_wavetable_idx"])
+                    wt_payload.append(wavetable_lib[src_idx])
+                if wt_payload:
+                    _apply_tuple_snippet = (
+                        "import sys, json\n"
+                        "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+                        "from vital_tools import VitalController\n"
+                        "vc = VitalController()\n"
+                        "vc.discover()\n"
+                        f"_wts = json.loads('''{json.dumps(wt_payload, ensure_ascii=False)}''')\n"
+                        "preset = vc.get_preset()\n"
+                        "for _i, _wt in enumerate(_wts[:3]):\n"
+                        "    preset['settings']['wavetables'][_i] = _wt\n"
+                        "vc.set_preset(preset)\n"
+                        f"print(json.dumps({{'status': 'ok', 'applied_tuple_id': {json.dumps(selected_tuple_id)}, 'applied_wavetable_tuple': {json.dumps(selected_tuple_members[:3], ensure_ascii=False)}}}))"
+                    )
+                    _apply_tuple_snippet = _harden_vital_snippet_for_reapy(_apply_tuple_snippet)
+                    messages.append({
+                        "role": "assistant",
+                        "content": (
+                            f"Applying selected tuple {selected_tuple_id}: "
+                            + ", ".join(selected_tuple_members[:3]) + "."
+                        ),
+                    })
+                    messages.append(_tool_call("bash", {"command": _wrap_as_bash(_apply_tuple_snippet)}))
+                    messages.append({
+                        "role": "tool_response",
+                        "content": json.dumps(
+                            {
+                                "status": "ok",
+                                "applied_tuple_id": selected_tuple_id,
+                                "applied_wavetable_tuple": selected_tuple_members[:3],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    })
+            elif (not use_tuple_search) and selected_names:
+                # Select by judge order only (no GT override).
+                _ranked_selected = [
+                    name for cid in judge_result["selected"]
+                    for name in candidate_names
+                    if id_map[name] == cid
+                ]
+                _wt_name = _ranked_selected[0] if _ranked_selected else selected_names[0]
+                _apply_wt_snippet = (
+                    "import sys, json\n"
+                    "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
+                    "from vital_tools import VitalController\n"
+                    "vc = VitalController()\n"
+                    "vc.discover()\n"
                 f"with open({json.dumps(str(_apply_preset_path))}) as _f:\n"
                 "    _src = json.load(_f)\n"
                 "_wt = _src['settings']['wavetables'][0]\n"
-                "preset = vc.get_preset()\n"
-                "preset['settings']['wavetables'][0] = _wt\n"
-                "vc.set_preset(preset)\n"
+                "if _rpr is None:\n"
+                "    preset = vc.get_preset()\n"
+                "    preset['settings']['wavetables'][0] = _wt\n"
+                "    vc.set_preset(preset)\n"
                 f"print(json.dumps({{'status': 'ok', 'applied_wavetable': {json.dumps(_wt_name)}}}))"
             )
-            messages.append({
-                "role": "assistant",
-                "content": (
-                    f"Having listened to the candidate previews, '{_wt_name}' matches the target "
-                    f"most closely. Applying it to oscillator 1."
-                ),
-            })
-            messages.append(_tool_call("bash", {"command": _wrap_as_bash(_apply_wt_snippet)}))
-            messages.append({
-                "role": "tool_response",
-                "content": json.dumps(
-                    {"status": "ok", "applied_wavetable": _wt_name}, ensure_ascii=False
-                ),
-            })
+                _apply_wt_snippet = _harden_vital_snippet_for_reapy(_apply_wt_snippet)
+                messages.append({
+                    "role": "assistant",
+                    "content": (
+                        f"Having listened to the candidate previews, '{_wt_name}' matches the target "
+                        f"most closely. Applying it to oscillator 1."
+                    ),
+                })
+                messages.append(_tool_call("bash", {"command": _wrap_as_bash(_apply_wt_snippet)}))
+                messages.append({
+                    "role": "tool_response",
+                    "content": json.dumps(
+                        {"status": "ok", "applied_wavetable": _wt_name}, ensure_ascii=False
+                    ),
+                })
 
         step_gaps_cache: dict[int, dict | None] = {}  # step_num → remaining gap after that step
 
@@ -1586,6 +2041,7 @@ def main() -> None:
         for step in path_data.get("iterations", [])[: int(args.max_steps)]:
             step_num = int(step.get("step", 0))
             action_snippet = step.get("action_snippet") or step.get("python_script") or "print('noop')"
+            action_snippet = _harden_vital_snippet_for_reapy(action_snippet)
             prefix = (
                 "Selected candidates: " + ", ".join(selected_names[: int(args.select_k)]) + ".\n\n"
                 if step_num == 1 and selected_names
@@ -1797,9 +2253,14 @@ def main() -> None:
         audio_assets = [str(target_audio_path)]
         if default_audio_path is not None:
             audio_assets.append(str(default_audio_path))
-        for n in selected_names[: int(args.select_k)]:
-            if n in candidate_audio:
-                audio_assets.append(str(candidate_audio[n]))
+        if use_tuple_search:
+            for tid in selected_tuple_ids[: int(args.select_k)]:
+                if tid in tuple_preview_paths:
+                    audio_assets.append(str(tuple_preview_paths[tid]))
+        else:
+            for n in selected_names[: int(args.select_k)]:
+                if n in candidate_audio:
+                    audio_assets.append(str(candidate_audio[n]))
         audio_assets.extend(used_iter_audio_paths)
 
         # Pre-compute the last main-loop step's remaining gap context for use as
@@ -1827,11 +2288,26 @@ def main() -> None:
                     {"candidate_id": id_map[n], "wavetable_name": n, "audio_path": str(candidate_audio[n])}
                     for n in selected_names[: int(args.select_k)]
                 ],
+                "selected_tuples": (
+                    [
+                        {
+                            "tuple_id": tid,
+                            "members": tuple_members_by_id.get(tid, []),
+                            "audio_path": str(tuple_preview_paths[tid]) if tid in tuple_preview_paths else None,
+                        }
+                        for tid in selected_tuple_ids[: int(args.select_k)]
+                    ]
+                    if use_tuple_search
+                    else []
+                ),
             },
             "labels": {
                 "judge_ranking": judge_result["ranking"],
                 "judge_selected": judge_result["selected"],
                 "gt_candidate_ids": [id_map[n] for n in candidate_names if n in gt_names],
+                "selected_tuple_id": selected_tuple_id if use_tuple_search else None,
+                "acceptable_tuple_ids": acceptable_tuple_ids if use_tuple_search else [],
+                "tuple_members_by_id": tuple_members_by_id if use_tuple_search else {},
             },
             "meta": {
                 "sample_id": sample_id,
@@ -1840,6 +2316,9 @@ def main() -> None:
                 "agent": "main",
                 "num_agents": int(args.num_agents),
                 "candidate_source": args.candidate_source,
+                "tuple_search_mode": use_tuple_search,
+                "score_visibility": "hidden" if use_tuple_search else "explicit",
+                "teacher_tuple_scores": tuple_scores if use_tuple_search else {},
                 "max_steps": int(args.max_steps),
                 "commentary_mode": args.commentary_mode,
                 "path_complete": path_complete,
@@ -1875,6 +2354,8 @@ def main() -> None:
                 ],
             },
         }
+        if use_tuple_search:
+            _assert_no_similarity_score_leak(messages)
         assert_valid_ms_swift_multiturn_record(record)
         return [record]
 

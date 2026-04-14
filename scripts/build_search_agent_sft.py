@@ -153,13 +153,25 @@ def _build_search_tool_command(
     )
 
 
-def _reason_for_cosine(score: float) -> str:
+def _reason_for_cosine(score: float, include_similarity_scores: bool = True) -> str:
     conf = 0.5 * (score + 1.0)
     if conf >= 0.75:
-        return f"Strong waveform match ({score:.3f}); envelope and harmonic profile follow target closely."
+        return (
+            f"Strong waveform match ({score:.3f}); envelope and harmonic profile follow target closely."
+            if include_similarity_scores
+            else "Strong waveform match; envelope and harmonic profile follow target closely."
+        )
     if conf >= 0.60:
-        return f"Moderate waveform match ({score:.3f}); similar harmonic structure but texture differs."
-    return f"Weak waveform match ({score:.3f}); spectral profile diverges but included for shard coverage."
+        return (
+            f"Moderate waveform match ({score:.3f}); similar harmonic structure but texture differs."
+            if include_similarity_scores
+            else "Moderate waveform match; similar harmonic structure but texture differs."
+        )
+    return (
+        f"Weak waveform match ({score:.3f}); spectral profile diverges but included for shard coverage."
+        if include_similarity_scores
+        else "Weak waveform match; spectral profile diverges but included for shard coverage."
+    )
 
 
 def _build_assistant_proposals(
@@ -168,6 +180,7 @@ def _build_assistant_proposals(
     id_map: dict[str, str],
     score_map: dict[str, float],
     proposals_per_agent: int,
+    include_similarity_scores: bool = True,
 ) -> tuple[list[str], list[dict]]:
     ranked = sorted(
         shard_names,
@@ -185,7 +198,7 @@ def _build_assistant_proposals(
                 "candidate_id": id_map[n],
                 "wavetable_name": n,
                 "confidence": round(conf, 3),
-                "reason": _reason_for_cosine(score),
+                "reason": _reason_for_cosine(score, include_similarity_scores=include_similarity_scores),
             }
         )
     return [id_map[n] for n in ranked], proposals
@@ -195,8 +208,22 @@ def _build_audio_tags(n: int) -> str:
     return "\n".join(["<audio>"] * max(0, int(n)))
 
 
-def _build_audition_bundle_tool_command(paths: list[str], target_path: str) -> str:
+def _build_audition_bundle_tool_command(
+    paths: list[str],
+    target_path: str,
+    include_similarity_scores: bool = True,
+) -> str:
     payload = {"paths": paths, "target": target_path}
+    sim_line = (
+        "            item['cosine_vs_target'] = round(_cos(x, tgt), 4)\n"
+        if include_similarity_scores
+        else ""
+    )
+    sim_none_line = (
+        "            item['cosine_vs_target'] = None\n"
+        if include_similarity_scores
+        else ""
+    )
     return (
         "python - <<'PY'\n"
         "import json, numpy as np\n"
@@ -218,10 +245,10 @@ def _build_audition_bundle_tool_command(paths: list[str], target_path: str) -> s
         "            x, sr = sf.read(p, always_2d=True)\n"
         "            x = x.mean(axis=1).astype(np.float32)\n"
         "            item['duration_s'] = round(float(len(x) / max(1, sr)), 4)\n"
-        "            item['cosine_vs_target'] = round(_cos(x, tgt), 4)\n"
+        f"{sim_line}"
         "        except Exception:\n"
         "            item['duration_s'] = None\n"
-        "            item['cosine_vs_target'] = None\n"
+        f"{sim_none_line}"
         "    bundle.append(item)\n"
         "print(json.dumps({'audition_bundle': bundle}, ensure_ascii=False))\n"
         "PY"
@@ -309,7 +336,13 @@ def main() -> None:
 
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
+    ap.add_argument(
+        "--hide-similarity-scores",
+        action="store_true",
+        help="Hide numeric similarity fields from model-visible tool responses/reasons.",
+    )
     args = ap.parse_args()
+    expose_similarity_scores = not bool(args.hide_similarity_scores)
 
     family_filter = {t.strip().lower() for t in str(args.step_family_filter).split(",") if t.strip()}
     probe_dir_abs = args.probe_dir.resolve()
@@ -444,6 +477,7 @@ def main() -> None:
                     id_map,
                     shard_scores_by_name,
                     args.proposals_per_agent,
+                    include_similarity_scores=expose_similarity_scores,
                 )
                 selected_ids = [p["candidate_id"] for p in proposals]
                 gt_candidate_ids = [id_map[n] for n in shard if n in gt_names]
@@ -456,7 +490,10 @@ def main() -> None:
                         (item["render_path"] for item in shard_assets if item["candidate_id"] == cid),
                         "",
                     )
-                    tool_rows.append(f"{cid}\t{name}\t{float(shard_scores_by_name.get(name, 0.0)):.4f}\t{render_path}")
+                    if expose_similarity_scores:
+                        tool_rows.append(f"{cid}\t{name}\t{float(shard_scores_by_name.get(name, 0.0)):.4f}\t{render_path}")
+                    else:
+                        tool_rows.append(f"{cid}\t{name}\t{render_path}")
                 tool_result = "\n".join(tool_rows)
                 tool_call_id = f"tc_search_{sample_id}_s{step_num:02d}_a{agent_idx:02d}"
                 tool_cmd = _build_search_tool_command(
@@ -498,7 +535,13 @@ def main() -> None:
                 audition_tool_payload = json.dumps(
                     {
                         "name": "bash",
-                        "arguments": {"command": _build_audition_bundle_tool_command(listened_audio_paths, str(target_audio_path))},
+                        "arguments": {
+                            "command": _build_audition_bundle_tool_command(
+                                listened_audio_paths,
+                                str(target_audio_path),
+                                include_similarity_scores=expose_similarity_scores,
+                            )
+                        },
                     },
                     ensure_ascii=False,
                 )
@@ -556,12 +599,20 @@ def main() -> None:
                                     "status": "ok",
                                     "auditioned": len(listen_rows),
                                     "audition_results": [
-                                        {
-                                            "candidate_id": row["candidate_id"],
-                                            "wavetable_name": row["wavetable_name"],
-                                            "audio_preview": "<audio>",
-                                            "cosine_vs_target": round(float(shard_scores_by_name.get(row["wavetable_name"], 0.0)), 4),
-                                        }
+                                        (
+                                            {
+                                                "candidate_id": row["candidate_id"],
+                                                "wavetable_name": row["wavetable_name"],
+                                                "audio_preview": "<audio>",
+                                                "cosine_vs_target": round(float(shard_scores_by_name.get(row["wavetable_name"], 0.0)), 4),
+                                            }
+                                            if expose_similarity_scores
+                                            else {
+                                                "candidate_id": row["candidate_id"],
+                                                "wavetable_name": row["wavetable_name"],
+                                                "audio_preview": "<audio>",
+                                            }
+                                        )
                                         for row in listen_rows
                                     ],
                                 },
@@ -605,6 +656,7 @@ def main() -> None:
                         "primary_family": str(step.get("primary_family") or ""),
                         "support_family": str(step.get("support_family") or ""),
                         "candidate_source": args.candidate_source,
+                        "score_visibility": "hidden" if not expose_similarity_scores else "explicit",
                     },
                 }
                 assert_valid_ms_swift_multiturn_record(record)

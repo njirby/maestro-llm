@@ -38,9 +38,11 @@ except ImportError:
     pass  # running outside REAPER (unit tests with _rpr mocks)
 
 import base64
+import difflib
 import gc
 import json
 import os
+import re
 import time
 
 
@@ -86,6 +88,70 @@ def _json_key_to_display(key: str) -> str:
     """
     parts = key.split("_")
     return " ".join(_VITAL_ABBREVS.get(p.lower(), p.capitalize()) for p in parts)
+
+
+# Explicit aliases for keys whose REAPER display names differ materially from
+# Vital JSON naming.
+_DISPLAY_NAME_ALIASES = {
+    "osc_1_random_phase": "Oscillator 1 Phase Randomization",
+    "osc_2_random_phase": "Oscillator 2 Phase Randomization",
+    "osc_3_random_phase": "Oscillator 3 Phase Randomization",
+    "osc_1_spectral_morph_amount": "Oscillator 1 Frequency Morph Amount",
+    "osc_2_spectral_morph_amount": "Oscillator 2 Frequency Morph Amount",
+    "osc_3_spectral_morph_amount": "Oscillator 3 Frequency Morph Amount",
+    "osc_1_spectral_morph_type": "Oscillator 1 Frequency Morph Type",
+    "osc_2_spectral_morph_type": "Oscillator 2 Frequency Morph Type",
+    "osc_3_spectral_morph_type": "Oscillator 3 Frequency Morph Type",
+    "osc_1_unison_blend": "Oscillator 1 Spectral Unison",
+    "osc_2_unison_blend": "Oscillator 2 Spectral Unison",
+    "osc_3_unison_blend": "Oscillator 3 Spectral Unison",
+    "portamento_on": "Portamento Force",
+}
+
+
+_FAMILY_TOKEN_OVERRIDES = {
+    "osc": "oscillator",
+    "env": "envelope",
+    "eq": "eq",
+}
+
+
+def _canonical_display_name(name: str) -> str:
+    """Normalize display names for tolerant lookup (case/punct/space-insensitive)."""
+    lowered = str(name).lower()
+    return re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+
+
+def _display_candidates_for_json_key(json_key: str) -> list[str]:
+    """Generate plausible REAPER display-name variants for a Vital JSON key."""
+    candidates: list[str] = []
+
+    def _add(name: str | None) -> None:
+        if isinstance(name, str) and name and name not in candidates:
+            candidates.append(name)
+
+    base = _json_key_to_display(json_key)
+    _add(_DISPLAY_NAME_ALIASES.get(json_key))
+    _add(base)
+    _add(base.replace(" Keytrack Transpose", " Transpose"))
+    _add(base.replace(" Spectral Morph ", " Frequency Morph "))
+    _add(base.replace(" Random Phase", " Phase Randomization"))
+    _add(base.replace(" Unison Blend", " Spectral Unison"))
+    _add(base.replace(" High Shelf ", " High "))
+    _add(base.replace(" Low Shelf ", " Low "))
+
+    if base.endswith(" On"):
+        _add(base[:-3] + " Switch")
+    if base.endswith(" Dry Wet"):
+        _add(base[:-8] + " Mix")
+    if base == "Chorus Cutoff":
+        _add("Chorus Filter Cutoff")
+    if base == "Chorus Spread":
+        _add("Chorus Filter Spread")
+    if base.startswith("Compressor ") and (" Lower Ratio" in base or " Upper Ratio" in base):
+        _add(base[len("Compressor "):])  # Vital UI omits "Compressor" prefix for these
+
+    return candidates
 
 
 def _native_to_normalized(name: str, native: float) -> float:
@@ -224,6 +290,8 @@ class VitalController:
         # display_name → param index, built at discover() time
         # Used by set_params/set_param to route writes through TrackFX_SetParam.
         self._display_to_idx: dict = {}  # e.g. "Filter 1 Cutoff" → 104
+        # canonical(display_name) → param index for punctuation/case-insensitive lookup.
+        self._display_norm_to_idx: dict = {}
 
         # VST chunk split point (set by get_preset, used by set_preset)
         self._chunk_prefix: bytes = b""
@@ -309,6 +377,10 @@ class VitalController:
                 self._chunk_prefix = b""
                 self._chunk_suffix = b""
                 self._display_to_idx = self._build_param_idx_map(track, fi)
+                self._display_norm_to_idx = {
+                    _canonical_display_name(name): idx
+                    for name, idx in self._display_to_idx.items()
+                }
 
                 return {
                     "track_idx": ti,
@@ -365,13 +437,55 @@ class VitalController:
 
         Returns True if the parameter was found and set, False otherwise.
         """
-        display = _json_key_to_display(json_key)
-        idx = self._display_to_idx.get(display)
+        idx = self._resolve_param_index(json_key)
         if idx is None:
             return False
         norm = _native_to_normalized(json_key, native_value)
         self._call("RPR_TrackFX_SetParam", self._track, self._fx_idx, idx, norm)
         return True
+
+    def _resolve_param_index(self, json_key: str) -> int | None:
+        """Resolve a Vital JSON key to a REAPER parameter index."""
+        candidates = _display_candidates_for_json_key(json_key)
+        for display in candidates:
+            idx = self._display_to_idx.get(display)
+            if idx is not None:
+                return idx
+            idx = self._display_norm_to_idx.get(_canonical_display_name(display))
+            if idx is not None:
+                return idx
+
+        # Conservative fuzzy fallback for minor naming drift.
+        if not candidates or not self._display_to_idx:
+            return None
+        target_norm = _canonical_display_name(candidates[0])
+        family = str(json_key).split("_", 1)[0].lower()
+        family_token = _FAMILY_TOKEN_OVERRIDES.get(family, family)
+
+        best_idx = None
+        best_score = 0.0
+        second_best = 0.0
+        for name, idx in self._display_to_idx.items():
+            name_norm = _canonical_display_name(name)
+            if family_token and family_token not in name_norm:
+                # Compressor ratio params are named "High/Low/Band ... Ratio"
+                # without "Compressor" prefix in REAPER.
+                if not (family == "compressor" and "ratio" in target_norm and "ratio" in name_norm):
+                    continue
+            score = difflib.SequenceMatcher(None, target_norm, name_norm).ratio()
+            if score > best_score:
+                second_best = best_score
+                best_score = score
+                best_idx = idx
+            elif score > second_best:
+                second_best = score
+
+        if best_idx is None:
+            return None
+        # Require a strong match and clear margin to avoid accidental misrouting.
+        if best_score >= 0.92 and (best_score - second_best) >= 0.03:
+            return int(best_idx)
+        return None
 
     # ------------------------------------------------------------------
     # get_params / set_param / set_params
