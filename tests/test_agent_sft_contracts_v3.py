@@ -167,20 +167,32 @@ def test_format_diff_summary_lists_subsystems():
 # ---- structural invariants on a v3 record ----
 
 def _make_v3_record(n_batches=3, has_correction=False, has_mistake=False):
-    """Build a synthetic v3 record for structural testing."""
+    """Build a synthetic v3 record for structural testing.
+
+    Mirrors the claw-code-style WT scaffold:
+      baseline → list_wavetables → N Agent calls → cat shortlists → tuple eval → apply
+    """
     messages = [
-        {"role": "user", "content": "<audio>\nRecreate this keys target sound in Vital from default.\nSearch for matching wavetables, evaluate combinations, then execute by subsystem."},
-        # WT scaffold: baseline → search dispatch → collect → tuple eval → apply
+        {"role": "user", "content": "<audio>\nRecreate this keys target sound in Vital from default.\nSearch for matching wavetables across the library, evaluate combinations, then execute by subsystem."},
         {"role": "assistant", "content": "Listening to current default preset baseline."},
         {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"echo probe"}}'},
         {"role": "tool_response", "content": '{"status":"ok","baseline_audio":"<audio>","path":"/tmp/d.wav"}'},
-        {"role": "assistant", "content": "Searching for wavetable candidates across the library."},
-        {"role": "tool_call", "content": '{"name":"spawn_search_agents","arguments":{"num_agents":4}}'},
-        {"role": "tool_response", "content": '{"agents_spawned":4,"pool_size":48}'},
-        {"role": "assistant", "content": "Collecting search results."},
-        {"role": "tool_call", "content": '{"name":"collect_search_reports","arguments":{}}'},
-        {"role": "tool_response", "content": '{"pooled_candidates":["01 Basic Shapes","Cymatics Chill 25","Pink Noise"]}'},
-        {"role": "assistant", "content": "The target uses 1 active oscillator. Evaluating 2 wavetable combinations."},
+        {"role": "assistant", "content": "Checking wavetable library size."},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"python scripts/list_wavetables.py --total"}}'},
+        {"role": "tool_response", "content": '{"total":282}'},
+        {"role": "assistant", "content": "Library has 282 wavetables. Dispatching 2 search agents across slices [0-47, 141-188]."},
+        # Agent call 1
+        {"role": "tool_call", "content": '{"name":"Agent","arguments":{"subagent_type":"wavetable_search","description":"Evaluate wavetables 0-47 for keys target","prompt":"Target..."}}'},
+        {"role": "tool_response", "content": '{"agentId":"search_1","subagentType":"wavetable_search","status":"completed","outputFile":"/tmp/agents/search_1.json"}'},
+        # Agent call 2
+        {"role": "tool_call", "content": '{"name":"Agent","arguments":{"subagent_type":"wavetable_search","description":"Evaluate wavetables 141-188 for keys target","prompt":"Target..."}}'},
+        {"role": "tool_response", "content": '{"agentId":"search_2","subagentType":"wavetable_search","status":"completed","outputFile":"/tmp/agents/search_2.json"}'},
+        # Cat shortlists
+        {"role": "assistant", "content": "Reading shortlists from 2 search agents."},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"cat /tmp/agents/search_1.json /tmp/agents/search_2.json"}}'},
+        {"role": "tool_response", "content": '{"status":"completed","shortlist":["01 Basic Shapes","Cymatics Chill 25"]}\n{"status":"completed","shortlist":["Pink Noise"]}'},
+        # Pool summary + tuple intro (merged)
+        {"role": "assistant", "content": "Pooled 3 candidates across 1 round(s): ['01 Basic Shapes', 'Cymatics Chill 25', 'Pink Noise'].\n\nThe target uses 1 active oscillator. Evaluating 2 wavetable combinations."},
         {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"# Render tuple 1"}}'},
         {"role": "tool_response", "content": '{"tuple_audio":"<audio>","tuple_index":1,"wavetables":["01 Basic Shapes"]}'},
         {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"# Render tuple 2"}}'},
@@ -352,12 +364,70 @@ def test_v3_batch_labels_have_required_fields():
 
 # ---- WT scaffold tests ----
 
-def test_v3_wt_scaffold_has_search_dispatch():
+def test_v3_wt_scaffold_uses_agent_tool():
+    """Main agent dispatches search via the claw-code-style Agent tool."""
     record = _make_v3_record()
     tool_calls = [m for m in record["messages"] if m["role"] == "tool_call"]
     tool_names = [json.loads(m["content"])["name"] for m in tool_calls]
-    assert "spawn_search_agents" in tool_names
-    assert "collect_search_reports" in tool_names
+    assert "Agent" in tool_names, "Main agent should use Agent tool for search dispatch"
+    # At least 2 Agent calls (one per search agent shard)
+    assert tool_names.count("Agent") >= 2
+
+
+def test_v3_wt_scaffold_agents_have_subagent_type():
+    """Each Agent call should specify subagent_type=wavetable_search."""
+    record = _make_v3_record()
+    for m in record["messages"]:
+        if m["role"] == "tool_call":
+            parsed = json.loads(m["content"])
+            if parsed["name"] == "Agent":
+                args = parsed["arguments"]
+                assert args.get("subagent_type") == "wavetable_search"
+                assert "description" in args
+                assert "prompt" in args
+
+
+def test_v3_wt_scaffold_agent_returns_output_file():
+    """Agent tool_response should include outputFile path (claw-code-style)."""
+    record = _make_v3_record()
+    agent_responses = []
+    tool_calls_iter = iter(record["messages"])
+    for i, m in enumerate(record["messages"]):
+        if m["role"] == "tool_call":
+            parsed = json.loads(m["content"])
+            if parsed["name"] == "Agent":
+                # Next message should be tool_response
+                resp = record["messages"][i + 1]
+                if resp["role"] == "tool_response":
+                    agent_responses.append(json.loads(resp["content"]))
+    assert agent_responses, "Should have Agent tool responses"
+    for resp in agent_responses:
+        assert "outputFile" in resp, f"Agent response missing outputFile: {resp}"
+        assert "agentId" in resp
+
+
+def test_v3_wt_scaffold_has_cat_read():
+    """After Agent dispatch, main agent reads shortlists via bash cat."""
+    record = _make_v3_record()
+    cat_calls = []
+    for m in record["messages"]:
+        if m["role"] == "tool_call":
+            parsed = json.loads(m["content"])
+            if parsed["name"] == "bash" and parsed["arguments"]["command"].startswith("cat "):
+                cat_calls.append(parsed)
+    assert cat_calls, "Main agent should use bash cat to read shortlist files"
+
+
+def test_v3_wt_scaffold_uses_list_wavetables_script():
+    """Main agent should check library size via list_wavetables.py."""
+    record = _make_v3_record()
+    list_calls = []
+    for m in record["messages"]:
+        if m["role"] == "tool_call":
+            parsed = json.loads(m["content"])
+            if parsed["name"] == "bash" and "list_wavetables.py" in parsed["arguments"]["command"]:
+                list_calls.append(parsed)
+    assert list_calls, "Main agent should call scripts/list_wavetables.py"
 
 
 def test_v3_wt_scaffold_has_tuple_audio():
@@ -382,9 +452,11 @@ def test_v3_wt_apply_uses_library_lookup():
     assert isinstance(parsed["applied"], list)
 
 
-def test_v3_wt_scaffold_no_judge_candidates():
-    """v3 should NOT have the old judge_candidates tool call."""
+def test_v3_wt_scaffold_no_legacy_tool_names():
+    """v3 should NOT have the old spawn_search_agents/collect_search_reports/judge_candidates."""
     record = _make_v3_record()
     tool_calls = [m for m in record["messages"] if m["role"] == "tool_call"]
     tool_names = [json.loads(m["content"])["name"] for m in tool_calls]
+    assert "spawn_search_agents" not in tool_names
+    assert "collect_search_reports" not in tool_names
     assert "judge_candidates" not in tool_names
