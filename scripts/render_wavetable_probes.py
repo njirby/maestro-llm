@@ -67,8 +67,16 @@ def main() -> None:
     args = ap.parse_args()
 
     lib = _load_wavetable_lib(args.lib)
-    # Filter to named entries, keep dense index aligned with list_wavetables.py
-    named = [wt for wt in lib if isinstance(wt, dict) and "name" in wt]
+    # Dedup by name (first occurrence wins) to match list_wavetables.py indexing.
+    seen: set[str] = set()
+    named: list[dict] = []
+    for wt in lib:
+        if not isinstance(wt, dict) or "name" not in wt:
+            continue
+        if wt["name"] in seen:
+            continue
+        seen.add(wt["name"])
+        named.append(wt)
     name_to_idx = {wt["name"]: i for i, wt in enumerate(named)}
 
     # Resolve indices to render

@@ -221,26 +221,27 @@ def stage2_batch_notes(
             f"Mark {'it' if len(gt_names_in_batch) == 1 else 'them'} as Shortlisted (not Skip).\n"
         )
 
+    # Explicit name list to constrain Stage 2 — prevents fabrication
+    allowed_names = "\n".join(f"  - {n!r}" for n in candidate_names)
     prompt = (
         f"You are a sound design assistant searching for wavetable building blocks to "
         f"recreate a {archetype} sound.\n\n"
         f"Current shortlist: {shortlist_str}\n\n"
         f"Batch {batch_number} candidate observations:\n{omni_observations}\n"
         f"{gt_context}\n"
+        f"STRICT CONSTRAINT — you may ONLY write assessments for these exact "
+        f"{len(candidate_names)} wavetable names (use them verbatim):\n{allowed_names}\n\n"
+        f"Do NOT invent new names, do NOT add variants or extensions to the names above "
+        f"(e.g. no adding '_D#' to a name that ends in '_C#'), and do NOT add candidates "
+        f"that weren't in the list above. Copy the names character-for-character.\n\n"
         f"Write batch notes in this format:\n"
-        f"- EXACTLY ONE line per candidate: '<name>': <short assessment>. Shortlisted / Skip.\n"
-        f"  Use ONLY the wavetable name — no 'Audio N:' prefixes, no duplicates, no abbreviations.\n"
-        f"  Always use the FULL wavetable name exactly as given in the candidate list.\n"
-        f"  There are exactly {len(candidate_names)} candidates in this batch. Write exactly "
-        f"{len(candidate_names)} assessment lines, one per candidate.\n"
-        f"- Then: 'Current shortlist: [<comma-separated FULL names>]'\n\n"
+        f"- EXACTLY {len(candidate_names)} lines, one per candidate in the list above: "
+        f"'<name>': <short assessment>. Shortlisted / Skip.\n"
+        f"- Then: 'Current shortlist: [<comma-separated FULL names from the list above>]'\n\n"
         f"A candidate should be shortlisted if its raw harmonic character, texture, or "
         f"tonal quality could plausibly contribute to the target sound after synthesis "
-        f"processing (filtering, enveloping, effects). Think about what the raw material "
-        f"would become after processing, not just how it sounds now.\n"
-        f"If a new candidate is better than one on the shortlist, replace it. "
-        f"Keep the shortlist to 2-4 names. Be aggressive about skipping — only keep "
-        f"candidates whose raw character is genuinely compatible with the target."
+        f"processing. If a new candidate is better than one on the shortlist, replace it. "
+        f"Keep the shortlist to 2-4 names. Be aggressive about skipping."
     )
     try:
         r = _llm_post(
@@ -318,11 +319,15 @@ def _tool_call(name: str, arguments: dict) -> dict:
 def build_search_record(
     *,
     sample_id: str,
+    agent_idx: int,
     archetype: str,
     target_audio_path: Path,
     target_preset: dict,
     gt_wavetable_names: list[str],
-    shard: list[str],
+    shard_start: int,
+    shard_end: int,
+    name_to_idx: dict[str, int],
+    idx_to_name: dict[int, str],
     candidate_audio: dict[str, Path],
     omni_server: str,
     omni_model: str,
@@ -331,7 +336,18 @@ def build_search_record(
     rng: random.Random,
     candidates_per_batch: int = 8,
 ) -> dict | None:
-    """Build one search agent SFT record with iterative batch listening."""
+    """Build one search agent SFT record with iterative batch listening.
+
+    Uses real bash commands to scripts/list_wavetables.py and
+    scripts/render_wavetable_probes.py. The search agent's task is defined by
+    a dense index range [shard_start, shard_end). GT wavetables within the
+    range are oracle-forced onto the final shortlist.
+    """
+    if shard_end <= shard_start:
+        return None
+
+    # Names in shard (by dense index)
+    shard = [idx_to_name[i] for i in range(shard_start, shard_end) if i in idx_to_name]
     if not shard:
         return None
 
@@ -383,43 +399,76 @@ def build_search_record(
     # Build messages
     messages: list[dict] = []
     audio_assets: list[str] = [str(target_audio_path)]
-    all_batch_notes: list[str] = []  # collect batch notes for final summary context
+    all_batch_notes: list[str] = []
+
+    # Output directory for rendered probes (real path, reused at inference)
+    probe_out_dir = f"/tmp/search_probes/{sample_id}_agent{agent_idx}"
 
     messages.append({
         "role": "user",
         "content": (
-            f"<audio>\nListen to this target {archetype} sound. You will receive batches "
-            f"of candidate wavetables to evaluate. For each batch, listen to every candidate "
-            f"and decide which ones could be building blocks for recreating the target. "
-            f"Maintain a shortlist across batches."
+            f"<audio>\nTarget: {archetype} sound. Evaluate wavetables at indices "
+            f"{shard_start}-{shard_end - 1} from the library and return a shortlist "
+            f"of 2-4 names that could serve as building blocks for recreating the target. "
+            f"Use `python scripts/list_wavetables.py --start {shard_start} --end {shard_end}` "
+            f"to see the names in your range, and "
+            f"`python scripts/render_wavetable_probes.py --idxs A,B,C --out-dir {probe_out_dir}` "
+            f"to render and listen to each candidate."
         ),
     })
 
+    # Step 1: list_wavetables — agent fetches names in its range
+    list_cmd = f"python scripts/list_wavetables.py --start {shard_start} --end {shard_end}"
+    shard_entries = [
+        {"idx": i, "name": idx_to_name[i]}
+        for i in range(shard_start, shard_end) if i in idx_to_name
+    ]
+    messages.append({
+        "role": "assistant",
+        "content": f"Fetching candidate names at indices {shard_start}-{shard_end - 1}.",
+    })
+    messages.append(_tool_call("bash", {"command": list_cmd}))
+    messages.append({
+        "role": "tool_response",
+        "content": json.dumps({
+            "wavetables": shard_entries,
+            "start": shard_start,
+            "end": shard_end,
+            "count": len(shard_entries),
+        }, ensure_ascii=False),
+    })
+
     shortlist: list[str] = []
-    pending_notes: str | None = None  # queued batch notes for merging
+    pending_notes: str | None = None
 
     for bi, batch in enumerate(all_ordered):
         batch_num = bi + 1
         gt_in_batch = [n for n in batch if n in gt_set]
 
+        # Real bash command: render a list of indices into the probe dir
+        batch_idxs = [name_to_idx[n] for n in batch if n in name_to_idx]
+        idxs_csv = ",".join(str(i) for i in batch_idxs)
         render_cmd = (
-            f"# Render and listen to batch {batch_num} candidates\n"
-            f"# Target: {archetype} sound\n"
-            f"candidates = {json.dumps(batch)}\n"
-            f"for name in candidates:\n"
-            f"    render_wavetable_probe(name)\n"
+            f"python scripts/render_wavetable_probes.py "
+            f"--idxs {idxs_csv} --out-dir {probe_out_dir}"
         )
 
-        candidate_entries = []
-        for name in batch:
+        # Build tool response: matches what render_wavetable_probes.py actually prints,
+        # with audio attached per-probe at build time (same pattern runtime would use).
+        import re as _re
+        def _slugify(s: str) -> str:
+            return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
+
+        rendered_entries = []
+        for name, idx in zip(batch, batch_idxs):
+            out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify(name)}.wav"
+            entry = {"idx": idx, "name": name, "out": out_path}
             if name in candidate_audio:
                 audio_assets.append(str(candidate_audio[name]))
-                candidate_entries.append({"name": name, "audio": "<audio>"})
-            else:
-                candidate_entries.append({"name": name, "audio": None})
+                entry["audio"] = "<audio>"
+            rendered_entries.append(entry)
 
-        # Intro line — merge pending notes from prior batch to avoid adjacent assistant
-        intro = f"Listening to batch {batch_num}{' of candidate wavetables' if bi == 0 else ''}."
+        intro = f"Rendering batch {batch_num} (indices {', '.join(str(i) for i in batch_idxs)})."
         if pending_notes:
             intro = f"{pending_notes}\n\n{intro}"
             pending_notes = None
@@ -428,7 +477,7 @@ def build_search_record(
         messages.append(_tool_call("bash", {"command": render_cmd}))
         messages.append({
             "role": "tool_response",
-            "content": json.dumps({"batch": batch_num, "candidates": candidate_entries}, ensure_ascii=False),
+            "content": json.dumps({"status": "ok", "rendered": rendered_entries}, ensure_ascii=False),
         })
 
         # Omni Stage 1: batch comparison
@@ -482,7 +531,12 @@ def build_search_record(
             raw = sl_match.group(1)
             parsed = [s.strip().strip("'\"") for s in raw.split(",") if s.strip()]
             if parsed:
-                shortlist = parsed
+                # Filter to only names we've actually seen in any rendered batch.
+                # This prevents Stage 2 fabrication from corrupting the shortlist.
+                valid_names_seen = set()
+                for _b in all_ordered[: bi + 1]:
+                    valid_names_seen.update(_b)
+                shortlist = [n for n in parsed if n in valid_names_seen]
 
         # Ensure GT wavetables stay on shortlist once found (oracle constraint)
         for gn in gt_in_batch:
@@ -541,8 +595,11 @@ def main() -> None:
     ap.add_argument("--wavetable-lib", type=Path, default=Path("data/wavetable_lib.json"))
     ap.add_argument("--out-jsonl", required=True, type=Path)
     ap.add_argument("--max-samples", type=int, default=256)
-    ap.add_argument("--pool-top-k", type=int, default=48)
+    ap.add_argument("--pool-top-k", type=int, default=48,
+        help="[LEGACY] ignored in index-based mode.")
     ap.add_argument("--num-agents", type=int, default=4)
+    ap.add_argument("--candidates-per-slice", type=int, default=48,
+        help="Number of wavetables per search agent slice (default 48).")
     ap.add_argument("--candidates-per-batch", type=int, default=8)
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
     ap.add_argument("--seed", type=int, default=1337)
@@ -589,47 +646,91 @@ def main() -> None:
         with open(target_preset_path) as f:
             target_preset = json.load(f)
 
-        # Build candidate pool
+        # Build dense name↔idx mapping — matches list_wavetables.py (dedup by name)
+        _seen: set[str] = set()
+        _unique_names: list[str] = []
+        for wt in wavetable_lib:
+            if not isinstance(wt, dict) or "name" not in wt:
+                continue
+            if wt["name"] in _seen:
+                continue
+            _seen.add(wt["name"])
+            _unique_names.append(wt["name"])
+        idx_to_name_full: dict[int, str] = {i: n for i, n in enumerate(_unique_names)}
+        name_to_idx_full: dict[str, int] = {n: i for i, n in idx_to_name_full.items()}
+        total_named = len(_unique_names)
+
         sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
         rng = random.Random(args.seed + sid_seed)
 
-        pool = build_gt_similarity_pool(
-            gt_wavetable_names=gt_names,
-            index_embeddings=shortlist_data["embeddings"],
-            index_norms=shortlist_data["norms"],
-            index_rows_meta=index_rows,
-            top_k=args.pool_top_k,
-            rng=rng,
-        )
+        # Compute slice offsets: N evenly-spaced slices of size candidates_per_slice.
+        slice_size = args.candidates_per_slice
+        n_agents = args.num_agents
+        stride = max(1, total_named // n_agents)
 
-        # Ensure probe audio exists for all pool candidates
+        def _compute_slices(base: int) -> list[int]:
+            starts = []
+            for i in range(n_agents):
+                start = (base + i * stride) % total_named
+                # Clamp so slice ends at total_named (no wraparound within a slice)
+                if start + slice_size > total_named:
+                    start = max(0, total_named - slice_size)
+                starts.append(start)
+            return starts
+
+        base_offset = sid_seed % stride
+        slice_starts = _compute_slices(base_offset)
+
+        # GT oracle: rotate base_offset until at least one GT is covered
+        gt_idxs = [name_to_idx_full[n] for n in gt_names if n in name_to_idx_full]
+        if gt_idxs:
+            def _gt_covered(starts: list[int]) -> bool:
+                return any(
+                    s <= gi < (s + slice_size)
+                    for s in starts for gi in gt_idxs
+                )
+
+            tried = 0
+            step = max(1, stride // 4)
+            while not _gt_covered(slice_starts) and tried < total_named:
+                base_offset = (base_offset + step) % stride
+                slice_starts = _compute_slices(base_offset)
+                tried += step
+
+        # Pre-render probes for all wavetables across all slices (build-time)
+        all_slice_names: list[str] = []
+        for s in slice_starts:
+            for i in range(s, min(s + slice_size, total_named)):
+                all_slice_names.append(idx_to_name_full[i])
+        all_slice_names = list(dict.fromkeys(all_slice_names))  # dedupe, preserve order
+
         with serial_lock:
             ensure_candidate_probes_for_names(
-                names=pool,
+                names=all_slice_names,
                 wavetable_lib=wavetable_lib,
                 selected_rows=selected_by_name,
                 out_dir=args.probe_dir,
                 cache=candidate_audio,
             )
 
-        # Split pool into shards (disjoint round-robin)
-        shards: list[list[str]] = [[] for _ in range(args.num_agents)]
-        for i, name in enumerate(pool):
-            shards[i % args.num_agents].append(name)
-
-        # Build one record per search agent
+        # Build one record per search agent, one per slice
         records = []
-        for ai, shard in enumerate(shards):
-            if not shard:
+        for ai, start in enumerate(slice_starts):
+            end = min(start + slice_size, total_named)
+            if end <= start:
                 continue
             agent_rng = random.Random(args.seed + sid_seed + ai + 1)
             rec = build_search_record(
-                sample_id=f"{sample_id}_agent{ai + 1}",
+                sample_id=sample_id,
+                agent_idx=ai + 1,
                 archetype=archetype,
                 target_audio_path=target_audio_path,
                 target_preset=target_preset,
                 gt_wavetable_names=gt_names,
-                shard=shard,
+                shard_start=start,
+                shard_end=end,
+                name_to_idx=name_to_idx_full,
+                idx_to_name=idx_to_name_full,
                 candidate_audio=candidate_audio,
                 omni_server=args.omni_server,
                 omni_model=args.omni_model,
@@ -639,6 +740,8 @@ def main() -> None:
                 candidates_per_batch=args.candidates_per_batch,
             )
             if rec:
+                # Override id with agent-specific id
+                rec["id"] = f"{sample_id}_agent{ai + 1}_search"
                 records.append(rec)
 
         return records

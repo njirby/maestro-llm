@@ -45,9 +45,20 @@ def main() -> None:
         print(json.dumps({"status": "error", "error": "invalid library format"}))
         sys.exit(1)
 
-    # Filter out entries without a name (10 such entries in the current library)
-    # and renumber densely so the library presents as a gap-free indexed collection.
-    names = [wt["name"] for wt in lib if isinstance(wt, dict) and "name" in wt]
+    # Filter out entries without a name and deduplicate by name.
+    # The library has ~558 entries but only ~282 unique names (e.g. "Init" appears
+    # 121 times across preset banks). Dedup keeps first occurrence, so indexing
+    # matches the unique-name space and matches wt_index_meta.json exactly.
+    seen: set[str] = set()
+    names: list[str] = []
+    for wt in lib:
+        if not isinstance(wt, dict) or "name" not in wt:
+            continue
+        name = wt["name"]
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
 
     if args.total:
         print(json.dumps({"total": len(names)}))
