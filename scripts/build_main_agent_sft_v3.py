@@ -49,7 +49,6 @@ from scripts.agent_sft_common import (
     select_probe_rows_by_name,
 )
 from scripts.build_main_agent_sft_v2 import (
-    _TOOL_SPECS,
     _build_listen_probe_command,
     _check_server_reachable,
     _harden_vital_snippet_for_reapy,
@@ -57,6 +56,47 @@ from scripts.build_main_agent_sft_v2 import (
     _step_remaining_gap,
     _tool_call,
     _wrap_as_bash,
+)
+
+# v3-specific tool specs: claw-code-style Agent tool + bash. Replaces the
+# v2 spawn_search_agents / collect_search_reports / judge_candidates trio.
+_V3_TOOL_SPECS = json.dumps(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Execute shell/Python commands for Vital search, edit, and listen passes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Agent",
+                "description": (
+                    "Spawn a background sub-agent to perform a delegated task. "
+                    "Returns immediately with an agentId, status, and outputFile path. "
+                    "Read outputFile (e.g. via bash cat) to consume the sub-agent's result."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subagent_type": {"type": "string", "description": "Type of sub-agent (e.g. wavetable_search)."},
+                        "description": {"type": "string", "description": "Short task description."},
+                        "prompt": {"type": "string", "description": "Full task prompt for the sub-agent."},
+                        "name": {"type": "string", "description": "Optional name for the sub-agent."},
+                    },
+                    "required": ["subagent_type", "description", "prompt"],
+                },
+            },
+        },
+    ],
+    ensure_ascii=False,
 )
 from maestro.synth import path_gen as _pg
 from maestro.synth.path_gen import _denormalize, _normalize, _param_family
@@ -660,45 +700,26 @@ def build_record(
     sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
     sample_rng = random.Random(int(args.seed) + sid_seed)
 
-    # ---- WT search + tuple evaluation ----
-    with serial_lock:
-        gt_names_list = list(extract_gt_wavetable_names(Path(target_preset_path)))
-        if not gt_names_list:
-            return None
+    # ---- WT search (claw-code-style Agent dispatch + file-based handoff) ----
+    gt_names_list = list(extract_gt_wavetable_names(Path(target_preset_path)))
+    if not gt_names_list:
+        return None
 
-        # Build candidate pool using GT wavetable CLAP similarity
-        pool = build_gt_similarity_pool(
-            gt_wavetable_names=gt_names_list,
-            index_embeddings=shortlist_data["embeddings"],
-            index_norms=shortlist_data["norms"],
-            index_rows_meta=index_rows,
-            top_k=int(args.pool_top_k),
-            rng=sample_rng,
-        )
-        if not pool:
-            return None
+    # Build dense name↔idx mapping (matches list_wavetables.py / search agent)
+    _seen_wt: set[str] = set()
+    _unique_wts: list[str] = []
+    for wt in wavetable_lib:
+        if not isinstance(wt, dict) or "name" not in wt:
+            continue
+        if wt["name"] in _seen_wt:
+            continue
+        _seen_wt.add(wt["name"])
+        _unique_wts.append(wt["name"])
+    idx_to_name_full: dict[int, str] = {i: n for i, n in enumerate(_unique_wts)}
+    name_to_idx_full: dict[str, int] = {n: i for i, n in idx_to_name_full.items()}
+    total_named = len(_unique_wts)
 
-        # Ensure candidate probes are rendered
-        ensure_candidate_probes_for_names(
-            names=pool,
-            wavetable_lib=wavetable_lib,
-            selected_rows=selected_by_name,
-            out_dir=args.probe_dir,
-            cache=candidate_audio,
-        )
-
-    # Simulate search agent results: pooled candidates = GT + top hard negatives.
-    # At build time, search agents would have returned these. The main agent sees
-    # only the pooled shortlist — it doesn't know how the search was done.
-    n_search_results = min(12, len(pool))  # search agents return ~12 pooled candidates
-    # GT always in search results + fill with top pool members
-    search_results = list(gt_names_list)
-    for name in pool:
-        if name not in search_results and len(search_results) < n_search_results:
-            search_results.append(name)
-    sample_rng.shuffle(search_results)
-
-    # Determine active oscillators from target preset
+    # Active oscillators from target preset (determines how many WTs we need)
     active_oscs: list[int] = []
     for osc_idx in range(3):
         on_key = f"osc_{osc_idx + 1}_on"
@@ -708,27 +729,34 @@ def build_record(
         if osc_on and osc_level:
             active_oscs.append(osc_idx)
     if not active_oscs:
-        active_oscs = [0]  # fallback
+        active_oscs = [0]
 
-    # Build 2-3 tuple candidates. GT tuple is always included.
-    gt_tuple: list[str | None] = [None, None, None]
-    for osc_idx in active_oscs:
-        wts = target_preset.get("settings", {}).get("wavetables", [])
-        if osc_idx < len(wts):
-            wt_name = wts[osc_idx].get("name", "")
-            if wt_name and wt_name in pool:
-                gt_tuple[osc_idx] = wt_name
+    # Slice planning
+    slice_size = int(getattr(args, "candidates_per_slice", 48))
+    n_agents = int(args.num_agents)
+    max_rounds = int(getattr(args, "max_search_rounds", 3))
+    stride = max(1, total_named // n_agents)
 
-    # Alternative tuples: swap one GT wavetable with a non-GT candidate
-    alt_tuples: list[list[str | None]] = []
-    non_gt_in_results = [n for n in search_results if n not in gt_names_list]
-    for swap_idx in active_oscs[:1]:  # swap osc 1 only for simplicity
-        if non_gt_in_results and gt_tuple[swap_idx]:
-            alt = list(gt_tuple)
-            alt[swap_idx] = non_gt_in_results[0]
-            alt_tuples.append(alt)
+    def _compute_slices(base: int) -> list[int]:
+        starts = []
+        for i in range(n_agents):
+            start = (base + i * stride) % total_named
+            if start + slice_size > total_named:
+                start = max(0, total_named - slice_size)
+            starts.append(start)
+        return starts
 
-    all_tuples = [gt_tuple] + alt_tuples[:1]  # GT + 1 alternative
+    # Base offset rotated so at least one GT is covered in round 1
+    gt_idxs = [name_to_idx_full[n] for n in gt_names_list if n in name_to_idx_full]
+    base_offset = sample_rng.randrange(stride)
+    slice_starts = _compute_slices(base_offset)
+    if gt_idxs:
+        step = max(1, stride // 4)
+        tried = 0
+        while not any(s <= gi < (s + slice_size) for s in slice_starts for gi in gt_idxs) and tried < total_named:
+            base_offset = (base_offset + step) % stride
+            slice_starts = _compute_slices(base_offset)
+            tried += step
 
     # ---- Begin messages ----
     messages: list[dict] = []
@@ -738,7 +766,8 @@ def build_record(
         "role": "user",
         "content": (
             f"<audio>\nRecreate this {archetype} target sound in Vital from default.\n"
-            "Search for matching wavetables, evaluate combinations, then execute by subsystem."
+            "Search for matching wavetables across the library, evaluate combinations, "
+            "then execute by subsystem."
         ),
     })
 
@@ -753,26 +782,209 @@ def build_record(
         ),
     })
 
-    # Search dispatch + collect (simplified: 2 tool calls)
-    messages.append({"role": "assistant", "content": "Searching for wavetable candidates across the library."})
-    messages.append(_tool_call("spawn_search_agents", {
-        "sample_id": sample_id,
-        "target_audio_path": str(target_audio_path),
-        "num_agents": int(args.num_agents),
-    }))
-    messages.append({"role": "tool_response", "content": json.dumps(
-        {"agents_spawned": int(args.num_agents), "pool_size": len(pool)}, ensure_ascii=False,
-    )})
+    # Step 1: check library size
+    messages.append({"role": "assistant", "content": "Checking wavetable library size."})
+    messages.append(_tool_call("bash", {"command": "python scripts/list_wavetables.py --total"}))
+    messages.append({"role": "tool_response", "content": json.dumps({"total": total_named}, ensure_ascii=False)})
 
-    messages.append({"role": "assistant", "content": "Collecting search results."})
-    messages.append(_tool_call("collect_search_reports", {"sample_id": sample_id}))
-    messages.append({"role": "tool_response", "content": json.dumps(
-        {"pooled_candidates": search_results}, ensure_ascii=False,
-    )})
+    # Agent output directory (real path; runtime executor writes files here at inference)
+    agent_out_dir = f"/tmp/agents/{sample_id}"
+
+    # ---- Multi-round search loop ----
+    pool: list[str] = []
+    rounds_used = 0
+    round_offsets_used: list[list[int]] = []
+
+    def _simulate_shortlist(start: int, end: int) -> list[str]:
+        """Build-time simulation of search agent shortlist for a given shard.
+
+        Runtime executor would produce this by running the search agent model.
+        At build time we use oracle knowledge: GTs in the shard + 2 non-GT picks.
+        """
+        names_in = [idx_to_name_full[i] for i in range(start, end) if i in idx_to_name_full]
+        gts_in = [n for n in names_in if n in gt_names_list]
+        non_gt = [n for n in names_in if n not in gt_names_list]
+        # Pick 2 non-GT by deterministic sampling
+        sample_rng.shuffle(non_gt)
+        picks = list(gts_in) + non_gt[: max(1, 3 - len(gts_in))]
+        return picks[:4]
+
+    def _write_shortlist_file(agent_id: str, start: int, end: int, shortlist: list[str]) -> str:
+        """Write single-line JSON shortlist file (simulates search agent runtime output)."""
+        out_dir = Path(agent_out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{agent_id}.json"
+        with open(path, "w") as f:
+            json.dump({
+                "status": "completed",
+                "agentId": agent_id,
+                "shardStart": start,
+                "shardEnd": end,
+                "shortlist": shortlist,
+            }, f)
+            f.write("\n")
+        return str(path)
+
+    def _pool_covers_gt(pool_list: list[str], threshold: float = 0.92) -> float:
+        """Fraction of GT wavetables covered by pool (exact or CLAP-similar proxy)."""
+        if not gt_names_list:
+            return 1.0
+        # Pre-compute GT embeddings
+        index_embs = shortlist_data["embeddings"]
+        # Build name → mean-pooled embedding from the index
+        name_to_rows: dict[str, list[int]] = {}
+        for i, row in enumerate(index_rows):
+            name_to_rows.setdefault(row["wavetable_name"], []).append(i)
+        name_to_emb: dict[str, np.ndarray] = {}
+        for nm in set(gt_names_list) | set(pool_list):
+            if nm in name_to_rows:
+                embs = index_embs[name_to_rows[nm]]
+                emb = embs.mean(axis=0)
+                name_to_emb[nm] = emb / (np.linalg.norm(emb) + 1e-12)
+
+        covered = 0
+        for gt in gt_names_list:
+            if gt in pool_list:
+                covered += 1
+                continue
+            if gt not in name_to_emb:
+                continue
+            gt_emb = name_to_emb[gt]
+            best = 0.0
+            for p in pool_list:
+                if p in name_to_emb:
+                    sim = float(gt_emb @ name_to_emb[p])
+                    if sim > best:
+                        best = sim
+            if best >= threshold:
+                covered += 1
+        return covered / len(gt_names_list)
+
+    while rounds_used < max_rounds:
+        rounds_used += 1
+        round_offsets_used.append(list(slice_starts))
+
+        # Announce round
+        if rounds_used == 1:
+            intro = (
+                f"Library has {total_named} wavetables. Dispatching {n_agents} search "
+                f"agents across slices [{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
+            )
+        else:
+            intro = (
+                f"Initial pool covered too few GT wavetables by ear. Dispatching {n_agents} "
+                f"more search agents across different library regions: "
+                f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
+            )
+        messages.append({"role": "assistant", "content": intro})
+
+        # Step 2: Agent tool call per shard
+        round_output_files: list[str] = []
+        round_agent_ids: list[str] = []
+        for ai, start in enumerate(slice_starts):
+            end = min(start + slice_size, total_named)
+            if end <= start:
+                continue
+            agent_id = f"wavetable_search_{sample_id}_r{rounds_used}_a{ai + 1}"
+            round_agent_ids.append(agent_id)
+
+            # Simulate the shortlist this agent would return (build-time)
+            sl = _simulate_shortlist(start, end)
+            output_file = _write_shortlist_file(agent_id, start, end, sl)
+            round_output_files.append(output_file)
+
+            # Agent tool call
+            messages.append(_tool_call("Agent", {
+                "subagent_type": "wavetable_search",
+                "description": f"Evaluate wavetables {start}-{end - 1} for {archetype} target",
+                "prompt": (
+                    f"Target: {target_audio_path}. Archetype: {archetype}.\n"
+                    f"Evaluate wavetables at indices {start}-{end - 1}. "
+                    f"Use `python scripts/list_wavetables.py --start {start} --end {end}` "
+                    f"and `python scripts/render_wavetable_probes.py --idxs ... --out-dir ...` "
+                    f"to hear each candidate. Return a JSON shortlist of 2-4 wavetable names."
+                ),
+                "name": f"search-{rounds_used}-{ai + 1}",
+            }))
+            messages.append({
+                "role": "tool_response",
+                "content": json.dumps({
+                    "agentId": agent_id,
+                    "subagentType": "wavetable_search",
+                    "status": "completed",
+                    "outputFile": output_file,
+                }, ensure_ascii=False),
+            })
+
+        # Step 3: read all output files in one cat call
+        cat_cmd = "cat " + " ".join(round_output_files)
+        messages.append({
+            "role": "assistant",
+            "content": f"Reading shortlists from {len(round_output_files)} search agents.",
+        })
+        messages.append(_tool_call("bash", {"command": cat_cmd}))
+        # Concatenate the file contents (single-line JSON per file)
+        cat_output_lines = []
+        round_shortlists: list[list[str]] = []
+        for out_file in round_output_files:
+            try:
+                with open(out_file) as f:
+                    content = f.read().strip()
+                cat_output_lines.append(content)
+                parsed = json.loads(content)
+                round_shortlists.append(parsed.get("shortlist", []))
+            except Exception:
+                cat_output_lines.append("")
+                round_shortlists.append([])
+        messages.append({
+            "role": "tool_response",
+            "content": "\n".join(cat_output_lines),
+        })
+
+        # Pool in new shortlists
+        for sl in round_shortlists:
+            for name in sl:
+                if name not in pool:
+                    pool.append(name)
+
+        # Coverage check (build-time oracle)
+        coverage = _pool_covers_gt(pool, threshold=0.92)
+        if coverage >= 0.5 or rounds_used >= max_rounds:
+            break
+
+        # Re-search: shift offsets for next round
+        base_offset = (base_offset + stride // 2) % stride
+        slice_starts = _compute_slices(base_offset)
+
+    # Final pool summary — merged into the tuple intro below to avoid adjacent assistant.
+    pool_preview = ", ".join(f"'{n}'" for n in pool[:8])
+    if len(pool) > 8:
+        pool_preview += f", ...+{len(pool) - 8} more"
+    _pool_summary = f"Pooled {len(pool)} candidates across {rounds_used} round(s): [{pool_preview}]."
+
+    # Build tuple candidates (GT + 1 alternative)
+    gt_tuple: list[str | None] = [None, None, None]
+    for osc_idx in active_oscs:
+        wts = target_preset.get("settings", {}).get("wavetables", [])
+        if osc_idx < len(wts):
+            wt_name = wts[osc_idx].get("name", "")
+            if wt_name and wt_name in pool:
+                gt_tuple[osc_idx] = wt_name
+
+    alt_tuples: list[list[str | None]] = []
+    non_gt_in_pool = [n for n in pool if n not in gt_names_list]
+    for swap_idx in active_oscs[:1]:
+        if non_gt_in_pool and gt_tuple[swap_idx]:
+            alt = list(gt_tuple)
+            alt[swap_idx] = non_gt_in_pool[0]
+            alt_tuples.append(alt)
+
+    all_tuples = [gt_tuple] + alt_tuples[:1]
 
     # Tuple evaluation: render and listen
     n_active = len(active_oscs)
     tuple_intro = (
+        f"{_pool_summary}\n\n"
         f"The target uses {n_active} active oscillator{'s' if n_active > 1 else ''}. "
         f"Evaluating {len(all_tuples)} wavetable combination{'s' if len(all_tuples) > 1 else ''}."
     )
@@ -1065,7 +1277,7 @@ def build_record(
     record = {
         "id": sample_id,
         "task_type": "main",
-        "tools": _TOOL_SPECS,
+        "tools": _V3_TOOL_SPECS,
         "messages": messages,
         "audios": audio_assets,
         "assets": {
@@ -1079,7 +1291,8 @@ def build_record(
             "gt_wavetable_names": gt_names_list,
             "applied_wavetables": [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]],
             "search_pool_size": len(pool),
-            "search_results_size": len(search_results),
+            "search_rounds_used": rounds_used,
+            "search_slice_starts_per_round": round_offsets_used,
         },
         "meta": {
             "pipeline_version": "v3",
@@ -1129,9 +1342,13 @@ def main() -> None:
         help="Cap on regular (non-correction) subsystem batches per conversation.")
 
     ap.add_argument("--pool-top-k", type=int, default=48,
-        help="Candidate pool size (top-K by CLAP similarity to GT wavetable).")
+        help="[LEGACY] ignored in index-based mode.")
     ap.add_argument("--num-agents", type=int, default=4,
-        help="Number of search agents (for spawn_search_agents tool call).")
+        help="Number of search agents dispatched per round.")
+    ap.add_argument("--candidates-per-slice", type=int, default=48,
+        help="Wavetables per search agent slice (default 48).")
+    ap.add_argument("--max-search-rounds", type=int, default=3,
+        help="Max search rounds before giving up and using best available pool (default 3).")
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
 
     ap.add_argument("--mistake-rate", type=float, default=0.20,

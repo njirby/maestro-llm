@@ -335,6 +335,7 @@ def build_search_record(
     stage2_model: str,
     rng: random.Random,
     candidates_per_batch: int = 8,
+    shortlist_dir: Path | None = None,
 ) -> dict | None:
     """Build one search agent SFT record with iterative batch listening.
 
@@ -559,6 +560,24 @@ def build_search_record(
 
     messages.append({"role": "assistant", "content": final_text})
 
+    # Write shortlist output file — this is what the main agent's runtime executor
+    # would write at inference time. Main agent reads it via `cat` to consume the result.
+    # Single-line JSON so concatenating multiple files via `cat` produces newline-delimited JSON.
+    shortlist_path: str | None = None
+    if shortlist_dir is not None:
+        shortlist_dir.mkdir(parents=True, exist_ok=True)
+        shortlist_path = str(shortlist_dir / f"{sample_id}_search_{agent_idx}.json")
+        with open(shortlist_path, "w") as f:
+            json.dump({
+                "status": "completed",
+                "agentId": f"search_{sample_id}_{agent_idx}",
+                "shardStart": shard_start,
+                "shardEnd": shard_end,
+                "shortlist": shortlist,
+                "nBatches": len(all_ordered),
+            }, f)
+            f.write("\n")
+
     record = {
         "id": f"{sample_id}_search",
         "task_type": "search_v2",
@@ -570,11 +589,14 @@ def build_search_record(
             "sample_id": sample_id,
             "archetype": archetype,
             "shard_size": len(shard),
+            "shard_start": shard_start,
+            "shard_end": shard_end,
             "n_batches": len(all_ordered),
             "candidates_per_batch": candidates_per_batch,
             "gt_in_shard": gt_in_shard,
             "final_shortlist": shortlist,
             "gt_on_shortlist": [n for n in shortlist if n in gt_set],
+            "shortlist_output_file": shortlist_path,
         },
     }
 
@@ -602,6 +624,8 @@ def main() -> None:
         help="Number of wavetables per search agent slice (default 48).")
     ap.add_argument("--candidates-per-batch", type=int, default=8)
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
+    ap.add_argument("--shortlist-dir", type=Path, default=None,
+        help="Directory to write per-agent shortlist JSON files (used by main agent's cat tool calls).")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--omni-server", default="")
     ap.add_argument("--omni-model", default="Qwen/Qwen3-Omni-30B-A3B-Instruct")
@@ -738,6 +762,7 @@ def main() -> None:
                 stage2_model=stage2_model,
                 rng=agent_rng,
                 candidates_per_batch=args.candidates_per_batch,
+                shortlist_dir=args.shortlist_dir,
             )
             if rec:
                 # Override id with agent-specific id
