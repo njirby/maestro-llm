@@ -497,28 +497,31 @@ def stage2_batch_check(
     stage2_server: str,
     stage2_model: str,
     is_final: bool = False,
+    n_params_applied: int = 0,
 ) -> str:
-    """Stage 2: write one short sentence describing the batch result.
+    """Stage 2: write one short sentence describing what THIS batch specifically changed.
 
-    remaining_gap_str — output of _step_remaining_gap(...)['context_str'] after batch applied.
-    prior_checks — previous batch-check sentences (to avoid repetition).
+    Focuses on the concrete effect of the current subsystem's edits, not the
+    full remaining diff (which causes repetitive "dynamics and spatial effects"
+    phrasing across all batches).
     """
     recent = " / ".join(prior_checks[-2:]) if prior_checks else ""
     recent_hint = (
-        f"Previous batch checks: \"{recent}\" — do not repeat those phrasings." if recent else ""
+        f"Prior batch checks (DO NOT repeat these phrasings): \"{recent}\"" if recent else ""
     )
     final_hint = (
-        "This is the LAST planned batch; frame the sentence as 'getting close' rather than "
-        "'next step will'." if is_final else ""
+        "This is the LAST planned batch — note that the preset is now nearly complete." if is_final else ""
     )
     prompt = (
-        f"You are a music production AI. You just applied the {subsystem} edits for a "
-        f"{archetype} preset. Remaining differences from target (by subsystem): "
-        f"{remaining_gap_str}.\n\n"
+        f"You are a music production AI. You just applied {n_params_applied} {subsystem} "
+        f"parameter edits for a {archetype} preset.\n\n"
+        f"After this batch, remaining subsystem gaps: {remaining_gap_str}.\n\n"
         f"{recent_hint}\n{final_hint}\n\n"
-        f"Write EXACTLY ONE sentence describing what the {subsystem} edits addressed and "
-        f"what still differs most. Natural language, no snake_case, no **bold**, no kHz "
-        f"numbers, no section headers. Keep it under 30 words."
+        f"Write EXACTLY ONE sentence. Focus on what the {subsystem} edits specifically "
+        f"changed about the sound's character (e.g. 'filter darkened the tone and added "
+        f"resonant sweep' or 'LFO introduced rhythmic pulsing to the brightness'). "
+        f"Do NOT list the remaining subsystems — focus on the effect of THIS batch. "
+        f"Natural language, no snake_case, no **bold**, under 25 words."
     )
     try:
         r = _llm_post(
@@ -746,11 +749,16 @@ def build_record(
             starts.append(start)
         return starts
 
-    # Base offset rotated so at least one GT is covered in round 1
+    # Base offset: for most samples, rotate to cover GT in round 1.
+    # For ~force_research_rate of samples, deliberately skip the rotation so
+    # the first-round search misses GT and the re-search branch triggers.
     gt_idxs = [name_to_idx_full[n] for n in gt_names_list if n in name_to_idx_full]
+    force_research_rate = float(getattr(args, "force_research_rate", 0.30))
+    force_miss = sample_rng.random() < force_research_rate
+
     base_offset = sample_rng.randrange(stride)
     slice_starts = _compute_slices(base_offset)
-    if gt_idxs:
+    if gt_idxs and not force_miss:
         step = max(1, stride // 4)
         tried = 0
         while not any(s <= gi < (s + slice_size) for s in slice_starts for gi in gt_idxs) and tried < total_named:
@@ -1162,6 +1170,7 @@ def build_record(
             check_sentence = stage2_batch_check(
                 b.subsystem, gap_str, prior_checks, archetype,
                 stage2_server, stage2_model, is_final=is_last and not b.mistake,
+                n_params_applied=len(b.params),
             )
         else:
             check_sentence = f"{b.subsystem.capitalize()} edits applied; remaining gap is in {gap_str}."
@@ -1349,6 +1358,8 @@ def main() -> None:
         help="Wavetables per search agent slice (default 48).")
     ap.add_argument("--max-search-rounds", type=int, default=3,
         help="Max search rounds before giving up and using best available pool (default 3).")
+    ap.add_argument("--force-research-rate", type=float, default=0.30,
+        help="Fraction of samples where GT-oracle rotation is skipped, forcing re-search (default 0.30).")
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
 
     ap.add_argument("--mistake-rate", type=float, default=0.20,

@@ -441,10 +441,14 @@ def build_search_record(
 
     shortlist: list[str] = []
     pending_notes: str | None = None
+    gt_found_so_far: list[str] = []  # track all GT wavetables ever encountered
 
     for bi, batch in enumerate(all_ordered):
         batch_num = bi + 1
         gt_in_batch = [n for n in batch if n in gt_set]
+        for gn in gt_in_batch:
+            if gn not in gt_found_so_far:
+                gt_found_so_far.append(gn)
 
         # Real bash command: render a list of indices into the probe dir
         batch_idxs = [name_to_idx[n] for n in batch if n in name_to_idx]
@@ -539,8 +543,9 @@ def build_search_record(
                     valid_names_seen.update(_b)
                 shortlist = [n for n in parsed if n in valid_names_seen]
 
-        # Ensure GT wavetables stay on shortlist once found (oracle constraint)
-        for gn in gt_in_batch:
+        # Ensure GT wavetables stay on shortlist once found (oracle constraint).
+        # Persist across ALL subsequent batches, not just the batch that found them.
+        for gn in gt_found_so_far:
             if gn not in shortlist:
                 shortlist.append(gn)
 
