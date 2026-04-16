@@ -1038,14 +1038,22 @@ def build_record(
 
     for ti, (tup, tw) in enumerate(zip(all_tuples, tuple_wavs)):
         active_names = [tup[oi] for oi in active_oscs if tup[oi]]
-        names_str = ", ".join(f"'{n}'" for n in active_names)
-        messages.append(_tool_call("bash", {"command": f"# Render tuple {ti + 1}: [{names_str}]"}))
+        # Real bash command: render_wavetable_tuple.py with per-osc assignments
+        osc_args = " ".join(
+            f"--osc{oi + 1} {json.dumps(tup[oi])}" for oi in active_oscs if tup[oi]
+        )
+        render_cmd = (
+            f"python scripts/render_wavetable_tuple.py {osc_args} "
+            f"--out /tmp/tuple_{sample_id}_{ti + 1}.wav"
+        )
+        messages.append(_tool_call("bash", {"command": render_cmd}))
         audio_assets.append(str(tw))
         messages.append({
             "role": "tool_response",
             "content": json.dumps({
+                "status": "ok",
                 "tuple_audio": "<audio>",
-                "tuple_index": ti + 1,
+                "out": f"/tmp/tuple_{sample_id}_{ti + 1}.wav",
                 "wavetables": active_names,
             }, ensure_ascii=False),
         })
