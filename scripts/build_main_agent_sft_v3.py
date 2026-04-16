@@ -880,8 +880,8 @@ def build_record(
             )
         else:
             intro = (
-                f"Initial pool covered too few GT wavetables by ear. Dispatching {n_agents} "
-                f"more search agents across different library regions: "
+                f"Initial search didn't surface strong enough matches. Expanding to "
+                f"different library regions with {n_agents} more search agents: "
                 f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
             )
         messages.append({"role": "assistant", "content": intro})
@@ -970,7 +970,9 @@ def build_record(
         pool_preview += f", ...+{len(pool) - 8} more"
     _pool_summary = f"Pooled {len(pool)} candidates across {rounds_used} round(s): [{pool_preview}]."
 
-    # Build tuple candidates (GT + 1 alternative)
+    # Build tuple candidates (GT + 1 alternative).
+    # If GT isn't in the pool (re-search failed to find it), fall back to the
+    # best available candidate so the model always applies SOMETHING.
     gt_tuple: list[str | None] = [None, None, None]
     for osc_idx in active_oscs:
         wts = target_preset.get("settings", {}).get("wavetables", [])
@@ -979,13 +981,26 @@ def build_record(
             if wt_name and wt_name in pool:
                 gt_tuple[osc_idx] = wt_name
 
-    alt_tuples: list[list[str | None]] = []
+    # Fallback: fill empty osc slots with best available from pool
     non_gt_in_pool = [n for n in pool if n not in gt_names_list]
+    fallback_idx = 0
+    for osc_idx in active_oscs:
+        if gt_tuple[osc_idx] is None and pool:
+            # Use first non-GT candidate, or first pool member if all are GT
+            if fallback_idx < len(non_gt_in_pool):
+                gt_tuple[osc_idx] = non_gt_in_pool[fallback_idx]
+                fallback_idx += 1
+            elif pool:
+                gt_tuple[osc_idx] = pool[0]
+
+    alt_tuples: list[list[str | None]] = []
     for swap_idx in active_oscs[:1]:
         if non_gt_in_pool and gt_tuple[swap_idx]:
             alt = list(gt_tuple)
-            alt[swap_idx] = non_gt_in_pool[0]
-            alt_tuples.append(alt)
+            alt_idx = min(fallback_idx, len(non_gt_in_pool) - 1)
+            if alt_idx >= 0 and non_gt_in_pool[alt_idx] != gt_tuple[swap_idx]:
+                alt[swap_idx] = non_gt_in_pool[alt_idx]
+                alt_tuples.append(alt)
 
     all_tuples = [gt_tuple] + alt_tuples[:1]
 
