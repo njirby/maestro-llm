@@ -363,8 +363,8 @@ def omni_stage1_diagnose(
         {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(default_wav)}"}},
         {"type": "text", "text": (
             f"You are a music production AI. Listen to two synthesizer clips.\n"
-            f"AUDIO A: the TARGET {archetype} sound we need to recreate.\n"
-            f"AUDIO B: the current DEFAULT preset.\n\n"
+            f"The first clip is the TARGET {archetype} sound we need to recreate.\n"
+            f"The second clip is the current DEFAULT preset.\n\n"
             "Describe the perceptual differences: frequency balance (bright/warm/dark), "
             "harmonic character (clean/buzzy/rich), envelope shape (sharp/slow attack, "
             "short/long decay, sustain level), and any motion or modulation.\n"
@@ -405,8 +405,8 @@ def omni_stage1_verdict(
         {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(final_wav)}"}},
         {"type": "text", "text": (
             f"You are a music production AI doing a final review.\n"
-            f"AUDIO A is the target {archetype} sound.\n"
-            f"AUDIO B is the final recreation after all subsystem edits.\n\n"
+            f"The first clip is the target {archetype} sound.\n"
+            f"The second clip is the final recreation after all subsystem edits.\n\n"
             "In 2 sentences: what matches well, and what (if anything) still differs. "
             "Be specific and honest. No snake_case. No kHz numbers."
         )},
