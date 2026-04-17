@@ -798,6 +798,25 @@ def build_record(
     # Agent output directory (real path; runtime executor writes files here at inference)
     agent_out_dir = f"/tmp/agents/{sample_id}"
 
+    # Setup for tuple rendering
+    tuple_audio_dir = Path(args.out_jsonl).parent / "tuple_audio" / sample_id
+    tuple_audio_dir.mkdir(parents=True, exist_ok=True)
+    wt_lib_by_name = {wt["name"]: wt for wt in wavetable_lib if "name" in wt}
+
+    def _build_tuple_preset(tup: list, oscs: list[int], lib: dict, base: dict) -> dict:
+        preset = copy.deepcopy(base)
+        for oi in oscs:
+            name = tup[oi]
+            if name and name in lib:
+                if oi < len(preset["settings"].get("wavetables", [])):
+                    preset["settings"]["wavetables"][oi] = copy.deepcopy(lib[name])
+                preset["settings"][f"osc_{oi + 1}_on"] = 1.0
+                preset["settings"][f"osc_{oi + 1}_level"] = 0.7
+            else:
+                preset["settings"][f"osc_{oi + 1}_on"] = 0.0
+                preset["settings"][f"osc_{oi + 1}_level"] = 0.0
+        return preset
+
     # ---- Multi-round search loop ----
     pool: list[str] = []
     rounds_used = 0
@@ -868,11 +887,13 @@ def build_record(
                 covered += 1
         return covered / len(gt_names_list)
 
+    _research_prefix = ""  # merged into round 2+ intro to avoid adjacent assistant
+
     while rounds_used < max_rounds:
         rounds_used += 1
         round_offsets_used.append(list(slice_starts))
 
-        # Announce round
+        # Announce round (merge re-search prefix from previous round if any)
         if rounds_used == 1:
             intro = (
                 f"Library has {total_named} wavetables. Dispatching {n_agents} search "
@@ -880,10 +901,11 @@ def build_record(
             )
         else:
             intro = (
-                f"Initial search didn't surface strong enough matches. Expanding to "
-                f"different library regions with {n_agents} more search agents: "
+                f"{_research_prefix}"
+                f"Expanding to different library regions with {n_agents} more search agents: "
                 f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
             )
+            _research_prefix = ""
         messages.append({"role": "assistant", "content": intro})
 
         # Step 2: Agent tool call per shard
@@ -955,119 +977,82 @@ def build_record(
                 if name not in pool:
                     pool.append(name)
 
-        # Coverage check (build-time oracle)
-        coverage = _pool_covers_gt(pool, threshold=0.92)
-        if coverage >= 0.5 or rounds_used >= max_rounds:
-            break
-
-        # Re-search: shift offsets for next round
-        base_offset = (base_offset + stride // 2) % stride
-        slice_starts = _compute_slices(base_offset)
-
-    # Final pool summary — merged into the tuple intro below to avoid adjacent assistant.
-    pool_preview = ", ".join(f"'{n}'" for n in pool[:8])
-    if len(pool) > 8:
-        pool_preview += f", ...+{len(pool) - 8} more"
-    _pool_summary = f"Pooled {len(pool)} candidates across {rounds_used} round(s): [{pool_preview}]."
-
-    # Build tuple candidates (GT + 1 alternative).
-    # If GT isn't in the pool (re-search failed to find it), fall back to the
-    # best available candidate so the model always applies SOMETHING.
-    gt_tuple: list[str | None] = [None, None, None]
-    for osc_idx in active_oscs:
-        wts = target_preset.get("settings", {}).get("wavetables", [])
-        if osc_idx < len(wts):
-            wt_name = wts[osc_idx].get("name", "")
-            if wt_name and wt_name in pool:
-                gt_tuple[osc_idx] = wt_name
-
-    # Fallback: fill empty osc slots with best available from pool
-    non_gt_in_pool = [n for n in pool if n not in gt_names_list]
-    fallback_idx = 0
-    for osc_idx in active_oscs:
-        if gt_tuple[osc_idx] is None and pool:
-            # Use first non-GT candidate, or first pool member if all are GT
-            if fallback_idx < len(non_gt_in_pool):
-                gt_tuple[osc_idx] = non_gt_in_pool[fallback_idx]
-                fallback_idx += 1
-            elif pool:
-                gt_tuple[osc_idx] = pool[0]
-
-    alt_tuples: list[list[str | None]] = []
-    for swap_idx in active_oscs[:1]:
-        if non_gt_in_pool and gt_tuple[swap_idx]:
-            alt = list(gt_tuple)
-            alt_idx = min(fallback_idx, len(non_gt_in_pool) - 1)
-            if alt_idx >= 0 and non_gt_in_pool[alt_idx] != gt_tuple[swap_idx]:
-                alt[swap_idx] = non_gt_in_pool[alt_idx]
-                alt_tuples.append(alt)
-
-    all_tuples = [gt_tuple] + alt_tuples[:1]
-
-    # Tuple evaluation: render and listen
-    n_active = len(active_oscs)
-    tuple_intro = (
-        f"{_pool_summary}\n\n"
-        f"The target uses {n_active} active oscillator{'s' if n_active > 1 else ''}. "
-        f"Evaluating {len(all_tuples)} wavetable combination{'s' if len(all_tuples) > 1 else ''}."
-    )
-
-    tuple_audio_dir = Path(args.out_jsonl).parent / "tuple_audio" / sample_id
-    tuple_audio_dir.mkdir(parents=True, exist_ok=True)
-
-    # Render each tuple as a full preset
-    tuple_wavs: list[Path] = []
-    wt_lib_by_name = {wt["name"]: wt for wt in wavetable_lib if "name" in wt}
-    for ti, tup in enumerate(all_tuples):
-        tuple_preset = copy.deepcopy(init_preset)
-        # Copy wavetables from library by name
+        # Build best tuple from current pool
+        cur_tuple: list[str | None] = [None, None, None]
         for osc_idx in active_oscs:
-            wt_name = tup[osc_idx]
-            if wt_name and wt_name in wt_lib_by_name:
-                # Find the library entry and use its wavetable data
-                lib_entry = wt_lib_by_name[wt_name]
-                if osc_idx < len(tuple_preset["settings"].get("wavetables", [])):
-                    tuple_preset["settings"]["wavetables"][osc_idx] = lib_entry
-        # Render
-        tw = tuple_audio_dir / f"tuple_{ti}.wav"
-        with serial_lock:
-            render_cumulative_audio(synth, tuple_preset, notes, tw)
-        tuple_wavs.append(tw)
+            wts = target_preset.get("settings", {}).get("wavetables", [])
+            if osc_idx < len(wts):
+                wt_name = wts[osc_idx].get("name", "")
+                if wt_name and wt_name in pool:
+                    cur_tuple[osc_idx] = wt_name
+        # Fill empty slots with best available from pool
+        _non_gt_pool = [n for n in pool if n not in gt_names_list]
+        _fb = 0
+        for osc_idx in active_oscs:
+            if cur_tuple[osc_idx] is None and _non_gt_pool:
+                cur_tuple[osc_idx] = _non_gt_pool[min(_fb, len(_non_gt_pool) - 1)]
+                _fb += 1
 
-    messages.append({"role": "assistant", "content": tuple_intro})
-
-    for ti, (tup, tw) in enumerate(zip(all_tuples, tuple_wavs)):
-        active_names = [tup[oi] for oi in active_oscs if tup[oi]]
-        # Real bash command: render_wavetable_tuple.py with per-osc assignments
+        # Render the tuple to hear it
+        cur_active_names = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
         osc_args = " ".join(
-            f"--osc{oi + 1} {json.dumps(tup[oi])}" for oi in active_oscs if tup[oi]
+            f"--osc{oi + 1} {json.dumps(cur_tuple[oi])}" for oi in active_oscs if cur_tuple[oi]
         )
+        tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}.wav"
         render_cmd = (
             f"python scripts/render_wavetable_tuple.py {osc_args} "
-            f"--out /tmp/tuple_{sample_id}_{ti + 1}.wav"
+            f"--out {tuple_wav}"
         )
+        with serial_lock:
+            render_cumulative_audio(synth, _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset), notes, tuple_wav)
+
+        pool_str = ", ".join(f"'{n}'" for n in pool[:6])
+        if len(pool) > 6:
+            pool_str += f", ...+{len(pool) - 6} more"
+        tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
+
+        messages.append({
+            "role": "assistant",
+            "content": f"Pooled {len(pool)} candidates: [{pool_str}]. Rendering tuple [{tuple_names_str}] to evaluate.",
+        })
         messages.append(_tool_call("bash", {"command": render_cmd}))
-        audio_assets.append(str(tw))
+        audio_assets.append(str(tuple_wav))
         messages.append({
             "role": "tool_response",
             "content": json.dumps({
-                "status": "ok",
-                "tuple_audio": "<audio>",
-                "out": f"/tmp/tuple_{sample_id}_{ti + 1}.wav",
-                "wavetables": active_names,
+                "status": "ok", "tuple_audio": "<audio>",
+                "out": str(tuple_wav), "wavetables": cur_active_names,
             }, ensure_ascii=False),
         })
 
-    # Select GT tuple (oracle) with Omni-grounded reasoning
-    gt_active = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
-    gt_names_str = ", ".join(f"'{n}'" for n in gt_active)
+        # Re-search decision: are ALL GT wavetable names in the pool?
+        all_gt_found = all(gt in pool for gt in gt_names_list)
+        if all_gt_found or rounds_used >= max_rounds:
+            break
+
+        # Tuple doesn't have all GTs → re-search.
+        # Store re-search text to merge into next round's dispatch intro
+        # (avoids adjacent assistant messages).
+        _research_prefix = (
+            "The rendered tuple doesn't capture the target's character closely enough. "
+        )
+
+        # Shift offsets for next round — avoid re-searching same regions
+        base_offset = (base_offset + stride // 2) % stride
+        slice_starts = _compute_slices(base_offset)
+
+    # The best tuple from the last search round is cur_tuple (already rendered + heard).
+    # Use it for the apply step.
+    gt_tuple = cur_tuple
+    apply_names = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
     osc_assignments = ", ".join(
         f"oscillator {oi + 1} = '{gt_tuple[oi]}'" for oi in active_oscs if gt_tuple[oi]
     )
-    selection_text = f"Tuple 1 best matches the target. Applying: {osc_assignments}."
+    if all_gt_found:
+        selection_text = f"This tuple matches the target well. Applying: {osc_assignments}."
+    else:
+        selection_text = f"Search budget exhausted. Applying best available: {osc_assignments}."
 
-    # Library-lookup apply snippet
-    apply_names = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
     apply_assignments = ", ".join(
         f'({oi}, {json.dumps(gt_tuple[oi])})' for oi in active_oscs if gt_tuple[oi]
     )

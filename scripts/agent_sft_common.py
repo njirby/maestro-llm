@@ -258,6 +258,54 @@ def load_wavetable_lib(path: Path) -> list[dict[str, Any]]:
     return _load_wavetable_lib(path)
 
 
+def build_name_embedding_map(
+    index_embeddings: np.ndarray,
+    index_rows_meta: list[dict[str, Any]],
+) -> dict[str, np.ndarray]:
+    """Build a {wavetable_name → L2-normalized embedding} map from the index.
+
+    Mean-pools across frames for multi-frame wavetables. Returns normalized
+    vectors ready for cosine similarity via dot product.
+
+    Reused by: build_gt_similarity_pool, search agent CLAP selection,
+    main agent pool coverage check.
+    """
+    from collections import defaultdict as _defaultdict
+    name_to_rows: dict[str, list[int]] = _defaultdict(list)
+    for i, row in enumerate(index_rows_meta):
+        name_to_rows[row["wavetable_name"]].append(i)
+
+    name_to_emb: dict[str, np.ndarray] = {}
+    for name, idxs in name_to_rows.items():
+        emb = index_embeddings[idxs].mean(axis=0)
+        name_to_emb[name] = emb / (np.linalg.norm(emb) + 1e-12)
+    return name_to_emb
+
+
+def is_clap_selected(
+    candidate_name: str,
+    gt_wavetable_names: list[str],
+    name_to_emb: dict[str, np.ndarray],
+    threshold: float = 0.92,
+) -> bool:
+    """CLAP-based selection: is this candidate similar enough to any GT wavetable?
+
+    Returns True if candidate is an exact GT match OR has cosine similarity >= threshold
+    to at least one GT wavetable in the embedding space.
+    """
+    if candidate_name in gt_wavetable_names:
+        return True
+    if candidate_name not in name_to_emb:
+        return False
+    cand_emb = name_to_emb[candidate_name]
+    for gt in gt_wavetable_names:
+        if gt in name_to_emb:
+            sim = float(cand_emb @ name_to_emb[gt])
+            if sim >= threshold:
+                return True
+    return False
+
+
 def build_gt_similarity_pool(
     gt_wavetable_names: list[str],
     index_embeddings: np.ndarray,
@@ -291,27 +339,12 @@ def build_gt_similarity_pool(
     list[str]
         Wavetable names (unique, shuffled if rng provided). GT names always included.
     """
-    from collections import defaultdict as _defaultdict
+    # Use shared embedding helper
+    name_to_emb = build_name_embedding_map(index_embeddings, index_rows_meta)
+    all_names = sorted(name_to_emb.keys())
 
-    # Build name → row indices
-    name_to_rows: dict[str, list[int]] = _defaultdict(list)
-    for i, row in enumerate(index_rows_meta):
-        name_to_rows[row["wavetable_name"]].append(i)
-
-    all_names = sorted(set(r["wavetable_name"] for r in index_rows_meta))
-
-    # Per-name embedding (mean-pool across frames)
-    name_embs: dict[str, np.ndarray] = {}
-    for name, idxs in name_to_rows.items():
-        name_embs[name] = index_embeddings[idxs].mean(axis=0)
-
-    # Find GT embeddings
     gt_name_set = set(gt_wavetable_names)
-    gt_emb_list = []
-    for gn in gt_wavetable_names:
-        if gn in name_embs:
-            emb = name_embs[gn]
-            gt_emb_list.append(emb / (np.linalg.norm(emb) + 1e-12))
+    gt_emb_list = [name_to_emb[gn] for gn in gt_wavetable_names if gn in name_to_emb]
 
     if not gt_emb_list:
         # GT not in index — return GT names + random fill
@@ -326,12 +359,10 @@ def build_gt_similarity_pool(
 
     gt_stack = np.stack(gt_emb_list)  # (n_gt, dim)
 
-    # Cosine similarity: each GT against all names
-    name_emb_matrix = np.stack([name_embs[n] for n in all_names])
-    name_norms_vec = np.linalg.norm(name_emb_matrix, axis=1, keepdims=True) + 1e-12
-    name_emb_normed = name_emb_matrix / name_norms_vec
+    # Cosine similarity: each GT against all names (embeddings already normalized)
+    name_emb_matrix = np.stack([name_to_emb[n] for n in all_names])
 
-    sim_matrix = gt_stack @ name_emb_normed.T  # (n_gt, n_names)
+    sim_matrix = gt_stack @ name_emb_matrix.T  # (n_gt, n_names) — both sides normalized
     max_sim = sim_matrix.max(axis=0)  # (n_names,)
 
     # Rank by max similarity, excluding GT

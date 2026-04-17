@@ -42,8 +42,10 @@ from scripts.agent_sft_common import (
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_gt_similarity_pool,
+    build_name_embedding_map,
     ensure_candidate_probes_for_names,
     extract_gt_wavetable_names,
+    is_clap_selected,
     load_index_rows,
     load_manifest_entries,
     load_wavetable_lib,
@@ -192,56 +194,49 @@ def omni_batch_compare(
 def stage2_batch_notes(
     omni_observations: str,
     candidate_names: list[str],
+    selection_labels: dict[str, bool],
     gt_names_in_batch: list[str],
-    current_shortlist: list[str],
     batch_number: int,
     archetype: str,
     stage2_server: str,
     stage2_model: str,
     gt_transform_description: str = "",
 ) -> str:
-    """Stage 2: clean up Omni's observations into shortlist-maintenance format.
+    """Stage 2: write per-candidate reasoning. Selection labels are pre-determined by CLAP.
 
-    When GT wavetables are in the batch, injects a per-sample processing-chain
-    description so the model learns to reason about raw→processed transformation.
+    Stage 2 sees the labels (Selected / Not selected) and writes reasoning
+    that ALIGNS with the correct decision. It never decides the selection itself.
     """
-    shortlist_str = ", ".join(f"'{n}'" for n in current_shortlist) if current_shortlist else "(empty)"
+    # Build candidate display with pre-determined labels
+    candidate_lines = []
+    for name in candidate_names:
+        is_gt = name in gt_names_in_batch
+        selected = selection_labels.get(name, False)
+        label = "Selected" if selected else "Not selected"
+        if is_gt and gt_transform_description:
+            candidate_lines.append(
+                f"  '{name}': {label} (GT — target preset processes this with: {gt_transform_description})"
+            )
+        else:
+            candidate_lines.append(f"  '{name}': {label}")
+    candidates_block = "\n".join(candidate_lines)
 
-    # GT grounding: inject processing chain context for GT wavetables in this batch
-    gt_context = ""
-    if gt_names_in_batch and gt_transform_description:
-        gt_list = ", ".join(f"'{n}'" for n in gt_names_in_batch)
-        gt_context = (
-            f"\nIMPORTANT CONTEXT: {gt_list} {'is' if len(gt_names_in_batch) == 1 else 'are'} "
-            f"the actual wavetable{'s' if len(gt_names_in_batch) > 1 else ''} used in the target "
-            f"preset. The raw probe sounds different from the target because the target preset "
-            f"applies: {gt_transform_description}. "
-            f"In your assessment of {gt_list}, explicitly name at least 2 of these specific "
-            f"transforms and explain how they would reshape the raw wavetable toward the target. "
-            f"Mark {'it' if len(gt_names_in_batch) == 1 else 'them'} as Shortlisted (not Skip).\n"
-        )
-
-    # Explicit name list to constrain Stage 2 — prevents fabrication
-    allowed_names = "\n".join(f"  - {n!r}" for n in candidate_names)
     prompt = (
-        f"You are a sound design assistant searching for wavetable building blocks to "
-        f"recreate a {archetype} sound.\n\n"
-        f"Current shortlist: {shortlist_str}\n\n"
-        f"Batch {batch_number} candidate observations:\n{omni_observations}\n"
-        f"{gt_context}\n"
-        f"STRICT CONSTRAINT — you may ONLY write assessments for these exact "
-        f"{len(candidate_names)} wavetable names (use them verbatim):\n{allowed_names}\n\n"
-        f"Do NOT invent new names, do NOT add variants or extensions to the names above "
-        f"(e.g. no adding '_D#' to a name that ends in '_C#'), and do NOT add candidates "
-        f"that weren't in the list above. Copy the names character-for-character.\n\n"
-        f"Write batch notes in this format:\n"
-        f"- EXACTLY {len(candidate_names)} lines, one per candidate in the list above: "
-        f"'<name>': <short assessment>. Shortlisted / Skip.\n"
-        f"- Then: 'Current shortlist: [<comma-separated FULL names from the list above>]'\n\n"
-        f"A candidate should be shortlisted if its raw harmonic character, texture, or "
-        f"tonal quality could plausibly contribute to the target sound after synthesis "
-        f"processing. If a new candidate is better than one on the shortlist, replace it. "
-        f"Keep the shortlist to 2-4 names. Be aggressive about skipping."
+        f"You are a sound design assistant evaluating wavetable candidates for a "
+        f"{archetype} target sound.\n\n"
+        f"Audio observations from listening:\n{omni_observations}\n\n"
+        f"Candidates and their selection status (pre-determined):\n{candidates_block}\n\n"
+        f"Write EXACTLY {len(candidate_names)} lines, one per candidate.\n"
+        f"Format: '<name>': <one sentence assessment>. Selected / Not selected.\n\n"
+        f"Rules:\n"
+        f"- Use the EXACT names above (no variants, no abbreviations).\n"
+        f"- For Selected candidates: explain what raw quality makes it compatible "
+        f"with the target after synthesis processing (filtering, enveloping, effects).\n"
+        f"- For Not selected candidates: explain what makes it incompatible.\n"
+        f"- For GT candidates (marked with processing details): reference at least 2 "
+        f"specific transforms from the description and explain how they reshape the "
+        f"raw wavetable toward the target.\n"
+        f"- Copy the Selected/Not selected label exactly as given above."
     )
     try:
         r = _llm_post(
@@ -252,14 +247,11 @@ def stage2_batch_notes(
         )
         return r["choices"][0]["message"]["content"].strip()
     except Exception:
-        # Fallback: shortlist GT if present, keep existing
-        new_shortlist = list(current_shortlist)
-        for gn in gt_names_in_batch:
-            if gn not in new_shortlist:
-                new_shortlist.append(gn)
-        lines = [f"- '{n}': Evaluated. {'Shortlisted' if n in new_shortlist else 'Skip'}."
-                 for n in candidate_names]
-        lines.append(f"\nCurrent shortlist: [{', '.join(repr(n) for n in new_shortlist)}]")
+        # Fallback: simple labels with no reasoning
+        lines = []
+        for name in candidate_names:
+            label = "Selected" if selection_labels.get(name, False) else "Not selected"
+            lines.append(f"'{name}': Candidate evaluated. {label}.")
         return "\n".join(lines)
 
 
@@ -329,6 +321,7 @@ def build_search_record(
     name_to_idx: dict[str, int],
     idx_to_name: dict[int, str],
     candidate_audio: dict[str, Path],
+    name_to_emb: dict[str, "np.ndarray"],
     omni_server: str,
     omni_model: str,
     stage2_server: str,
@@ -336,6 +329,7 @@ def build_search_record(
     rng: random.Random,
     candidates_per_batch: int = 8,
     shortlist_dir: Path | None = None,
+    clap_threshold: float = 0.92,
 ) -> dict | None:
     """Build one search agent SFT record with iterative batch listening.
 
@@ -439,18 +433,14 @@ def build_search_record(
         }, ensure_ascii=False),
     })
 
-    shortlist: list[str] = []
+    selected_so_far: list[str] = []  # CLAP-selected candidates, accumulated across batches
     pending_notes: str | None = None
-    gt_found_so_far: list[str] = []  # track all GT wavetables ever encountered
 
     for bi, batch in enumerate(all_ordered):
         batch_num = bi + 1
         gt_in_batch = [n for n in batch if n in gt_set]
-        for gn in gt_in_batch:
-            if gn not in gt_found_so_far:
-                gt_found_so_far.append(gn)
 
-        # Real bash command: render a list of indices into the probe dir
+        # Real bash command: render batch candidates
         batch_idxs = [name_to_idx[n] for n in batch if n in name_to_idx]
         idxs_csv = ",".join(str(i) for i in batch_idxs)
         render_cmd = (
@@ -458,8 +448,6 @@ def build_search_record(
             f"--idxs {idxs_csv} --out-dir {probe_out_dir}"
         )
 
-        # Build tool response: matches what render_wavetable_probes.py actually prints,
-        # with audio attached per-probe at build time (same pattern runtime would use).
         import re as _re
         def _slugify(s: str) -> str:
             return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
@@ -485,7 +473,20 @@ def build_search_record(
             "content": json.dumps({"status": "ok", "rendered": rendered_entries}, ensure_ascii=False),
         })
 
-        # Omni Stage 1: batch comparison
+        # CLAP-based selection: determine Selected/Not selected for each candidate
+        selection_labels: dict[str, bool] = {}
+        for name in batch:
+            selection_labels[name] = is_clap_selected(
+                name, gt_wavetable_names, name_to_emb, threshold=clap_threshold
+            )
+
+        # Accumulate selected candidates (builder-controlled, no model parsing needed)
+        batch_selected = [n for n in batch if selection_labels[n]]
+        for n in batch_selected:
+            if n not in selected_so_far:
+                selected_so_far.append(n)
+
+        # Omni Stage 1: batch comparison (audio observations)
         if omni_server:
             omni_obs = omni_batch_compare(
                 target_wav=target_audio_path,
@@ -498,12 +499,12 @@ def build_search_record(
         else:
             omni_obs = "\n".join(f'"{n}": Candidate evaluated.' for n in batch)
 
-        # Stage 2: shortlist maintenance
+        # Stage 2: write reasoning ONLY (labels are pre-determined by CLAP)
         batch_notes = stage2_batch_notes(
             omni_observations=omni_obs,
             candidate_names=batch,
+            selection_labels=selection_labels,
             gt_names_in_batch=gt_in_batch,
-            current_shortlist=shortlist,
             batch_number=batch_num,
             archetype=archetype,
             stage2_server=stage2_server,
@@ -511,53 +512,18 @@ def build_search_record(
             gt_transform_description=gt_transform_desc,
         )
 
-        # Post-process: deduplicate assessment lines (Stage 2 sometimes emits
-        # duplicate entries for the GT wavetable when both Omni and GT-context mention it).
-        import re
-        # Post-process: deduplicate lines + fix "Shortlisted / Skip" hedging
-        seen_names: set[str] = set()
-        deduped_lines: list[str] = []
-        for line in batch_notes.split("\n"):
-            name_match = re.match(r"['\"-]*([^'\":\-]+?)['\"]?\s*:", line.strip().lstrip("- "))
-            if name_match:
-                name = name_match.group(1).strip()
-                if name in seen_names:
-                    continue
-                seen_names.add(name)
-            # Fix hedging: "Shortlisted / Skip" → "Shortlisted" for GT wavetables
-            if "Shortlisted / Skip" in line or "Shortlisted/Skip" in line:
-                line = line.replace("Shortlisted / Skip", "Shortlisted").replace("Shortlisted/Skip", "Shortlisted")
-            deduped_lines.append(line)
-        batch_notes = "\n".join(deduped_lines)
-
-        # Parse shortlist from Stage 2 output (best-effort)
-        sl_match = re.search(r"Current shortlist:\s*\[([^\]]*)\]", batch_notes)
-        if sl_match:
-            raw = sl_match.group(1)
-            parsed = [s.strip().strip("'\"") for s in raw.split(",") if s.strip()]
-            if parsed:
-                # Filter to only names we've actually seen in any rendered batch.
-                # This prevents Stage 2 fabrication from corrupting the shortlist.
-                valid_names_seen = set()
-                for _b in all_ordered[: bi + 1]:
-                    valid_names_seen.update(_b)
-                shortlist = [n for n in parsed if n in valid_names_seen]
-
-        # Ensure GT wavetables stay on shortlist once found (oracle constraint).
-        # Persist across ALL subsequent batches, not just the batch that found them.
-        for gn in gt_found_so_far:
-            if gn not in shortlist:
-                shortlist.append(gn)
+        # Append running candidate summary (builder-injected, not model-generated)
+        selected_str = ", ".join(f"'{n}'" for n in selected_so_far)
+        batch_notes += f"\n\nCandidates so far: [{selected_str}]"
 
         all_batch_notes.append(batch_notes)
-        # Queue notes for merging into next batch intro (or final summary)
         pending_notes = batch_notes
 
     # Final summary — merge with pending batch notes
     if omni_server:
-        final_text = stage2_final_summary(shortlist, archetype, all_batch_notes, stage2_server, stage2_model)
+        final_text = stage2_final_summary(selected_so_far, archetype, all_batch_notes, stage2_server, stage2_model)
     else:
-        final_text = f"Final candidates: [{', '.join(repr(n) for n in shortlist)}]"
+        final_text = f"Final candidates: [{', '.join(repr(n) for n in selected_so_far)}]"
 
     if pending_notes:
         final_text = f"{pending_notes}\n\n{final_text}"
@@ -578,7 +544,7 @@ def build_search_record(
                 "agentId": f"search_{sample_id}_{agent_idx}",
                 "shardStart": shard_start,
                 "shardEnd": shard_end,
-                "shortlist": shortlist,
+                "shortlist": selected_so_far,
                 "nBatches": len(all_ordered),
             }, f)
             f.write("\n")
@@ -599,8 +565,8 @@ def build_search_record(
             "n_batches": len(all_ordered),
             "candidates_per_batch": candidates_per_batch,
             "gt_in_shard": gt_in_shard,
-            "final_shortlist": shortlist,
-            "gt_on_shortlist": [n for n in shortlist if n in gt_set],
+            "final_shortlist": selected_so_far,
+            "gt_on_shortlist": [n for n in selected_so_far if n in gt_set],
             "shortlist_output_file": shortlist_path,
         },
     }
@@ -689,6 +655,9 @@ def main() -> None:
         name_to_idx_full: dict[str, int] = {n: i for i, n in idx_to_name_full.items()}
         total_named = len(_unique_names)
 
+        # CLAP name→embedding for selection decisions
+        _name_to_emb = build_name_embedding_map(shortlist_data["embeddings"], index_rows)
+
         sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
         rng = random.Random(args.seed + sid_seed)
 
@@ -761,6 +730,7 @@ def main() -> None:
                 name_to_idx=name_to_idx_full,
                 idx_to_name=idx_to_name_full,
                 candidate_audio=candidate_audio,
+                name_to_emb=_name_to_emb,
                 omni_server=args.omni_server,
                 omni_model=args.omni_model,
                 stage2_server=stage2_server,
