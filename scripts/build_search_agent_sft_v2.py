@@ -168,7 +168,7 @@ def omni_batch_compare(
         f"  Audio {i + 2}: \"{name}\"" for i, name in enumerate(valid_names)
     )
     content.append({"type": "text", "text": (
-        f"You are a sound design assistant. Audio 1 is the TARGET {archetype} sound.\n"
+        f"You are a sound design assistant. Audio 1 is the TARGET sound.\n"
         f"Audios 2-{len(valid_names) + 1} are candidate wavetables rendered through a "
         f"default synthesizer preset.\n\n"
         f"Candidate list:\n{candidate_list}\n\n"
@@ -223,7 +223,7 @@ def stage2_batch_notes(
 
     prompt = (
         f"You are a sound design assistant evaluating wavetable candidates for a "
-        f"{archetype} target sound.\n\n"
+        f"the target sound.\n\n"
         f"Audio observations from listening:\n{omni_observations}\n\n"
         f"Candidates and their selection status (pre-determined):\n{candidates_block}\n\n"
         f"Write EXACTLY {len(candidate_names)} lines, one per candidate.\n"
@@ -267,7 +267,7 @@ def stage2_final_summary(
     recent_notes = "\n".join(prior_notes[-2:]) if prior_notes else ""
     prompt = (
         f"You are a sound design assistant. After evaluating multiple batches of "
-        f"wavetable candidates for a {archetype} target sound, your final shortlist is:\n"
+        f"wavetable candidates for the target sound, your final shortlist is:\n"
         f"[{names_str}]\n\n"
         f"Recent assessment notes:\n{recent_notes}\n\n"
         f"Write one line: 'Final candidates: [{names_str}]'\n"
@@ -402,7 +402,7 @@ def build_search_record(
     messages.append({
         "role": "user",
         "content": (
-            f"<audio>\nTarget: {archetype} sound. Evaluate wavetables at indices "
+            f"<audio>\nEvaluate wavetables at indices "
             f"{shard_start}-{shard_end - 1} from the library and return a shortlist "
             f"of 2-4 names that could serve as building blocks for recreating the target. "
             f"Use `python scripts/list_wavetables.py --start {shard_start} --end {shard_end}` "

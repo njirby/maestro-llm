@@ -363,7 +363,7 @@ def omni_stage1_diagnose(
         {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(default_wav)}"}},
         {"type": "text", "text": (
             f"You are a music production AI. Listen to two synthesizer clips.\n"
-            f"The first clip is the TARGET {archetype} sound we need to recreate.\n"
+            f"The first clip is the TARGET sound we need to recreate.\n"
             f"The second clip is the current DEFAULT preset.\n\n"
             "Describe the perceptual differences: frequency balance (bright/warm/dark), "
             "harmonic character (clean/buzzy/rich), envelope shape (sharp/slow attack, "
@@ -386,7 +386,7 @@ def omni_stage1_diagnose(
         return r["choices"][0]["message"]["content"].strip()
     except Exception:
         return (
-            f"The target {archetype} has a distinct timbral character and envelope shape that "
+            f"The target has a distinct timbral character and envelope shape that "
             "the default sine preset does not. Differences in harmonic content, filter "
             "behaviour, and modulation motion are all audible."
         )
@@ -405,7 +405,7 @@ def omni_stage1_verdict(
         {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(final_wav)}"}},
         {"type": "text", "text": (
             f"You are a music production AI doing a final review.\n"
-            f"The first clip is the target {archetype} sound.\n"
+            f"The first clip is the target sound.\n"
             f"The second clip is the final recreation after all subsystem edits.\n\n"
             "In 2 sentences: what matches well, and what (if anything) still differs. "
             "Be specific and honest. No snake_case. No kHz numbers."
@@ -450,7 +450,7 @@ def stage2_diagnosis(
     bullets_hint = ", ".join(subsystems_needed) if subsystems_needed else "none"
     prompt = (
         f"You are a music production AI agent writing the upfront plan for recreating "
-        f"a {archetype} synth sound in Vital.\n\n"
+        f"a synth sound in Vital.\n\n"
         f"--- Perceptual observations (listening to target vs default) ---\n"
         f"{perceptual_obs}\n\n"
         f"--- Ground truth: subsystems that need changes ---\n"
@@ -465,7 +465,7 @@ def stage2_diagnosis(
         f"is needed there (e.g. \"swap to a brighter wavetable and add unison detune\"). "
         f"Do NOT write any numeric values or exact param names. Do NOT use snake_case. "
         f"End the PLAN section with the exact line: \"Executing plan by subsystem.\"\n\n"
-        f"Archetype: {archetype}."
+        f"Be concise and specific."
     )
     try:
         r = _llm_post(
@@ -515,7 +515,7 @@ def stage2_batch_check(
     )
     prompt = (
         f"You are a music production AI. You just applied {n_params_applied} {subsystem} "
-        f"parameter edits for a {archetype} preset.\n\n"
+        f"parameter edits for a Vital preset.\n\n"
         f"After this batch, remaining subsystem gaps: {remaining_gap_str}.\n\n"
         f"{recent_hint}\n{final_hint}\n\n"
         f"Write EXACTLY ONE sentence. Focus on what the {subsystem} edits specifically "
@@ -592,7 +592,7 @@ def stage2_verdict(
     status_tag = "(complete)" if path_complete else "(budget_exhausted)"
     truth_hint = ", ".join(subsystems_truth[:3]) if subsystems_truth else "nothing"
     prompt = (
-        f"You are a music production AI writing the final assessment of a {archetype} "
+        f"You are a music production AI writing the final assessment of a "
         f"synth recreation.\n\n"
         f"Perceptual review:\n{perceptual_obs}\n\n"
         f"Residual subsystem differences from target: {final_remaining_gap}\n"
@@ -774,9 +774,7 @@ def build_record(
     messages.append({
         "role": "user",
         "content": (
-            f"<audio>\nRecreate this {archetype} target sound in Vital from default.\n"
-            "Search for matching wavetables across the library, evaluate combinations, "
-            "then execute by subsystem."
+            "<audio>\nRecreate this sound in Vital."
         ),
     })
 
@@ -930,9 +928,9 @@ def build_record(
             # Agent tool call
             messages.append(_tool_call("Agent", {
                 "subagent_type": "wavetable_search",
-                "description": f"Evaluate wavetables {start}-{end - 1} for {archetype} target",
+                "description": f"Evaluate wavetables {start}-{end - 1} for target sound",
                 "prompt": (
-                    f"Target: {target_audio_path}. Archetype: {archetype}.\n"
+                    f"Target: {target_audio_path}.\n"
                     f"Evaluate wavetables at indices {start}-{end - 1}. "
                     f"Use `python scripts/list_wavetables.py --start {start} --end {end}` "
                     f"and `python scripts/render_wavetable_probes.py --idxs ... --out-dir ...` "
@@ -1108,7 +1106,7 @@ def build_record(
             archetype, args.omni_server, args.omni_model,
         )
     else:
-        stage1_obs = f"Target {archetype} differs from default in several subsystems."
+        stage1_obs = "Target differs from default in several subsystems."
     diagnosis_text = stage2_diagnosis(
         stage1_obs, diff_summary, subsystems_truth,
         archetype, stage2_server, stage2_model,
