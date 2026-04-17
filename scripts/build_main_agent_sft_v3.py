@@ -41,6 +41,7 @@ from scripts.agent_sft_common import (
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_gt_similarity_pool,
+    build_name_embedding_map,
     ensure_candidate_probes_for_names,
     extract_gt_wavetable_names,
     load_index_rows,
@@ -798,6 +799,9 @@ def build_record(
     # Agent output directory (real path; runtime executor writes files here at inference)
     agent_out_dir = f"/tmp/agents/{sample_id}"
 
+    # CLAP name→embedding for fallback tuple selection (pick best proxy per osc)
+    _wt_name_to_emb = build_name_embedding_map(shortlist_data["embeddings"], index_rows)
+
     # Setup for tuple rendering
     tuple_audio_dir = Path(args.out_jsonl).parent / "tuple_audio" / sample_id
     tuple_audio_dir.mkdir(parents=True, exist_ok=True)
@@ -977,21 +981,35 @@ def build_record(
                 if name not in pool:
                     pool.append(name)
 
-        # Build best tuple from current pool
+        # Build best tuple from current pool.
+        # For each osc: use GT if in pool, else pick the pool member most
+        # CLAP-similar to that osc's GT wavetable. As the pool grows each
+        # round, a better proxy may appear → tuple improves across rounds.
         cur_tuple: list[str | None] = [None, None, None]
+        used_in_tuple: set[str] = set()
         for osc_idx in active_oscs:
             wts = target_preset.get("settings", {}).get("wavetables", [])
             if osc_idx < len(wts):
                 wt_name = wts[osc_idx].get("name", "")
                 if wt_name and wt_name in pool:
                     cur_tuple[osc_idx] = wt_name
-        # Fill empty slots with best available from pool
-        _non_gt_pool = [n for n in pool if n not in gt_names_list]
-        _fb = 0
-        for osc_idx in active_oscs:
-            if cur_tuple[osc_idx] is None and _non_gt_pool:
-                cur_tuple[osc_idx] = _non_gt_pool[min(_fb, len(_non_gt_pool) - 1)]
-                _fb += 1
+                    used_in_tuple.add(wt_name)
+                    continue
+                # Fallback: best CLAP proxy from pool for this osc's GT
+                gt_emb = _wt_name_to_emb.get(wt_name)
+                if gt_emb is not None:
+                    candidates = [n for n in pool if n not in used_in_tuple and n in _wt_name_to_emb]
+                    if candidates:
+                        best = max(candidates, key=lambda n: float(_wt_name_to_emb[n] @ gt_emb))
+                        cur_tuple[osc_idx] = best
+                        used_in_tuple.add(best)
+                        continue
+            # Last resort: first unused pool member
+            for n in pool:
+                if n not in used_in_tuple:
+                    cur_tuple[osc_idx] = n
+                    used_in_tuple.add(n)
+                    break
 
         # Render the tuple to hear it
         cur_active_names = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
