@@ -795,6 +795,7 @@ scripts/
   validate_grounded_observations.py  # A/B runner: current vs preset-grounded Stage 1 observations
   agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, GT-similarity pool
   build_search_agent_sft_v2.py # Search-agent SFT v2: iterative batch-listening (--workers for entry + agent parallelism)
+  build_judge_agent_sft_v3.py # Judge-agent SFT v3: audition combined search pool in one Omni call, pick final tuple, write output file
   build_search_agent_sft.py   # Search-agent SFT v1 (legacy: template proposals)
   build_judge_agent_sft.py    # Judge-agent SFT (legacy: listwise ranking from CLAP)
   merge_agent_sft.py          # Merge task JSONL files, shuffle
@@ -835,6 +836,7 @@ configs/
 - `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh vita-rendered per-batch audio, inline mistake correction, producer-style plan-then-execute flow, GT-CLAP-similarity pool + tuple render+listen WT scaffold. **Preset-grounded Stage 1** (target-only audio + perceptual preset summary), **plan + param-delta driven narrations** (no descriptor-lens bank), **residual-delta grounded verdict**. Entry-level `--workers` concurrency (8×4 agents saturates vLLM's 24 slots). Overall 0.781 on n=8 LLM-judge smoke.
 - `preset_perceptual_summary.py` — perceptual-bucket preset summaries (no numbers, no param names) used as a grounding prior by Stage 1 observations; `summarize_residual_delta_perceptual` feeds the final verdict
 - `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions; entry-level + agent-level concurrency via `--workers`
+- `build_judge_agent_sft_v3.py` — judge agent's own SFT rollouts. Takes combined pool from all search agents (simulated at build time), renders probes, listens to target + all pool candidates in one Omni call (each `<audio>` labelled by wavetable name), picks the best N (=active oscillator slots), writes selection to output file that the main agent consumes via `cat`. Build-time oracle: GT-if-in-pool + CLAP-best-proxy
 - `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
 - `grade_agent_sft.py` — v2 + v3 scoring paths; v3 LLM-as-judge across 7 axes (narration plan_ref / param_specific / templateness-cross-sample / no-hallucination, observations audio-grounded, verdict residual_grounded / novelty-cross-sample); live-exec-check against REAPER
 - `build_audio_grounding_spotcheck.py` — self-contained HTML spot-check with embedded audio + judge-badge breakdown; `--compare-grades` renders two graded files side-by-side
