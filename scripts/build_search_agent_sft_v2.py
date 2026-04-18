@@ -262,20 +262,21 @@ def stage2_final_summary(
     stage2_server: str,
     stage2_model: str,
 ) -> str:
-    """Stage 2: write final candidate summary grounded in the batch notes."""
+    """Stage 2: write a short closing narration summarising what each shortlisted
+    candidate contributes. No list-echo line — the shortlist surfaces via the
+    subsequent file write (claw-code-style handoff)."""
     names_str = ", ".join(f"'{n}'" for n in shortlist)
     recent_notes = "\n".join(prior_notes[-2:]) if prior_notes else ""
     prompt = (
-        f"You are a sound design assistant. After evaluating multiple batches of "
-        f"wavetable candidates for the target sound, your final shortlist is:\n"
-        f"[{names_str}]\n\n"
+        f"You are a sound design assistant wrapping up a slice evaluation. "
+        f"Your final shortlist for this slice is: [{names_str}].\n\n"
         f"Recent assessment notes:\n{recent_notes}\n\n"
-        f"Write one line: 'Final candidates: [{names_str}]'\n"
-        f"Then one sentence explaining what specifically each shortlisted candidate "
-        f"contributes — reference their individual sonic character (e.g. 'X provides "
-        f"the harmonic body, Y adds brightness'). Do NOT use generic phrases like "
-        f"'rich harmonic content' or 'dynamic evolution'. Be specific to these "
-        f"particular wavetables."
+        f"Write EXACTLY ONE sentence (under 30 words) explaining what each shortlisted "
+        f"candidate contributes to the target, referencing their individual sonic "
+        f"character (e.g. 'X provides the harmonic body, Y adds the brightness'). "
+        f"Be specific to these particular wavetables — do NOT use generic phrases like "
+        f"'rich harmonic content' or 'dynamic evolution'. Do NOT re-list the names as "
+        f"a bracketed JSON array — the list will appear in the output file next."
     )
     try:
         r = _llm_post(
@@ -286,7 +287,10 @@ def stage2_final_summary(
         )
         return r["choices"][0]["message"]["content"].strip()
     except Exception:
-        return f"Final candidates: [{names_str}]"
+        return (
+            f"Shortlisted candidates each offer distinct building-block qualities "
+            f"for the target sound."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +337,8 @@ def build_search_record(
 ) -> dict | None:
     """Build one search agent SFT record with iterative batch listening.
 
-    Uses real bash commands to scripts/list_wavetables.py and
-    scripts/render_wavetable_probes.py. The search agent's task is defined by
+    Uses real bash commands to skills/vital/scripts/list_wavetables.py and
+    skills/vital/scripts/render_probes.py. The search agent's task is defined by
     a dense index range [shard_start, shard_end). GT wavetables within the
     range are oracle-forced onto the final shortlist.
     """
@@ -405,15 +409,15 @@ def build_search_record(
             f"<audio>\nEvaluate wavetables at indices "
             f"{shard_start}-{shard_end - 1} from the library and return a shortlist "
             f"of 2-4 names that could serve as building blocks for recreating the target. "
-            f"Use `python scripts/list_wavetables.py --start {shard_start} --end {shard_end}` "
+            f"Use `python skills/vital/scripts/list_wavetables.py --start {shard_start} --end {shard_end}` "
             f"to see the names in your range, and "
-            f"`python scripts/render_wavetable_probes.py --idxs A,B,C --out-dir {probe_out_dir}` "
+            f"`python skills/vital/scripts/render_probes.py --idxs A,B,C --out-dir {probe_out_dir}` "
             f"to render and listen to each candidate."
         ),
     })
 
     # Step 1: list_wavetables — agent fetches names in its range
-    list_cmd = f"python scripts/list_wavetables.py --start {shard_start} --end {shard_end}"
+    list_cmd = f"python skills/vital/scripts/list_wavetables.py --start {shard_start} --end {shard_end}"
     shard_entries = [
         {"idx": i, "name": idx_to_name[i]}
         for i in range(shard_start, shard_end) if i in idx_to_name
@@ -444,7 +448,7 @@ def build_search_record(
         batch_idxs = [name_to_idx[n] for n in batch if n in name_to_idx]
         idxs_csv = ",".join(str(i) for i in batch_idxs)
         render_cmd = (
-            f"python scripts/render_wavetable_probes.py "
+            f"python skills/vital/scripts/render_probes.py "
             f"--idxs {idxs_csv} --out-dir {probe_out_dir}"
         )
 
@@ -499,7 +503,11 @@ def build_search_record(
         else:
             omni_obs = "\n".join(f'"{n}": Candidate evaluated.' for n in batch)
 
-        # Stage 2: write reasoning ONLY (labels are pre-determined by CLAP)
+        # Stage 2: write reasoning ONLY (labels are pre-determined by CLAP).
+        # No "Candidates so far" echo — the running shortlist is the agent's own
+        # internal state, not something it narrates in-token. The final shortlist
+        # is materialised via an explicit file write at the end of the run
+        # (claw-code-style handoff).
         batch_notes = stage2_batch_notes(
             omni_observations=omni_obs,
             candidate_names=batch,
@@ -512,42 +520,86 @@ def build_search_record(
             gt_transform_description=gt_transform_desc,
         )
 
-        # Append running candidate summary (builder-injected, not model-generated)
-        selected_str = ", ".join(f"'{n}'" for n in selected_so_far)
-        batch_notes += f"\n\nCandidates so far: [{selected_str}]"
-
         all_batch_notes.append(batch_notes)
         pending_notes = batch_notes
 
-    # Final summary — merge with pending batch notes
+    # Final narration (merge with pending batch notes to avoid adjacent assistants)
     if omni_server:
         final_text = stage2_final_summary(selected_so_far, archetype, all_batch_notes, stage2_server, stage2_model)
     else:
-        final_text = f"Final candidates: [{', '.join(repr(n) for n in selected_so_far)}]"
+        final_text = (
+            f"Shortlisted candidates each offer distinct building-block qualities "
+            f"for the target sound."
+        )
 
     if pending_notes:
         final_text = f"{pending_notes}\n\n{final_text}"
         pending_notes = None
 
-    messages.append({"role": "assistant", "content": final_text})
-
-    # Write shortlist output file — this is what the main agent's runtime executor
-    # would write at inference time. Main agent reads it via `cat` to consume the result.
-    # Single-line JSON so concatenating multiple files via `cat` produces newline-delimited JSON.
+    # Write shortlist output file. This is the claw-code-style file-based handoff —
+    # the dispatcher (main agent) will `cat` this file to consume the result.
+    #
+    # The write is BOTH persisted to disk (for real, so the main agent's SFT builder
+    # can reference it at inference time) AND emitted as an explicit bash tool_call
+    # in the conversation transcript, so the model learns the full protocol: "do the
+    # work, then write the result to the file my dispatcher reads."
     shortlist_path: str | None = None
     if shortlist_dir is not None:
         shortlist_dir.mkdir(parents=True, exist_ok=True)
         shortlist_path = str(shortlist_dir / f"{sample_id}_search_{agent_idx}.json")
+        payload = {
+            "status": "completed",
+            "agentId": f"search_{sample_id}_{agent_idx}",
+            "shardStart": shard_start,
+            "shardEnd": shard_end,
+            "shortlist": selected_so_far,
+            "nBatches": len(all_ordered),
+        }
+        # Persist to disk (so the file actually exists at the path the transcript references)
         with open(shortlist_path, "w") as f:
-            json.dump({
-                "status": "completed",
-                "agentId": f"search_{sample_id}_{agent_idx}",
-                "shardStart": shard_start,
-                "shardEnd": shard_end,
-                "shortlist": selected_so_far,
-                "nBatches": len(all_ordered),
-            }, f)
+            json.dump(payload, f)
             f.write("\n")
+
+        # Merge the final narration and the "writing file" intro into ONE assistant
+        # turn, then emit the visible tool_call + tool_response + closing assistant.
+        # Two back-to-back assistant turns would fail the validator.
+        messages.append({
+            "role": "assistant",
+            "content": (
+                f"{final_text}\n\n"
+                f"Writing the final shortlist to the output file for the dispatcher "
+                f"to consume."
+            ),
+        })
+        write_cmd = (
+            f"python - <<'PY'\n"
+            f"import json\n"
+            f"from pathlib import Path\n"
+            f"p = Path({json.dumps(shortlist_path)})\n"
+            f"p.parent.mkdir(parents=True, exist_ok=True)\n"
+            f"with open(p, 'w') as f:\n"
+            f"    json.dump({json.dumps(payload, ensure_ascii=False)}, f)\n"
+            f"    f.write('\\n')\n"
+            f"print(json.dumps({{'status': 'ok', 'file': str(p)}}))\n"
+            f"PY"
+        )
+        messages.append(_tool_call("bash", {"command": write_cmd}))
+        messages.append({
+            "role": "tool_response",
+            "content": json.dumps({"status": "ok", "file": shortlist_path}, ensure_ascii=False),
+        })
+        # Closing assistant turn — keeps the validator's last-message-is-assistant
+        # invariant, and signals task completion explicitly.
+        messages.append({
+            "role": "assistant",
+            "content": (
+                f"Shortlist written. {len(selected_so_far)} candidate(s) flagged for "
+                f"the judge agent."
+            ),
+        })
+    else:
+        # No shortlist_dir — single final assistant turn with the narration only.
+        messages.append({"role": "assistant", "content": final_text})
 
     record = {
         "id": f"{sample_id}_search",

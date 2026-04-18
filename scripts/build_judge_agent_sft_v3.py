@@ -339,7 +339,7 @@ def build_judge_record(
 
     # Render probes for all pool candidates
     render_cmd = (
-        f"python scripts/render_wavetable_probes.py --names {names_arg} "
+        f"python skills/vital/scripts/render_probes.py --names {names_arg} "
         f"--out-dir {probe_out_dir}"
     )
     messages.append({

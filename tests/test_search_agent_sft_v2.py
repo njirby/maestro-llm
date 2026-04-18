@@ -61,7 +61,7 @@ def _make_search_v2_record(
         "role": "tool_call",
         "content": json.dumps({
             "name": "bash",
-            "arguments": {"command": f"python scripts/list_wavetables.py --start {shard_start} --end {shard_end}"},
+            "arguments": {"command": f"python skills/vital/scripts/list_wavetables.py --start {shard_start} --end {shard_end}"},
         }),
     })
     shard_entries = [{"idx": i, "name": f"WT_{i}"} for i in range(shard_start, shard_end)]
@@ -96,7 +96,7 @@ def _make_search_v2_record(
             "role": "tool_call",
             "content": json.dumps({
                 "name": "bash",
-                "arguments": {"command": f"python scripts/render_wavetable_probes.py --idxs {idxs_csv} --out-dir {probe_dir}"},
+                "arguments": {"command": f"python skills/vital/scripts/render_probes.py --idxs {idxs_csv} --out-dir {probe_dir}"},
             }),
         })
         messages.append({
@@ -104,22 +104,49 @@ def _make_search_v2_record(
             "content": json.dumps({"status": "ok", "rendered": rendered}),
         })
 
-        # Shortlist update
+        # Shortlist update (builder-managed state, NOT echoed in narration —
+        # claw-code-style: running state is implicit, final state is a file write)
         if gt_in_shard and bi == 1:
             shortlist.append(gt_name)
         shortlist.append(batch_names[-1])
         shortlist = shortlist[-4:]
 
-        sl_str = ", ".join(f"'{n}'" for n in shortlist)
-        pending_notes = "\n".join(f"'{n}': Evaluated. Shortlisted." for n in batch_names[:2])
-        pending_notes += f"\nCurrent shortlist: [{sl_str}]"
+        pending_notes = "\n".join(f"'{n}': Evaluated. Selected." for n in batch_names[:2])
 
-    # Final summary (merged with pending notes)
-    sl_str = ", ".join(f"'{n}'" for n in shortlist)
-    final = f"{pending_notes or ''}\n\nFinal candidates: [{sl_str}]"
-    messages.append({"role": "assistant", "content": final})
-
+    # Final narration + "writing file" intro merged into ONE assistant turn
+    # (two back-to-back assistants would fail the validator). Claw-code-style
+    # handoff: file write emitted as a visible tool_call.
     shortlist_path = f"/tmp/agents/search_test_1.json"
+    payload = {
+        "status": "completed",
+        "agentId": "search_test_001_1",
+        "shardStart": shard_start,
+        "shardEnd": shard_end,
+        "shortlist": shortlist,
+        "nBatches": n_batches,
+    }
+    final = (
+        f"{pending_notes or ''}\n\n"
+        f"Shortlisted candidates each offer distinct qualities for the target sound.\n\n"
+        f"Writing the final shortlist to the output file for the dispatcher to consume."
+    )
+    messages.append({"role": "assistant", "content": final})
+    messages.append({
+        "role": "tool_call",
+        "content": json.dumps({
+            "name": "bash",
+            "arguments": {"command": f"python - <<'PY'\nimport json; json.dump({json.dumps(payload)}, open('{shortlist_path}','w'))\nPY"},
+        }),
+    })
+    messages.append({
+        "role": "tool_response",
+        "content": json.dumps({"status": "ok", "file": shortlist_path}),
+    })
+    messages.append({
+        "role": "assistant",
+        "content": f"Shortlist written. {len(shortlist)} candidate(s) flagged for the judge agent.",
+    })
+
     return {
         "id": "test_search_v2_001",
         "task_type": "search_v2",
@@ -162,15 +189,15 @@ def test_search_v2_first_bash_is_list_wavetables():
     assert "--end" in first_cmd
 
 
-def test_search_v2_renders_use_render_wavetable_probes():
+def test_search_v2_renders_use_render_probes():
     record = _make_search_v2_record()
     tool_calls = [json.loads(m["content"]) for m in record["messages"] if m["role"] == "tool_call"]
     render_calls = [
         tc for tc in tool_calls
-        if tc.get("name") == "bash" and "render_wavetable_probes.py" in tc["arguments"].get("command", "")
+        if tc.get("name") == "bash" and "skills/vital/scripts/render_probes.py" in tc["arguments"].get("command", "")
     ]
     # Expect one render call per batch
-    assert len(render_calls) >= 2, f"Expected >= 2 render_wavetable_probes calls, got {len(render_calls)}"
+    assert len(render_calls) >= 2, f"Expected >= 2 render_probes calls, got {len(render_calls)}"
     for rc in render_calls:
         cmd = rc["arguments"]["command"]
         assert "--idxs" in cmd, f"Render call missing --idxs: {cmd}"
@@ -219,10 +246,43 @@ def test_search_v2_no_clap_scores_in_messages():
             assert term not in content, f"Banned term '{term}' in message: {content[:80]}"
 
 
-def test_search_v2_final_candidates_present():
+def test_search_v2_ends_with_shortlist_file_write():
+    """Claw-code-style handoff: the final turns should be a bash tool_call that
+    writes the shortlist file, a tool_response confirming the write, and a
+    closing assistant turn. No in-token 'Final candidates: [...]' echo."""
     record = _make_search_v2_record()
-    last = record["messages"][-1]["content"]
-    assert "Final candidates:" in last
+    msgs = record["messages"]
+
+    # Last message must be assistant (validator invariant)
+    assert msgs[-1]["role"] == "assistant"
+
+    # Find the final bash write tool_call + response pair
+    tool_calls = [
+        (i, json.loads(m["content"]))
+        for i, m in enumerate(msgs)
+        if m["role"] == "tool_call"
+    ]
+    bash_calls = [(i, tc) for i, tc in tool_calls if tc.get("name") == "bash"]
+    assert bash_calls, "Expected at least one bash tool_call"
+    # The LAST bash tool_call should be the shortlist file write
+    last_bash_idx, last_bash = bash_calls[-1]
+    cmd = last_bash["arguments"]["command"]
+    assert "shortlist" in cmd.lower() or ".json" in cmd, (
+        f"Last bash call should write the shortlist; got: {cmd[:120]}"
+    )
+
+    # And its tool_response should confirm file ok
+    assert msgs[last_bash_idx + 1]["role"] == "tool_response"
+    resp = json.loads(msgs[last_bash_idx + 1]["content"])
+    assert resp.get("status") == "ok"
+    assert "file" in resp
+
+    # The "Final candidates: [..]" in-token echo is explicitly removed.
+    combined = " ".join(m["content"] for m in msgs if m["role"] == "assistant")
+    assert "Final candidates:" not in combined, (
+        "The in-token 'Final candidates: [...]' echo should not appear — "
+        "shortlist is communicated via the file write only."
+    )
 
 
 def test_search_v2_meta_has_shard_range():

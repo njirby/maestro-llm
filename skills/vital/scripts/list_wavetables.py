@@ -6,15 +6,15 @@ are in their assigned slice of the library.
 
 Usage:
     # Get total count
-    $ python scripts/list_wavetables.py --total
+    $ python skills/vital/scripts/list_wavetables.py --total
     {"total": 568}
 
     # Get a slice
-    $ python scripts/list_wavetables.py --start 0 --end 48
+    $ python skills/vital/scripts/list_wavetables.py --start 0 --end 48
     {"wavetables": [{"idx": 0, "name": "..."}, ...], "start": 0, "end": 48, "count": 48}
 
     # Custom library path
-    $ python scripts/list_wavetables.py --start 0 --end 10 --lib /path/to/wavetable_lib.json
+    $ python skills/vital/scripts/list_wavetables.py --start 0 --end 10 --lib /path/to/wavetable_lib.json
 """
 from __future__ import annotations
 

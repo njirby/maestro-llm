@@ -7,16 +7,16 @@ inactive oscillators are muted.
 
 Usage:
     # Single wavetable on osc 1
-    $ python scripts/render_wavetable_tuple.py \
+    $ python skills/vital/scripts/render_tuple.py \
         --osc1 "01 Basic Shapes" --out /tmp/tuple.wav
 
     # 3-oscillator tuple
-    $ python scripts/render_wavetable_tuple.py \
+    $ python skills/vital/scripts/render_tuple.py \
         --osc1 "Bell" --osc2 "1A - detuned bend bass" --osc3 "Corpusbode Phaser" \
         --out /tmp/tuple.wav
 
     # Custom library path
-    $ python scripts/render_wavetable_tuple.py \
+    $ python skills/vital/scripts/render_tuple.py \
         --osc1 "Sine to Saw" --out /tmp/tuple.wav --lib data/wavetable_lib.json
 """
 from __future__ import annotations

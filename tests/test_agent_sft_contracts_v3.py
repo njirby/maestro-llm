@@ -178,7 +178,7 @@ def _make_v3_record(n_batches=3, has_correction=False, has_mistake=False):
         {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"echo probe"}}'},
         {"role": "tool_response", "content": '{"status":"ok","baseline_audio":"<audio>","path":"/tmp/d.wav"}'},
         {"role": "assistant", "content": "Checking wavetable library size."},
-        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"python scripts/list_wavetables.py --total"}}'},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"python skills/vital/scripts/list_wavetables.py --total"}}'},
         {"role": "tool_response", "content": '{"total":282}'},
         {"role": "assistant", "content": "Library has 282 wavetables. Dispatching 2 search agents across slices [0-47, 141-188]."},
         # Agent call 1
@@ -427,7 +427,7 @@ def test_v3_wt_scaffold_uses_list_wavetables_script():
             parsed = json.loads(m["content"])
             if parsed["name"] == "bash" and "list_wavetables.py" in parsed["arguments"]["command"]:
                 list_calls.append(parsed)
-    assert list_calls, "Main agent should call scripts/list_wavetables.py"
+    assert list_calls, "Main agent should call skills/vital/scripts/list_wavetables.py"
 
 
 def test_v3_wt_scaffold_has_tuple_audio():

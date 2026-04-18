@@ -5,16 +5,16 @@ Used by search agents to actually hear candidate wavetables. Takes a list of
 indices or names, loads each wavetable from the library, swaps it into the
 init preset, renders via vita, and writes a WAV.
 
-Usage:
+Usage (from the repo root — this script lives inside the vital skill):
     # By index range
-    $ python scripts/render_wavetable_probes.py --start 0 --end 8 --out-dir /tmp/probes
+    $ python skills/vital/scripts/render_probes.py --start 0 --end 8 --out-dir /tmp/probes
     {"status": "ok", "rendered": [{"idx": 0, "name": "...", "out": "/tmp/probes/wt_0.wav"}, ...]}
 
     # By explicit indices
-    $ python scripts/render_wavetable_probes.py --idxs 0,5,12 --out-dir /tmp/probes
+    $ python skills/vital/scripts/render_probes.py --idxs 0,5,12 --out-dir /tmp/probes
 
     # By names
-    $ python scripts/render_wavetable_probes.py --names "01 Basic Shapes,Pink Noise" --out-dir /tmp
+    $ python skills/vital/scripts/render_probes.py --names "01 Basic Shapes,Pink Noise" --out-dir /tmp
 """
 from __future__ import annotations
 

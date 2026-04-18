@@ -950,7 +950,7 @@ def build_record(
     # Check library size — the agent needs to discover this at inference time
     # (it's what drives how many search agents to dispatch and how to slice).
     messages.append({"role": "assistant", "content": "Checking wavetable library size."})
-    messages.append(_tool_call("bash", {"command": "python scripts/list_wavetables.py --total"}))
+    messages.append(_tool_call("bash", {"command": "python skills/vital/scripts/list_wavetables.py --total"}))
     messages.append({"role": "tool_response", "content": json.dumps({"total": total_named}, ensure_ascii=False)})
 
     # Agent output directory (real path; runtime executor writes files here at inference)
@@ -1096,8 +1096,8 @@ def build_record(
                 "prompt": (
                     f"Target: {target_audio_path}.\n"
                     f"Evaluate wavetables at indices {start}-{end - 1}. "
-                    f"Use `python scripts/list_wavetables.py --start {start} --end {end}` "
-                    f"and `python scripts/render_wavetable_probes.py --idxs ... --out-dir ...` "
+                    f"Use `python skills/vital/scripts/list_wavetables.py --start {start} --end {end}` "
+                    f"and `python skills/vital/scripts/render_probes.py --idxs ... --out-dir ...` "
                     f"to hear each candidate. Return a JSON shortlist of 2-4 wavetable names."
                 ),
                 "name": f"search-{rounds_used}-{agent_id.split('_a')[-1]}",
@@ -1225,7 +1225,7 @@ def build_record(
                 f"Target: {target_audio_path}.\n"
                 f"Pool candidates from search agents: {json.dumps(pool)}.\n"
                 f"Target uses {n_osc_slots} active oscillator(s). Listen to each candidate "
-                f"via `python scripts/render_wavetable_probes.py --names ... --out-dir ...` "
+                f"via `python skills/vital/scripts/render_probes.py --names ... --out-dir ...` "
                 f"alongside the target, then select the {n_osc_slots} candidates that "
                 f"together best capture the target. Write a JSON file with `tuple` (list "
                 f"of names), `n_osc_slots`, and `reasoning`."
@@ -1258,7 +1258,7 @@ def build_record(
         )
         tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}.wav"
         render_cmd = (
-            f"python scripts/render_wavetable_tuple.py {osc_args} "
+            f"python skills/vital/scripts/render_tuple.py {osc_args} "
             f"--out {tuple_wav}"
         )
         with serial_lock:

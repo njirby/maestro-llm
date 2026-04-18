@@ -131,7 +131,7 @@ tool_call:   bash listen probe
 tool_resp:   {"baseline_audio": "<audio>", ...}
 
 assistant:   Checking wavetable library size.
-tool_call:   bash python scripts/list_wavetables.py --total
+tool_call:   bash python skills/vital/scripts/list_wavetables.py --total
 tool_resp:   {"total": 282}
 
 # PARALLEL SEARCH DISPATCH
@@ -160,7 +160,7 @@ tool_resp:   {"tuple": ["X", "Y"], "n_osc_slots": 2, "reasoning": "..."}
 
 # TUPLE VERIFY
 assistant:   Judge selected [X, Y]. Rendering the tuple to verify the combination.
-tool_call:   bash python scripts/render_wavetable_tuple.py --osc1 X --osc2 Y --out ...
+tool_call:   bash python skills/vital/scripts/render_tuple.py --osc1 X --osc2 Y --out ...
 tool_resp:   {"tuple_audio": "<audio>", ...}
 
 assistant:   This tuple matches the target well. Applying.
