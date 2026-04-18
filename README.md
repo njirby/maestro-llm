@@ -192,12 +192,18 @@ v3 does **not** use path_gen's per-step iterations for conversation structure. I
 **Conversation structure:**
 
 ```
-user:       <audio> [GT clip]  "Recreate this {archetype} sound in Vital."
-assistant:  → WT search / judge scaffold (spawn_search_agents → collect → judge → apply)
-tool_resp:  <audio> [default clip], <audio> [selected candidate previews]
+user:       <audio> [GT clip]  "Recreate this sound in Vital."
+assistant:  Listening to current default preset baseline.
+tool_resp:  <audio> [default clip]
+assistant:  Library has 282 wavetables. Dispatching 4 search agents...
+            → Agent tool calls (parallel wavetable_search subagents)
+            → bash cat to read shortlists
+            → render tuple → listen → accept (or re-search if target not found)
+            → bash apply tuple via VitalController
 
 # DIAGNOSIS (one audio turn, one text turn):
-assistant:  OBSERVATIONS: [perceptual comparison of GT vs default, from Omni Stage 1]
+assistant:  OBSERVATIONS: [preset-grounded perceptual description of target, from Omni
+              Stage 1 — target WAV + perceptual preset summary as grounding prior]
             PLAN:
               • Oscillator: [qualitative change needed]
               • Filter: [...]
@@ -210,9 +216,10 @@ tool_resp:  {"status": "ok"}
 assistant:  Listening after oscillator batch.
 tool_call:  bash [render probe of cumulative state]
 tool_resp:  {"status": "ok", "batch_audio": "<audio>", ...}
+assistant:  [plan-aligned one-sentence narration grounded in param before→after
+             deltas and the subsystem's plan bullet]
 
 # Repeat for each non-empty subsystem: envelope, filter, lfo, fx, modulation, macro
-# Each batch: one-sentence grounded check → next batch intro (merged to avoid adjacent assistant)
 
 # CORRECTION (inline, ~20% of samples):
 assistant:  [batch check] Overshot on {subsystem} — backing off {param}.
@@ -222,51 +229,87 @@ assistant:  Listening to the corrected preset.
 tool_call:  bash [render probe]
 tool_resp:  {"status": "ok", "corrected_audio": "<audio>", ...}
 
-# FINAL ASSESSMENT:
-assistant:  FINAL ASSESSMENT (complete): [2-sentence grounded summary]
+# FINAL ASSESSMENT (grounded in residual preset delta):
+assistant:  FINAL ASSESSMENT (complete): [matches target — 2 sentences grounded in
+            the residual delta summary]
             — or —
-            FINAL ASSESSMENT (budget_exhausted): [summary of progress and remaining gap]
+            FINAL ASSESSMENT (budget_exhausted): [what matches; specific remaining
+            residual cited from the residual delta summary]
 ```
 
 **Key design decisions:**
 - **Subsystem batches, not per-param steps.** One batch per presentation subsystem (oscillator, envelope, filter, lfo, fx, modulation, macro). Params are bucketed by `_param_family()` — guarantees 100% batch-param alignment.
-- **Fresh vita-rendered audio per batch.** Each batch's audio reflects exactly the cumulative preset state after that batch. No audio leakage from path_gen's support-family mechanism.
-- **Inline mistake correction.** ~20% of samples get a deliberate overshoot in one param of one batch. The correction fires immediately after the listen (producer-style: notice the mistake, fix it, move on).
-- **Two-stage commentary.** DIAGNOSIS: Omni Stage 1 (audio) → Stage 2 (text + subsystem diff). Batch checks: Stage 2 only (grounded in remaining preset diff). Verdict: Omni Stage 1 (audio) → Stage 2 (text + residual diff).
+- **Fresh vita-rendered audio per batch.** Each batch's audio reflects exactly the cumulative preset state after that batch.
+- **Inline mistake correction.** ~20% of samples get a deliberate overshoot in one param of one batch. The correction fires immediately after the listen.
+- **Preset-grounded Stage 1 observations.** Omni listens to the target WAV with a perceptual-bucket summary of the target preset injected as a grounding prior (`scripts/preset_perceptual_summary.py: summarize_preset_perceptual`). Avoids the multi-audio target/default comparison that was out-of-distribution for Qwen-Omni and produced hallucinated modulation and flipped attack shapes. The summary is no-numbers/no-param-names — just producer vocabulary.
+- **Plan + param-delta driven batch narrations.** Each per-batch narration receives the plan bullet for its subsystem and the concrete before→after param deltas. Narrations are plan-aligned by construction (no more "LFO drifts with human-like unpredictability" when the plan says "disengage all modulation"). Natural variety comes from different presets having genuinely different deltas — no descriptor-lens bank needed.
+- **Residual-delta-grounded verdict.** FINAL ASSESSMENT is anchored on `summarize_residual_delta_perceptual(target_preset, final_preset)` — the top 5 concrete residual differences between target and final, ranked by magnitude, rendered as perceptual bullets. Verdicts cite "attack is still too plucky" or "filter should be darker" instead of defaulting to "envelope 6".
 
 Total audio per record: 2 + B clips (GT + default + B batch listens, where B ≈ 5–7) + optional correction listen. At ~94.5 tokens/sec, a 7-batch conversation runs ~7–9K audio tokens — ~40% less than v2.
 
 **Step 3 — grade and filter:**
 
 ```bash
+# With LLM-as-judge (recommended) — ~35s for 8 samples at --workers 8:
 python scripts/grade_agent_sft.py \
     --input data/prepared/agent_sft/main_v3.jsonl \
     --output data/prepared/agent_sft/main_v3_graded.jsonl \
-    --no-llm-judge \
-    --live-exec-check \
-    --verbose
+    --llm-judge-server http://localhost:8000 \
+    --llm-judge-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --workers 8 --verbose
+
+# Structural-only (fast, no LLM calls):
+python scripts/grade_agent_sft.py \
+    --input data/prepared/agent_sft/main_v3.jsonl \
+    --output data/prepared/agent_sft/main_v3_graded.jsonl \
+    --no-llm-judge --verbose
 ```
 
 **Scoring dimensions for v3 `main` records:**
 
+Structural axes (always computed):
+
 | Dimension | Weight | What it measures |
 |---|---|---|
-| `batch_param_alignment` | 30% | Every param in each batch's set_params call matches the subsystem label |
-| `diagnosis_subsystem_coverage` | 25% | F1 of subsystems named in PLAN vs subsystems that actually differ |
-| `clap_net_improvement` | 20% | Net CLAP cosine improvement from first batch to last |
-| `mistake_recovery` | 10% (conditional) | Correction block appears and targets the correct param |
-| `verdict_grounded` | 10% | FINAL ASSESSMENT names a residual subsystem |
+| `batch_param_alignment` | 15% | Every param in each batch's set_params call matches the subsystem label |
+| `diagnosis_subsystem_coverage` | 10% | F1 of subsystems named in PLAN vs subsystems that actually differ |
+| `clap_net_improvement` | 15% | Net CLAP cosine improvement from first batch to last |
+| `verdict_grounded` | 5% | FINAL ASSESSMENT names a residual subsystem |
 | `snake_case_clean` | 2.5% | No raw snake_case param names in assistant text |
 | `format_consistent` | 2.5% | No **BOLD:** headers |
+| `mistake_recovery` | 5% (conditional) | Correction block appears and targets the correct param |
+
+LLM-judge axes (added when `--llm-judge-server` is set):
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| `llm_observations_audio_grounded` | 10% | Omni listens to the target WAV and judges whether the OBSERVATIONS text matches what's audibly present |
+| `llm_narration_no_hallucination` | 10% | Per-batch binary check: does the narration reference any param family not in the batch's `param_names`? |
+| `llm_narration_plan_ref` | 8% | Does the narration pick up intent from the plan's subsystem bullet? |
+| `llm_narration_param_specific` | 7% | Does the narration name audible consequences tied to the specific params edited? |
+| `llm_narration_templateness` | 5% | **Cross-sample binary** — compared against reference narrations from the same subsystem in other samples; scores 1 if phrasing is sample-specific, 0 if swappable template |
+| `llm_verdict_residual_grounded` | 7% | Does the verdict cite a concrete residual difference (not just "envelope N")? |
+| `llm_verdict_novelty` | 5% | **Cross-sample binary** — compared against 3 other samples' verdicts; scores 1 if sample-specific, 0 if template-shaped |
 
 `execution_fidelity` (from `--live-exec-check`) validates that generated bash tool calls run against a live REAPER session.
 
-Benchmark on smoke_v3 (n=32): overall mean **0.930**, batch_param_alignment 1.0, execution_fidelity 1.0, diagnosis_subsystem_coverage 1.0.
+**Benchmarks on smoke_test_v10 (n=8) with `--llm-judge-server`:**
 
-**Smoke test** (32 samples):
+| Build | overall | audio_grounded | verdict_novelty | verdict_grounded | templateness |
+|---|---|---|---|---|---|
+| v2 original (pre-grounding, lens bank off) | 0.708 | 0.125 | 0.375 | 0.688 | 0.323 |
+| v5 (grounded Stage 1) | 0.776 | 0.438 | 0.500 | 0.750 | 0.583 |
+| v7 (plan+delta narrations, lens bank removed) | 0.762 | 0.625 | 0.500 | 0.625 | 0.542 |
+| **v8** (+ residual-delta verdict) | **0.781** | 0.312 | **0.750** | **0.812** | **0.771** |
+
+Structural grader on smoke_v3 (n=32, older pre-grounding): overall mean 0.930, batch_param_alignment 1.0, execution_fidelity 1.0, diagnosis_subsystem_coverage 1.0. That number was dominated by structural floors; the LLM-judge scores above give a truer picture of text-quality.
+
+**Audio-grounding spot-check HTML:** `scripts/build_audio_grounding_spotcheck.py` renders a self-contained HTML (audio embedded as base64) with target + default playback, preset summary, observations, per-batch narrations with judge badges. Supports side-by-side comparison between two graded files (`--compare-grades`).
+
+**Smoke test** (8 samples end-to-end, including LLM-judge grading):
 
 ```bash
-python scripts/render_iter_presets.py --generate 32 \
+python scripts/render_iter_presets.py --generate 8 \
     --output-dir outputs/smoke_test --wavetable-lib data/wavetable_lib.json
 
 python scripts/build_main_agent_sft_v3.py \
@@ -275,7 +318,8 @@ python scripts/build_main_agent_sft_v3.py \
     --index-meta outputs/wt_retrieval_baseline/wt_index_meta.json \
     --wavetable-lib data/wavetable_lib.json \
     --out-jsonl outputs/smoke_test/main_v3.jsonl \
-    --max-samples 32 --max-batches 8 --mistake-rate 0.20 \
+    --max-samples 8 --workers 8 --max-batches 8 --mistake-rate 0.20 \
+    --force-research-rate 0.80 \
     --omni-server http://localhost:8000 \
     --omni-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --stage2-server http://localhost:8000 \
@@ -285,8 +329,17 @@ python scripts/build_main_agent_sft_v3.py \
 python scripts/grade_agent_sft.py \
     --input outputs/smoke_test/main_v3.jsonl \
     --output outputs/smoke_test/graded_v3.jsonl \
-    --no-llm-judge --live-exec-check --verbose
+    --llm-judge-server http://localhost:8000 \
+    --workers 8 --verbose
+
+# Optional: self-contained HTML with audio + per-sample scores for spot-check
+python scripts/build_audio_grounding_spotcheck.py \
+    --grades outputs/smoke_test/graded_v3.jsonl \
+    --out outputs/smoke_test/spotcheck.html
 ```
+
+Expected runtime on a single 4×3090 rig with vLLM serving Qwen3-Omni at
+MAX_NUM_SEQS=24: build ~2 min, grade ~35s.
 
 ### Iterative preset recreation pipeline (main-agent SFT v2, legacy)
 
@@ -736,9 +789,12 @@ scripts/
   render_iter_presets.py      # Batch-render GT + probe clips; write manifest.jsonl
   build_main_agent_sft_v3.py  # Primary SFT builder: diagnose → subsystem-batched execute
   build_main_agent_sft_v2.py  # Legacy SFT builder: per-step two-stage commentary
-  grade_agent_sft.py          # Quality grader + LLM-as-judge filter (v2 + v3 scoring paths)
+  grade_agent_sft.py          # Quality grader + v3 LLM-as-judge (7 axes) + cross-sample refs
+  preset_perceptual_summary.py # Perceptual-bucket preset summaries (grounding prior for Stage 1) + residual-delta summary (grounding for verdict)
+  build_audio_grounding_spotcheck.py # Self-contained HTML spot-check (audio embedded, compare mode)
+  validate_grounded_observations.py  # A/B runner: current vs preset-grounded Stage 1 observations
   agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, GT-similarity pool
-  build_search_agent_sft_v2.py # Search-agent SFT v2: iterative batch-listening wavetable search
+  build_search_agent_sft_v2.py # Search-agent SFT v2: iterative batch-listening (--workers for entry + agent parallelism)
   build_search_agent_sft.py   # Search-agent SFT v1 (legacy: template proposals)
   build_judge_agent_sft.py    # Judge-agent SFT (legacy: listwise ranking from CLAP)
   merge_agent_sft.py          # Merge task JSONL files, shuffle
@@ -776,10 +832,12 @@ configs/
 - Wavetable library builder and loader (568 unique wavetables)
 - N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
 - `render_iter_presets.py` — batch render of GT, default, and per-step probe clips; writes `manifest.jsonl`
-- `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh vita-rendered per-batch audio, inline mistake correction, producer-style plan-then-execute flow, GT-CLAP-similarity pool + tuple render+listen WT scaffold (overall 0.930 on n=32 smoke, execution_fidelity 1.0)
-- `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions
+- `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh vita-rendered per-batch audio, inline mistake correction, producer-style plan-then-execute flow, GT-CLAP-similarity pool + tuple render+listen WT scaffold. **Preset-grounded Stage 1** (target-only audio + perceptual preset summary), **plan + param-delta driven narrations** (no descriptor-lens bank), **residual-delta grounded verdict**. Entry-level `--workers` concurrency (8×4 agents saturates vLLM's 24 slots). Overall 0.781 on n=8 LLM-judge smoke.
+- `preset_perceptual_summary.py` — perceptual-bucket preset summaries (no numbers, no param names) used as a grounding prior by Stage 1 observations; `summarize_residual_delta_perceptual` feeds the final verdict
+- `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions; entry-level + agent-level concurrency via `--workers`
 - `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
-- `grade_agent_sft.py` — v2 + v3 scoring paths; heuristic + LLM-as-judge; live-exec-check against REAPER
+- `grade_agent_sft.py` — v2 + v3 scoring paths; v3 LLM-as-judge across 7 axes (narration plan_ref / param_specific / templateness-cross-sample / no-hallucination, observations audio-grounded, verdict residual_grounded / novelty-cross-sample); live-exec-check against REAPER
+- `build_audio_grounding_spotcheck.py` — self-contained HTML spot-check with embedded audio + judge-badge breakdown; `--compare-grades` renders two graded files side-by-side
 - Legacy wavetable-retrieval SFT builders (search v1 / judge — superseded by search v2)
 - Lua tuple pipeline for melody transcription SFT data
 - MS-Swift LoRA training scripts for Qwen2.5-Omni
