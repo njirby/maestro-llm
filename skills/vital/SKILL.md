@@ -52,7 +52,7 @@ See `references/subsystem_taxonomy.md` for the mapping from Vital parameter fami
 - **Filter cutoff is in MIDI note units** (not Hz). Resonance is 0-1.
 - **Wavetable names can contain spaces, hyphens, and parentheses** — quote them in bash. Names never contain commas (safe to comma-join with `--names`).
 - **The library has 282 unique wavetables** (post-dedup by name from a 568-entry raw library).
-- **Edge case**: if the user invokes the pipeline without attaching an audio clip (no `<audio>` in the first user message), refuse with a prompt asking the user to select an audio item in REAPER first. Do not fabricate a target.
+- **Edge case**: if the user invokes the pipeline without attaching an audio clip (no audio tag in the first user message), refuse with a prompt asking the user to select an audio item in REAPER first. Do not fabricate a target.
 
 ## No-audio variant
 

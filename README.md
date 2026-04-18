@@ -845,7 +845,9 @@ configs/
 - MS-Swift LoRA training scripts for Qwen2.5-Omni
 
 **Planned / not yet implemented:**
-- Agent inference loop (the trained model running against a live REAPER session)
+- **Plugin-explorer agent task** — SFT data for an agent that meets an unfamiliar plugin, systematically probes it (parameter sweeps, structured listens, hypothesis-forming), then writes its own `skills/<plugin>/SKILL.md` + bundled helper scripts. Closes the loop on the agent-writes-its-own-skill vision and unlocks generalisation beyond Vital without per-plugin training curation.
+- Second-plugin proof-of-generalisation — even a simple subtractive synth's SFT data would validate whether the strategy layer (`listen → decompose → search → audition → apply → verify`) actually transfers across plugins or whether we're over-fit to Vital's vocabulary.
+- Agent inference loop (the trained model running against a live REAPER session; see `/home/nate/Documents/maestro-reaper-plugin/`)
 - REAPER-bench for RLVR
 - RL training stage
 

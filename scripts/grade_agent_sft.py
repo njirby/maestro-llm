@@ -1587,6 +1587,247 @@ def score_main_v3_record(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Search v2 scoring — narrow, structural + correctness
+# ---------------------------------------------------------------------------
+
+def score_search_v2_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Score a search_v2 record.
+
+    The search agent evaluates one slice of the wavetable library across 6
+    batches, accumulates a shortlist via CLAP-grounded labels, then writes
+    the shortlist to an output file via an explicit bash tool_call.
+
+    Dimensions:
+      gt_recovery             (35% conditional) — fraction of GTs in the shard that made it onto the shortlist. Only assessable when gt_in_shard is non-empty.
+      shortlist_file_written  (25%)             — the transcript ends with a bash tool_call that writes the shortlist JSON, followed by a tool_response confirming success.
+      closing_assistant       (10%)             — final message is an assistant turn (validator invariant + task-completion signal).
+      has_render_probes       (10%)             — at least one bash tool_call invokes skills/vital/scripts/render_probes.py (the agent actually listened).
+      shortlist_nonempty      (10%)             — the final shortlist has ≥1 name (agent produced output).
+      snake_case_clean        (5%)              — no snake_case param leak in assistant text.
+      format_consistent       (5%)              — no **BOLD:** headers.
+    """
+    messages = record.get("messages", [])
+    meta = record.get("meta", {})
+    assistant_turns = [m.get("content", "") or "" for m in messages if m.get("role") == "assistant"]
+
+    # GT recovery
+    gt_in_shard: list[str] = list(meta.get("gt_in_shard") or [])
+    gt_on_shortlist: list[str] = list(meta.get("gt_on_shortlist") or [])
+    if gt_in_shard:
+        gt_recovery: float | None = round(len(gt_on_shortlist) / len(gt_in_shard), 4)
+    else:
+        gt_recovery = None  # not assessable
+
+    # Shortlist file write: the LAST bash tool_call should write a *_search_*.json
+    # and its matching tool_response should return {"status": "ok", "file": ...}.
+    shortlist_file_written: float = 0.0
+    last_bash_idx = -1
+    for i, m in enumerate(messages):
+        if m.get("role") == "tool_call":
+            try:
+                tc = json.loads(m.get("content", ""))
+                if tc.get("name") == "bash":
+                    last_bash_idx = i
+            except Exception:
+                pass
+    if last_bash_idx >= 0:
+        try:
+            tc = json.loads(messages[last_bash_idx]["content"])
+            cmd = tc.get("arguments", {}).get("command", "")
+            if "_search_" in cmd and ".json" in cmd:
+                # Check next tool_response is ok
+                nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
+                if nxt and nxt.get("role") == "tool_response":
+                    try:
+                        resp = json.loads(nxt.get("content", ""))
+                        if resp.get("status") == "ok" and resp.get("file"):
+                            shortlist_file_written = 1.0
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Closing assistant
+    closing_assistant: float = 1.0 if messages and messages[-1].get("role") == "assistant" else 0.0
+
+    # Has render_probes invocation
+    has_render_probes: float = 0.0
+    for m in messages:
+        if m.get("role") != "tool_call":
+            continue
+        try:
+            tc = json.loads(m.get("content", ""))
+            if tc.get("name") == "bash" and "skills/vital/scripts/render_probes.py" in tc.get("arguments", {}).get("command", ""):
+                has_render_probes = 1.0
+                break
+        except Exception:
+            pass
+
+    # Shortlist nonempty
+    final_shortlist: list[str] = list(meta.get("final_shortlist") or [])
+    shortlist_nonempty: float = 1.0 if final_shortlist else 0.0
+
+    # Snake case / format
+    snake_hits = sum(bool(_SNAKE_CASE_RE.search(t)) for t in assistant_turns)
+    snake_case_clean = 1.0 - min(1.0, snake_hits / max(1, len(assistant_turns)))
+    bold_hits = sum(bool(_BOLD_HEADER_RE.search(t)) for t in assistant_turns)
+    format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
+
+    weights: dict[str, float] = {
+        "gt_recovery": 0.35,
+        "shortlist_file_written": 0.25,
+        "closing_assistant": 0.10,
+        "has_render_probes": 0.10,
+        "shortlist_nonempty": 0.10,
+        "snake_case_clean": 0.05,
+        "format_consistent": 0.05,
+    }
+    raw: dict[str, Any] = {
+        "gt_recovery": gt_recovery,
+        "shortlist_file_written": shortlist_file_written,
+        "closing_assistant": closing_assistant,
+        "has_render_probes": has_render_probes,
+        "shortlist_nonempty": shortlist_nonempty,
+        "snake_case_clean": snake_case_clean,
+        "format_consistent": format_consistent,
+    }
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for k, w in weights.items():
+        v = raw.get(k)
+        if v is not None:
+            weighted_sum += v * w
+            weight_sum += w
+    overall = round(weighted_sum / weight_sum, 4) if weight_sum > 0 else 0.0
+    return {**raw, "overall": overall}
+
+
+# ---------------------------------------------------------------------------
+# Judge v3 scoring — narrow, structural + correctness
+# ---------------------------------------------------------------------------
+
+def score_judge_v3_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Score a v3 judge record.
+
+    The judge agent audions the combined search pool in one Omni call, picks
+    the best N wavetables (N = active oscillator slots), and writes the
+    selection to a JSON output file via explicit bash tool_call.
+
+    Dimensions:
+      judge_correct            (30%)            — meta.judge_correct: selection matches the GTs present in the pool (structural correctness oracle).
+      tuple_size_correct       (10%)            — len(selected_tuple) == n_osc_slots.
+      tuple_names_in_pool      (10%)            — every selected name is from the pool (no hallucinated wavetables).
+      output_file_written      (25%)            — the final bash tool_call writes judge_*.json with {tuple,n_osc_slots,reasoning} schema, tool_response confirms ok.
+      pool_candidates_discussed (10%)           — fraction of pool names mentioned in the judge's assistant deliberation.
+      has_render_probes        (5%)             — at least one bash tool_call invokes skills/vital/scripts/render_probes.py.
+      closing_assistant        (5%)             — last message is an assistant turn.
+      format_consistent        (2.5%)           — no **BOLD:** headers.
+      snake_case_clean         (2.5%)           — no snake_case in assistant text.
+    """
+    messages = record.get("messages", [])
+    meta = record.get("meta", {})
+    assistant_turns = [m.get("content", "") or "" for m in messages if m.get("role") == "assistant"]
+
+    selected_tuple: list[str] = list(meta.get("selected_tuple") or [])
+    pool: list[str] = list(meta.get("pool") or [])
+    n_osc_slots: int = int(meta.get("n_osc_slots") or 0)
+
+    judge_correct: float = 1.0 if meta.get("judge_correct") else 0.0
+    tuple_size_correct: float = 1.0 if len(selected_tuple) == n_osc_slots else 0.0
+    tuple_names_in_pool: float = (
+        1.0 if selected_tuple and all(n in pool for n in selected_tuple) else 0.0
+    )
+
+    # Output file written
+    output_file_written: float = 0.0
+    last_bash_idx = -1
+    for i, m in enumerate(messages):
+        if m.get("role") == "tool_call":
+            try:
+                tc = json.loads(m.get("content", ""))
+                if tc.get("name") == "bash":
+                    last_bash_idx = i
+            except Exception:
+                pass
+    if last_bash_idx >= 0:
+        try:
+            tc = json.loads(messages[last_bash_idx]["content"])
+            cmd = tc.get("arguments", {}).get("command", "")
+            # Check for the tuple/n_osc_slots/reasoning schema in the command
+            if "tuple" in cmd and "n_osc_slots" in cmd and "reasoning" in cmd:
+                nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
+                if nxt and nxt.get("role") == "tool_response":
+                    try:
+                        resp = json.loads(nxt.get("content", ""))
+                        if resp.get("status") == "ok" and resp.get("file"):
+                            output_file_written = 1.0
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Pool candidates discussed in deliberation
+    if pool and assistant_turns:
+        deliberation_text = " ".join(assistant_turns).lower()
+        mentioned = sum(1 for n in pool if n.lower() in deliberation_text)
+        pool_candidates_discussed: float | None = round(mentioned / len(pool), 4)
+    else:
+        pool_candidates_discussed = None
+
+    # Has render_probes call
+    has_render_probes: float = 0.0
+    for m in messages:
+        if m.get("role") != "tool_call":
+            continue
+        try:
+            tc = json.loads(m.get("content", ""))
+            if tc.get("name") == "bash" and "skills/vital/scripts/render_probes.py" in tc.get("arguments", {}).get("command", ""):
+                has_render_probes = 1.0
+                break
+        except Exception:
+            pass
+
+    closing_assistant: float = 1.0 if messages and messages[-1].get("role") == "assistant" else 0.0
+
+    snake_hits = sum(bool(_SNAKE_CASE_RE.search(t)) for t in assistant_turns)
+    snake_case_clean = 1.0 - min(1.0, snake_hits / max(1, len(assistant_turns)))
+    bold_hits = sum(bool(_BOLD_HEADER_RE.search(t)) for t in assistant_turns)
+    format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
+
+    weights: dict[str, float] = {
+        "judge_correct": 0.30,
+        "tuple_size_correct": 0.10,
+        "tuple_names_in_pool": 0.10,
+        "output_file_written": 0.25,
+        "pool_candidates_discussed": 0.10,
+        "has_render_probes": 0.05,
+        "closing_assistant": 0.05,
+        "format_consistent": 0.025,
+        "snake_case_clean": 0.025,
+    }
+    raw: dict[str, Any] = {
+        "judge_correct": judge_correct,
+        "tuple_size_correct": tuple_size_correct,
+        "tuple_names_in_pool": tuple_names_in_pool,
+        "output_file_written": output_file_written,
+        "pool_candidates_discussed": pool_candidates_discussed,
+        "has_render_probes": has_render_probes,
+        "closing_assistant": closing_assistant,
+        "format_consistent": format_consistent,
+        "snake_case_clean": snake_case_clean,
+    }
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for k, w in weights.items():
+        v = raw.get(k)
+        if v is not None:
+            weighted_sum += v * w
+            weight_sum += w
+    overall = round(weighted_sum / weight_sum, 4) if weight_sum > 0 else 0.0
+    return {**raw, "overall": overall}
+
+
 def score_record(
     record: dict[str, Any],
     llm_judge_server: str | None = None,
@@ -1608,10 +1849,14 @@ def score_record(
         )
     elif task == "main":
         scores = score_main_record(record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model)
+    elif task == "search_v2":
+        scores = score_search_v2_record(record)
+    elif task == "judge" and meta.get("pipeline_version") == "v3_judge":
+        scores = score_judge_v3_record(record)
     elif task == "search":
-        scores = score_search_record(record)
+        scores = score_search_record(record)  # legacy v1
     elif task == "judge":
-        scores = score_judge_record(record)
+        scores = score_judge_record(record)   # legacy v1
     else:
         scores = {"overall": None, "error": f"unknown task_type: {task!r}"}
 

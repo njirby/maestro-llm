@@ -96,6 +96,27 @@ _V3_TOOL_SPECS = json.dumps(
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "Skill",
+                "description": (
+                    "Load a named skill's SKILL.md contents into the conversation context. "
+                    "Use at the start of a session to pick up plugin-specific instructions "
+                    "and helper-script paths (e.g. Skill('vital') to load the Vital synth skill). "
+                    "Available skills are listed in the system context by name + description — "
+                    "pick the one whose description matches the task."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill": {"type": "string", "description": "Skill name (e.g. 'vital')."},
+                        "args": {"type": "string", "description": "Optional args to parameterise the skill."},
+                    },
+                    "required": ["skill"],
+                },
+            },
+        },
     ],
     ensure_ascii=False,
 )
@@ -936,8 +957,71 @@ def build_record(
         ),
     })
 
+    # Skill discovery + load. Matches claw-code's pattern: the agent lists the
+    # SKILL.md files it can see, picks the one whose description matches the
+    # task, then invokes the Skill tool to load the contents. At inference the
+    # harness resolves the skill name via its discovery roots and returns the
+    # SKILL.md as a tool response; at build time we read the same file from
+    # disk so train-time tokens match.
+    _skill_name = "vital"
+    _skills_root = Path(__file__).resolve().parents[1] / "skills"
+    _skill_md_path = _skills_root / _skill_name / "SKILL.md"
+    _available_skill_paths = sorted(str(p.relative_to(_skills_root.parent)) for p in _skills_root.glob("*/SKILL.md"))
+    try:
+        _skill_md_text = _skill_md_path.read_text()
+    except Exception:
+        _skill_md_text = ""
+    # Parse description from YAML frontmatter (best-effort — stops at next top-level key)
+    _skill_description = ""
+    if _skill_md_text.startswith("---"):
+        _fm_end = _skill_md_text.find("---", 3)
+        if _fm_end != -1:
+            _fm = _skill_md_text[3:_fm_end]
+            _in_desc = False
+            _desc_lines: list[str] = []
+            for _line in _fm.splitlines():
+                if _line.startswith("description:"):
+                    _in_desc = True
+                    _desc_lines.append(_line[len("description:"):].strip())
+                    continue
+                if _in_desc:
+                    # continuation if indented; stop at next top-level key
+                    if _line.startswith((" ", "\t")):
+                        _desc_lines.append(_line.strip())
+                    else:
+                        break
+            _skill_description = " ".join(_desc_lines).strip()
+
+    # Step 1: discover available skills via filesystem
+    messages.append({
+        "role": "assistant",
+        "content": "Let me see which skills are available for this plugin.",
+    })
+    messages.append(_tool_call("bash", {"command": "ls skills/*/SKILL.md"}))
+    messages.append({
+        "role": "tool_response",
+        "content": "\n".join(_available_skill_paths),
+    })
+
+    # Step 2: load the matching skill via the Skill tool
+    messages.append({
+        "role": "assistant",
+        "content": f"The {_skill_name} skill matches. Loading it for the plugin-specific instructions, helper-script paths, and recreation strategy.",
+    })
+    messages.append(_tool_call("Skill", {"skill": _skill_name, "args": ""}))
+    messages.append({
+        "role": "tool_response",
+        "content": json.dumps({
+            "skill": _skill_name,
+            "path": str(_skill_md_path),
+            "args": "",
+            "description": _skill_description,
+            "prompt": _skill_md_text,
+        }, ensure_ascii=False),
+    })
+
     # Listen to baseline
-    messages.append({"role": "assistant", "content": "Listening to current default preset baseline."})
+    messages.append({"role": "assistant", "content": "Skill loaded. Listening to current default preset baseline."})
     messages.append(_tool_call("bash", {"command": _build_listen_probe_command(default_audio_path)}))
     messages.append({
         "role": "tool_response",
