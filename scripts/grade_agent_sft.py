@@ -42,12 +42,20 @@ LLM-as-judge (--llm-judge-server)
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import random as _random
 import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+
+def _b64(path: str | Path) -> str:
+    """Base64-encode a WAV file for inline embedding in an OpenAI-style data URL."""
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -872,10 +880,557 @@ def score_judge_record(record: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# v3 LLM judge — targets narration-template filler, verdict pattern-matching,
+# and plan↔narration grounding (failure modes the structural grader misses).
+# ---------------------------------------------------------------------------
+
+def _extract_v3_plan_and_narrations(record: dict) -> dict:
+    """Pull plan text, per-batch narrations, and verdict from a v3 record.
+
+    Returns {"plan": str, "observations": str, "narrations": [(subsystem, narration_text), ...],
+             "verdict": str, "target_audio": str | None}. Batch narrations are
+    the assistant turn that *follows* each ``batch_audio`` tool_response; the
+    subsystem label is taken from meta.batch_labels in order (correction
+    batches are skipped). ``target_audio`` is the first audio path (GT).
+    """
+    messages = record.get("messages", [])
+    meta = record.get("meta", {})
+    batch_labels = meta.get("batch_labels", []) or []
+    audios = record.get("audios", []) or []
+    target_audio = audios[0] if audios else None
+
+    plan_text = ""
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content", "")
+        if isinstance(c, str) and "OBSERVATIONS" in c and "PLAN" in c:
+            plan_text = c
+            break
+
+    observations = ""
+    if plan_text:
+        obs_match = re.search(
+            r"OBSERVATIONS:\s*(.+?)(?:\n\s*PLAN:|\Z)", plan_text, flags=re.DOTALL
+        )
+        if obs_match:
+            observations = obs_match.group(1).strip()
+
+    narrations: list[tuple[str, str]] = []
+    non_correction_labels = [bl for bl in batch_labels if not bl.get("is_correction")]
+    bi = 0
+    # Strip the trailing "Applying <next>_ changes." / "Correcting ..." / "Listening ..."
+    # transition lines that reference the NEXT batch and would confuse per-batch
+    # judges into seeing a hallucination where there is none.
+    _trailer_re = re.compile(
+        r"\n+\s*(Applying|Correcting|Listening)\b[^\n]*$", flags=re.IGNORECASE
+    )
+    for i, m in enumerate(messages):
+        if m.get("role") != "tool_response":
+            continue
+        c = str(m.get("content", ""))[:300]
+        if '"batch_audio"' not in c:
+            continue
+        if i + 1 >= len(messages):
+            continue
+        nxt = messages[i + 1]
+        if nxt.get("role") != "assistant":
+            continue
+        text = str(nxt.get("content", "") or "")
+        # Also strip any FINAL ASSESSMENT fold-in on the last batch turn.
+        if "FINAL ASSESSMENT" in text:
+            text = text.split("FINAL ASSESSMENT", 1)[0].rstrip()
+        # Strip trailing transition line.
+        text = _trailer_re.sub("", text).rstrip()
+        if bi < len(non_correction_labels):
+            narrations.append((non_correction_labels[bi].get("subsystem", ""), text))
+        bi += 1
+
+    verdict = ""
+    for m in reversed(messages):
+        c = m.get("content", "") or ""
+        if m.get("role") == "assistant" and "FINAL ASSESSMENT" in str(c):
+            verdict = str(c)
+            break
+
+    return {
+        "plan": plan_text,
+        "observations": observations,
+        "narrations": narrations,
+        "verdict": verdict,
+        "target_audio": target_audio,
+    }
+
+
+_V3_NARRATION_JUDGE_SYSTEM = (
+    "You are a strict quality assessor for synth-design training data. "
+    "You evaluate whether a one-line narration of a parameter-edit batch is "
+    "grounded in the plan and specific to the params edited, or whether it is "
+    "generic template filler."
+)
+
+_V3_NARRATION_JUDGE_PROMPT = """\
+PLAN:
+{plan_text}
+
+THIS BATCH:
+  subsystem: {subsystem}
+  params edited: {param_list}
+
+OTHER NARRATIONS from the SAME subsystem ({subsystem}) in OTHER samples in this run
+(for template-detection reference — compare against the narration under review):
+{other_narrations_block}
+
+NARRATION UNDER REVIEW (one sentence by the agent after applying the batch):
+  "{narration}"
+
+Score on three INDEPENDENT axes. Each axis measures ONE thing — do not bleed concerns across axes.
+
+1. plan_reference (0.0 / 0.5 / 1.0)  — plan consistency
+   1.0 = narration picks up a concrete intent from the plan's {subsystem} bullet
+   0.5 = loose thematic alignment with the plan
+   0.0 = narration is independent of the plan OR contradicts the plan (e.g. plan says
+         "remove all modulation" and narration describes modulation being added)
+
+2. parameter_specific (0.0 / 0.5 / 1.0)  — does the narration name audible consequences of THESE params
+   1.0 = names an audible consequence clearly tied to the listed param families
+   0.5 = correctly within {subsystem} domain but no specifics
+   0.0 = generic synth-speak ("richer", "more complex", "subtle movement")
+
+3. templateness (0.0 / 1.0 — BINARY)  — compare the narration UNDER REVIEW to the OTHER narrations above
+   1.0 = different phrasing/structure from the other samples — would NOT fit if dropped into another
+         sample's slot for the same subsystem (sample-specific language, unique anchors)
+   0.0 = same template shape as the other samples — you could swap this narration into any other
+         {subsystem} slot and it would fit (interchangeable phrasing)
+   Pick 0.0 or 1.0. Do NOT pick 0.5 for templateness.
+
+IMPORTANT: templateness is purely about phrasing uniqueness vs. the reference narrations above.
+Do NOT mark templateness=0 because the narration contradicts the plan — that belongs to plan_reference.
+Do NOT mark templateness=0 because it's generic — that belongs to parameter_specific.
+
+Respond ONLY with JSON, no other text:
+{{"plan_reference": <0.0|0.5|1.0>, "parameter_specific": <0.0|0.5|1.0>, "templateness": <0.0|1.0>, "reasoning": "<one sentence explicitly comparing this narration's phrasing to the reference ones>"}}
+"""
+
+
+_V3_VERDICT_JUDGE_SYSTEM = (
+    "You evaluate FINAL ASSESSMENT text for synth-recreation training data. "
+    "You judge whether the assessment cites a specific, plausible residual or "
+    "pattern-matches to a subsystem name without justification."
+)
+
+_V3_VERDICT_JUDGE_PROMPT = """\
+PLAN (what was planned):
+{plan_text}
+
+SUBSYSTEMS TOUCHED: {subsystems}
+
+OTHER FINAL ASSESSMENTS FROM DIFFERENT SAMPLES IN THIS RUN (for template-detection reference):
+{other_verdicts_block}
+
+VERDICT UNDER REVIEW:
+"{verdict_text}"
+
+Score on two axes. Use ONLY 0.0, 0.5, or 1.0.
+
+1. residual_grounded
+   1.0 = cites a concrete residual discrepancy with specifics ("attack still softer than target",
+         "high-frequency shimmer missing")
+   0.5 = names a subsystem with at least some audible rationale
+   0.0 = boilerplate naming a subsystem ("remaining difference lies in envelope 6") without
+         perceptual grounding
+
+2. novelty — compare the verdict UNDER REVIEW against the OTHER verdicts above. Use a BINARY scale (NO 0.5):
+   1.0 = the verdict has specific content that would NOT fit if you swapped it into another sample's slot
+   0.0 = same template shape as the other samples — same opening phrase pattern, same "envelope N" pattern,
+         same generic "affecting X" filler — you could swap this verdict into any other sample's slot
+
+Pick 0.0 or 1.0 — do not pick 0.5 for novelty.
+
+Respond ONLY with JSON:
+{{"residual_grounded": <0.0|0.5|1.0>, "novelty": <0.0|1.0>, "reasoning": "<one sentence comparing structure to other samples>"}}
+"""
+
+
+_V3_OBSERVATIONS_JUDGE_SYSTEM = (
+    "You are evaluating whether the agent's written OBSERVATIONS about a target "
+    "audio clip match the actual audible content of that clip. You have access "
+    "to the audio and the text description — score how consistent they are."
+)
+
+_V3_OBSERVATIONS_JUDGE_PROMPT = """\
+You will hear the TARGET audio, then read the agent's OBSERVATIONS text.
+
+OBSERVATIONS text (what the agent claims to hear):
+"{observations}"
+
+Listen to the audio and evaluate:
+
+1. audio_grounded
+   1.0 = every attribute named in OBSERVATIONS is audibly present in the clip
+   0.5 = most attributes are plausible but at least one claim is generic or weakly supported
+   0.0 = one or more claims are clearly absent or contradicted by the audio
+
+Respond ONLY with JSON:
+{{"audio_grounded": <0.0|0.5|1.0>, "reasoning": "<one sentence citing one audible attribute that did or did not match>"}}
+"""
+
+
+_V3_HALLUCINATION_JUDGE_SYSTEM = (
+    "You are checking a one-sentence synth-edit narration for parameter-hallucination. "
+    "The narration should only reference effects/params that align with the batch's "
+    "param list. If the narration names a param family that is NOT in the list, that "
+    "is a hallucination."
+)
+
+_V3_HALLUCINATION_JUDGE_PROMPT = """\
+This batch edited these parameters (grouped by the synth subsystem):
+  subsystem: {subsystem}
+  params: {param_list}
+
+NARRATION written by the agent after applying the batch:
+  "{narration}"
+
+Does the narration reference any param-family effect that is NOT in the param list?
+
+Examples of hallucinations:
+  • Batch edited 'chorus', narration mentions "phaser modulation" → hallucination (phaser ≠ chorus)
+  • Batch edited 'lfo_1_*', narration mentions "chorus and phaser" → hallucination
+  • Batch edited 'filter_1_cutoff', narration mentions "reverb tail" → hallucination
+  • Batch edited 'fx' (chorus only), narration mentions "spatial reverb" → hallucination
+
+NOT hallucinations (these are fine):
+  • Describing abstract audio qualities ("brighter", "darker", "richer")
+  • Mentioning the subsystem generically ("filter", "envelope")
+  • Mentioning an effect that's a subtype of what was edited (e.g. "resonance sweep" for filter params)
+
+Respond ONLY with JSON:
+{{"no_hallucination": <0.0|1.0>, "reasoning": "<one sentence — if hallucinated, name the offending word>"}}
+"""
+
+
+def _llm_judge_v3_narration(
+    plan_text: str,
+    subsystem: str,
+    param_names: list[str],
+    narration: str,
+    server_url: str,
+    model: str,
+    other_narrations: list[str] | None = None,
+    timeout: float = 15.0,
+) -> dict | None:
+    if not _HTTPX_AVAILABLE or not plan_text.strip() or not narration.strip():
+        return None
+    others = other_narrations or []
+    if others:
+        others_block = "\n".join(
+            f"  [sample {i+1}]: \"{v.strip()[:280]}\"" for i, v in enumerate(others)
+        )
+    else:
+        others_block = "  (no other same-subsystem narrations available — evaluate templateness standalone)"
+    prompt = _V3_NARRATION_JUDGE_PROMPT.format(
+        plan_text=plan_text.strip()[:900],
+        subsystem=subsystem,
+        param_list=", ".join(param_names[:8]) + ("…" if len(param_names) > 8 else ""),
+        other_narrations_block=others_block,
+        narration=narration.strip()[:400],
+    )
+    try:
+        resp = _httpx.post(
+            f"{server_url.rstrip('/')}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _V3_NARRATION_JUDGE_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 250,
+                "temperature": 0.0,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+        parsed = json.loads(content)
+        return {
+            "plan_reference": float(parsed["plan_reference"]),
+            "parameter_specific": float(parsed["parameter_specific"]),
+            "templateness": float(parsed["templateness"]),
+            "reasoning": str(parsed.get("reasoning", "")),
+        }
+    except Exception:
+        return None
+
+
+def _llm_judge_v3_verdict(
+    plan_text: str,
+    subsystems: list[str],
+    verdict: str,
+    server_url: str,
+    model: str,
+    other_verdicts: list[str] | None = None,
+    timeout: float = 15.0,
+) -> dict | None:
+    if not _HTTPX_AVAILABLE or not verdict.strip():
+        return None
+    others = other_verdicts or []
+    if others:
+        others_block = "\n".join(
+            f"  [sample {i+1}]: \"{v.strip()[:400]}\"" for i, v in enumerate(others)
+        )
+    else:
+        others_block = "  (no other verdicts available — evaluate novelty standalone)"
+    prompt = _V3_VERDICT_JUDGE_PROMPT.format(
+        plan_text=plan_text.strip()[:900] or "(plan unavailable)",
+        subsystems=", ".join(subsystems),
+        other_verdicts_block=others_block,
+        verdict_text=verdict.strip()[:600],
+    )
+    try:
+        resp = _httpx.post(
+            f"{server_url.rstrip('/')}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _V3_VERDICT_JUDGE_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 250,
+                "temperature": 0.0,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+        parsed = json.loads(content)
+        return {
+            "residual_grounded": float(parsed["residual_grounded"]),
+            "novelty": float(parsed["novelty"]),
+            "reasoning": str(parsed.get("reasoning", "")),
+        }
+    except Exception:
+        return None
+
+
+def _llm_judge_v3_observations_audio(
+    observations: str,
+    target_audio_path: str | None,
+    server_url: str,
+    model: str,
+    timeout: float = 45.0,
+) -> dict | None:
+    """Send target WAV + OBSERVATIONS text to Qwen-Omni and check if the
+    description matches what's audible in the clip."""
+    if not _HTTPX_AVAILABLE or not observations.strip() or not target_audio_path:
+        return None
+    try:
+        audio_b64 = _b64(target_audio_path)
+    except Exception:
+        return None
+    prompt = _V3_OBSERVATIONS_JUDGE_PROMPT.format(
+        observations=observations.strip()[:600],
+    )
+    content = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"}},
+        {"type": "text", "text": prompt},
+    ]
+    try:
+        resp = _httpx.post(
+            f"{server_url.rstrip('/')}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _V3_OBSERVATIONS_JUDGE_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                "max_tokens": 250,
+                "temperature": 0.0,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        text = resp.json()["choices"][0]["message"]["content"].strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+        parsed = json.loads(text)
+        return {
+            "audio_grounded": float(parsed["audio_grounded"]),
+            "reasoning": str(parsed.get("reasoning", "")),
+        }
+    except Exception:
+        return None
+
+
+def _llm_judge_v3_param_hallucination(
+    subsystem: str,
+    param_names: list[str],
+    narration: str,
+    server_url: str,
+    model: str,
+    timeout: float = 15.0,
+) -> dict | None:
+    """Binary check: does the narration reference any param family not in the batch?"""
+    if not _HTTPX_AVAILABLE or not narration.strip():
+        return None
+    prompt = _V3_HALLUCINATION_JUDGE_PROMPT.format(
+        subsystem=subsystem,
+        param_list=", ".join(param_names[:12]) + ("…" if len(param_names) > 12 else ""),
+        narration=narration.strip()[:400],
+    )
+    try:
+        resp = _httpx.post(
+            f"{server_url.rstrip('/')}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _V3_HALLUCINATION_JUDGE_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": 200,
+                "temperature": 0.0,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+        parsed = json.loads(content)
+        return {
+            "no_hallucination": float(parsed["no_hallucination"]),
+            "reasoning": str(parsed.get("reasoning", "")),
+        }
+    except Exception:
+        return None
+
+
+def llm_judge_v3_record(
+    record: dict[str, Any],
+    server_url: str,
+    model: str,
+    other_verdicts: list[str] | None = None,
+    other_narrations_by_subsystem: dict[str, list[str]] | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Run v3-aware LLM judge: narration grounding per batch, verdict
+    substantiveness (with cross-sample context), parameter-hallucination
+    binary per batch, and audio-grounded observations check per sample.
+
+    When ``other_narrations_by_subsystem`` is supplied, the narration judge
+    sees 2-3 same-subsystem narrations from OTHER samples as reference for
+    template detection — lets it produce a cleaner binary templateness signal.
+
+    Returns a dict with aggregated scores and per-batch details. Gracefully
+    returns ``None`` values when httpx is unavailable or the server fails.
+    """
+    extracted = _extract_v3_plan_and_narrations(record)
+    plan_text = extracted["plan"]
+    observations = extracted["observations"]
+    narrations = extracted["narrations"]
+    verdict = extracted["verdict"]
+    target_audio = extracted["target_audio"]
+    meta = record.get("meta", {})
+    batch_labels = [bl for bl in meta.get("batch_labels", []) if not bl.get("is_correction")]
+
+    other_by_sub = other_narrations_by_subsystem or {}
+
+    per_batch: list[dict] = []
+    plan_refs: list[float] = []
+    param_specs: list[float] = []
+    templateness: list[float] = []
+    no_halluc: list[float] = []
+    for (subsystem, narration), label in zip(narrations, batch_labels):
+        param_names = list(label.get("param_names", []))
+        # Pick up to 3 other-sample narrations from the same subsystem as template reference
+        other_nars = list(other_by_sub.get(subsystem, []))[:3]
+        nres = _llm_judge_v3_narration(
+            plan_text=plan_text,
+            subsystem=subsystem,
+            param_names=param_names,
+            narration=narration,
+            server_url=server_url,
+            model=model,
+            other_narrations=other_nars,
+            timeout=timeout,
+        )
+        hres = _llm_judge_v3_param_hallucination(
+            subsystem=subsystem,
+            param_names=param_names,
+            narration=narration,
+            server_url=server_url,
+            model=model,
+            timeout=timeout,
+        )
+        entry: dict[str, Any] = {"subsystem": subsystem}
+        if nres is not None:
+            plan_refs.append(nres["plan_reference"])
+            param_specs.append(nres["parameter_specific"])
+            templateness.append(nres["templateness"])
+            entry.update(nres)
+        else:
+            entry.update({"plan_reference": None, "parameter_specific": None,
+                          "templateness": None, "reasoning": "(narration judge unavailable)"})
+        if hres is not None:
+            no_halluc.append(hres["no_hallucination"])
+            entry["no_hallucination"] = hres["no_hallucination"]
+            entry["hallucination_reasoning"] = hres["reasoning"]
+        else:
+            entry["no_hallucination"] = None
+            entry["hallucination_reasoning"] = "(hallucination judge unavailable)"
+        per_batch.append(entry)
+
+    subsystems = [bl.get("subsystem", "") for bl in batch_labels]
+    verdict_res = _llm_judge_v3_verdict(
+        plan_text=plan_text,
+        subsystems=subsystems,
+        verdict=verdict,
+        server_url=server_url,
+        model=model,
+        other_verdicts=other_verdicts,
+        timeout=timeout,
+    )
+
+    obs_res = _llm_judge_v3_observations_audio(
+        observations=observations,
+        target_audio_path=target_audio,
+        server_url=server_url,
+        model=model,
+    )
+
+    def _mean(xs: list[float]) -> float | None:
+        return round(sum(xs) / len(xs), 4) if xs else None
+
+    return {
+        "llm_narration_plan_ref": _mean(plan_refs),
+        "llm_narration_param_specific": _mean(param_specs),
+        "llm_narration_templateness": _mean(templateness),
+        "llm_narration_no_hallucination": _mean(no_halluc),
+        "llm_observations_audio_grounded": (
+            round(obs_res["audio_grounded"], 4) if obs_res else None
+        ),
+        "llm_verdict_residual_grounded": (
+            round(verdict_res["residual_grounded"], 4) if verdict_res else None
+        ),
+        "llm_verdict_novelty": (
+            round(verdict_res["novelty"], 4) if verdict_res else None
+        ),
+        "llm_per_batch": per_batch,
+        "llm_verdict_reasoning": (verdict_res or {}).get("reasoning", ""),
+        "llm_observations_reasoning": (obs_res or {}).get("reasoning", ""),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher and summary
 # ---------------------------------------------------------------------------
 
-def score_main_v3_record(record: dict[str, Any]) -> dict[str, Any]:
+def score_main_v3_record(
+    record: dict[str, Any],
+    llm_judge_server: str | None = None,
+    llm_judge_model: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+    other_verdicts: list[str] | None = None,
+    other_narrations_by_subsystem: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     """Score a v3 pipeline main record.
 
     v3 records use ``meta.batch_labels`` instead of ``step_labels`` and have
@@ -969,21 +1524,35 @@ def score_main_v3_record(record: dict[str, Any]) -> dict[str, Any]:
     if meta.get("injected_mistake") is not None:
         mistake_recovery = 1.0 if meta.get("mistake_caught") else 0.0
 
-    # -- Overall --
+    # -- LLM judge (optional): narration grounding + verdict substantiveness +
+    #    audio-grounded observations + param-hallucination binary check --
+    llm_scores: dict[str, Any] = {}
+    if llm_judge_server:
+        llm_scores = llm_judge_v3_record(
+            record, llm_judge_server, llm_judge_model,
+            other_verdicts=other_verdicts,
+            other_narrations_by_subsystem=other_narrations_by_subsystem,
+        )
+
+    # -- Overall weights (structural 50%, LLM-judge 50% when enabled) --
     weights: dict[str, float] = {
-        "batch_param_alignment": 0.30,
-        "diagnosis_subsystem_coverage": 0.25,
-        "clap_net_improvement": 0.20,
-        "verdict_grounded": 0.10,
+        "batch_param_alignment": 0.15,
+        "diagnosis_subsystem_coverage": 0.10,
+        "clap_net_improvement": 0.15,
+        "verdict_grounded": 0.05,
         "snake_case_clean": 0.025,
         "format_consistent": 0.025,
+        # LLM judge dimensions — enabled when llm_judge_server is set.
+        "llm_narration_plan_ref": 0.08,
+        "llm_narration_param_specific": 0.07,
+        "llm_narration_templateness": 0.05,
+        "llm_narration_no_hallucination": 0.10,
+        "llm_observations_audio_grounded": 0.10,
+        "llm_verdict_residual_grounded": 0.07,
+        "llm_verdict_novelty": 0.05,
     }
     if mistake_recovery is not None:
-        weights["mistake_recovery"] = 0.10
-    else:
-        # Redistribute 10% among other weights proportionally.
-        base = sum(weights.values())
-        weights = {k: v / base for k, v in weights.items()}
+        weights["mistake_recovery"] = 0.05
 
     raw: dict[str, Any] = {
         "clap_net_improvement": clap_net_improvement,
@@ -993,6 +1562,13 @@ def score_main_v3_record(record: dict[str, Any]) -> dict[str, Any]:
         "format_consistent": format_consistent,
         "verdict_grounded": verdict_grounded,
         "mistake_recovery": mistake_recovery,
+        "llm_narration_plan_ref": llm_scores.get("llm_narration_plan_ref"),
+        "llm_narration_param_specific": llm_scores.get("llm_narration_param_specific"),
+        "llm_narration_templateness": llm_scores.get("llm_narration_templateness"),
+        "llm_narration_no_hallucination": llm_scores.get("llm_narration_no_hallucination"),
+        "llm_observations_audio_grounded": llm_scores.get("llm_observations_audio_grounded"),
+        "llm_verdict_residual_grounded": llm_scores.get("llm_verdict_residual_grounded"),
+        "llm_verdict_novelty": llm_scores.get("llm_verdict_novelty"),
     }
     weighted_sum = 0.0
     weight_sum = 0.0
@@ -1003,7 +1579,12 @@ def score_main_v3_record(record: dict[str, Any]) -> dict[str, Any]:
             weight_sum += w
     overall = round(weighted_sum / weight_sum, 4) if weight_sum > 0 else 0.0
 
-    return {**raw, "overall": overall}
+    out = {**raw, "overall": overall}
+    if llm_scores:
+        out["llm_per_batch"] = llm_scores.get("llm_per_batch", [])
+        out["llm_verdict_reasoning"] = llm_scores.get("llm_verdict_reasoning", "")
+        out["llm_observations_reasoning"] = llm_scores.get("llm_observations_reasoning", "")
+    return out
 
 
 def score_record(
@@ -1013,12 +1594,18 @@ def score_record(
     live_exec_check: bool = False,
     live_exec_timeout_sec: float = 30.0,
     live_exec_max_calls: int | None = None,
+    other_verdicts: list[str] | None = None,
+    other_narrations_by_subsystem: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     task = record.get("task_type", "")
     meta = record.get("meta", {})
     # Branch: v3 pipeline records use a different scoring path.
     if task == "main" and meta.get("pipeline_version") == "v3":
-        scores = score_main_v3_record(record)
+        scores = score_main_v3_record(
+            record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model,
+            other_verdicts=other_verdicts,
+            other_narrations_by_subsystem=other_narrations_by_subsystem,
+        )
     elif task == "main":
         scores = score_main_record(record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model)
     elif task == "search":
@@ -1086,6 +1673,43 @@ def grade_file(
             if line:
                 rows.append(json.loads(line))
 
+    # Pre-collect verdicts AND narrations-by-subsystem from all v3 records so
+    # cross-sample template-detection has reference material. Each record is
+    # passed 3 verdicts + 3 same-subsystem narrations from OTHER samples
+    # (deterministic pick via record index + fixed seed).
+    verdicts_by_idx: dict[int, str] = {}
+    narrations_by_idx: dict[int, list[tuple[str, str]]] = {}
+    for i, record in enumerate(rows):
+        meta = record.get("meta", {})
+        if record.get("task_type") == "main" and meta.get("pipeline_version") == "v3":
+            extracted = _extract_v3_plan_and_narrations(record)
+            if extracted["verdict"]:
+                verdicts_by_idx[i] = extracted["verdict"]
+            narrations_by_idx[i] = extracted["narrations"]
+
+    def _other_verdicts_for(idx: int, k: int = 3) -> list[str]:
+        pool = [v for j, v in verdicts_by_idx.items() if j != idx]
+        if not pool:
+            return []
+        rng = _random.Random(1337 + idx)
+        rng.shuffle(pool)
+        return pool[:k]
+
+    def _other_narrations_by_subsystem_for(idx: int, k: int = 3) -> dict[str, list[str]]:
+        """For the record at idx, return {subsystem: [narrations from OTHER samples]}."""
+        pool: dict[str, list[str]] = {}
+        for j, nars in narrations_by_idx.items():
+            if j == idx:
+                continue
+            for subsystem, narration in nars:
+                pool.setdefault(subsystem, []).append(narration)
+        rng = _random.Random(2024 + idx)
+        result: dict[str, list[str]] = {}
+        for subsystem, lst in pool.items():
+            rng.shuffle(lst)
+            result[subsystem] = lst[:k]
+        return result
+
     # Score all records, in parallel if workers > 1. Results keyed by input index
     # so output order is always deterministic regardless of completion order.
     scores_by_idx: dict[int, dict] = {}
@@ -1097,7 +1721,9 @@ def grade_file(
                             llm_judge_model=llm_judge_model,
                             live_exec_check=live_exec_check,
                             live_exec_timeout_sec=live_exec_timeout_sec,
-                            live_exec_max_calls=live_exec_max_calls): i
+                            live_exec_max_calls=live_exec_max_calls,
+                            other_verdicts=_other_verdicts_for(i),
+                            other_narrations_by_subsystem=_other_narrations_by_subsystem_for(i)): i
                 for i, record in enumerate(rows)
             }
             for fut in as_completed(futs):
@@ -1116,6 +1742,48 @@ def grade_file(
                 live_exec_check=live_exec_check,
                 live_exec_timeout_sec=live_exec_timeout_sec,
                 live_exec_max_calls=live_exec_max_calls,
+                other_verdicts=_other_verdicts_for(i),
+                other_narrations_by_subsystem=_other_narrations_by_subsystem_for(i),
+            )
+
+    # Cross-sample narration diversity: Jaccard on trigram-word-sets between
+    # same-subsystem narrations across v3 records. Low diversity = same boilerplate
+    # phrases recurring across samples, which structural metrics can't catch.
+    v3_indices = [i for i, r in enumerate(rows)
+                  if r.get("task_type") == "main" and r.get("meta", {}).get("pipeline_version") == "v3"]
+    diversity_by_idx: dict[int, float | None] = {}
+    if len(v3_indices) >= 2:
+        narrations_by_idx: dict[int, list[tuple[str, str]]] = {}
+        for i in v3_indices:
+            narrations_by_idx[i] = _extract_v3_plan_and_narrations(rows[i])["narrations"]
+
+        def _trigrams(text: str) -> set[tuple[str, ...]]:
+            words = re.findall(r"[a-z]+", text.lower())
+            return {tuple(words[j:j+3]) for j in range(len(words) - 2)}
+
+        for i in v3_indices:
+            per_batch_novelty: list[float] = []
+            for subsystem, narration in narrations_by_idx[i]:
+                this_tg = _trigrams(narration)
+                if not this_tg:
+                    continue
+                overlaps: list[float] = []
+                for j in v3_indices:
+                    if j == i:
+                        continue
+                    for other_sub, other_nar in narrations_by_idx[j]:
+                        if other_sub != subsystem:
+                            continue
+                        other_tg = _trigrams(other_nar)
+                        if not other_tg:
+                            continue
+                        jacc = len(this_tg & other_tg) / len(this_tg | other_tg)
+                        overlaps.append(jacc)
+                if overlaps:
+                    per_batch_novelty.append(1.0 - (sum(overlaps) / len(overlaps)))
+            diversity_by_idx[i] = (
+                round(sum(per_batch_novelty) / len(per_batch_novelty), 4)
+                if per_batch_novelty else None
             )
 
     scored: list[dict] = []
@@ -1123,6 +1791,8 @@ def grade_file(
     all_scores: list[tuple[str, float]] = []  # (task, overall) for summary stats
     for i, record in enumerate(rows):
         scores = scores_by_idx[i]
+        if i in diversity_by_idx:
+            scores["cross_sample_narration_novelty"] = diversity_by_idx[i]
         record_out = dict(record)
         record_out["quality_scores"] = scores
         overall = scores.get("overall")
