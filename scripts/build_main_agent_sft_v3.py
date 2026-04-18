@@ -349,27 +349,32 @@ def _b64(path: str | Path) -> str:
 
 def omni_stage1_diagnose(
     gt_wav: str,
-    default_wav: str,
+    target_preset: dict,
     archetype: str,
     omni_server: str,
     omni_model: str,
 ) -> str:
-    """Stage 1: Omni listens to GT + default, returns a perceptual comparison.
+    """Stage 1: Omni listens to TARGET only, grounded by a perceptual preset summary.
+
+    Multi-audio target/default comparison is out-of-distribution for Omni — it
+    tends to hallucinate modulation, flip attack direction, and produce generic
+    differential prose. Instead we compute a perceptual-bucket summary from the
+    target preset (no numbers, no param names) and pass it as a grounding prior
+    alongside the target audio. The prompt explicitly forbids citing details
+    only available from the summary; the summary is a hallucination safety net,
+    not a cheat sheet.
 
     Output goes into Stage 2's DIAGNOSIS prompt as observations.
     """
+    from scripts.preset_perceptual_summary import (
+        summarize_preset_perceptual,
+        GROUNDED_OBSERVATIONS_PROMPT_TEMPLATE,
+    )
+    preset_summary = summarize_preset_perceptual(target_preset)
     content = [
         {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(gt_wav)}"}},
-        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(default_wav)}"}},
-        {"type": "text", "text": (
-            f"You are a music production AI. Listen to two synthesizer clips.\n"
-            f"The first clip is the TARGET sound we need to recreate.\n"
-            f"The second clip is the current DEFAULT preset.\n\n"
-            "Describe the perceptual differences: frequency balance (bright/warm/dark), "
-            "harmonic character (clean/buzzy/rich), envelope shape (sharp/slow attack, "
-            "short/long decay, sustain level), and any motion or modulation.\n"
-            "3-5 short sentences. Focus on what the TARGET has that the default lacks. "
-            "Use natural production language, no snake_case parameter names, no kHz numbers."
+        {"type": "text", "text": GROUNDED_OBSERVATIONS_PROMPT_TEMPLATE.format(
+            preset_summary=preset_summary,
         )},
     ]
     try:
@@ -386,9 +391,9 @@ def omni_stage1_diagnose(
         return r["choices"][0]["message"]["content"].strip()
     except Exception:
         return (
-            f"The target has a distinct timbral character and envelope shape that "
-            "the default sine preset does not. Differences in harmonic content, filter "
-            "behaviour, and modulation motion are all audible."
+            "The sound has a distinct timbral character and envelope shape that "
+            "should be reproducible through careful oscillator, envelope, filter, "
+            "and effect choices."
         )
 
 
@@ -451,13 +456,17 @@ def stage2_diagnosis(
     prompt = (
         f"You are a music production AI agent writing the upfront plan for recreating "
         f"a synth sound in Vital.\n\n"
-        f"--- Perceptual observations (listening to target vs default) ---\n"
+        f"--- Perceptual observations (from listening to the target) ---\n"
         f"{perceptual_obs}\n\n"
         f"--- Ground truth: subsystems that need changes ---\n"
         f"{subsystem_diff_summary}\n\n"
         f"Write exactly two sections:\n\n"
-        f"OBSERVATIONS: 2-3 sentences rewording the perceptual observations above in "
-        f"your own voice. Describe what the target has that the current preset lacks. "
+        f"OBSERVATIONS: 2-3 sentences describing the TARGET sound's perceptual character "
+        f"in your own voice, grounded in the perceptual observations above. Describe the "
+        f"sound directly (what it sounds like, its tonal color, attack feel, motion). "
+        f"DO NOT use comparative framing like 'the target has', 'in contrast', 'unlike the "
+        f"default', 'the default lacks'. DO NOT mention a baseline or default preset at all. "
+        f"Talk about the sound as if you just heard it fresh, not against any reference. "
         f"No snake_case parameter names, no **bold** headers, no kHz numbers.\n\n"
         f"PLAN: A bulleted list. Exactly one bullet per subsystem in this list (in order): "
         f"{bullets_hint}. Each bullet starts with the subsystem name capitalised (e.g. "
@@ -474,7 +483,7 @@ def stage2_diagnosis(
                 "model": stage2_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 500,
-                "temperature": 0.4,
+                "temperature": 0.7,
             },
             timeout=180.0,
         )
@@ -490,9 +499,74 @@ def stage2_diagnosis(
         )
 
 
+def _extract_plan_bullet(plan_text: str, subsystem: str) -> str:
+    """Pull the single plan bullet for the given subsystem from the PLAN section.
+
+    Plan bullets look like: "• Oscillator: swap to brighter wavetable, add unison detune".
+    Returns just the sentence part (no subsystem prefix, no bullet glyph), or a
+    generic fallback if not found.
+    """
+    if not plan_text or not subsystem:
+        return ""
+    body = plan_text.split("PLAN:", 1)[-1] if "PLAN:" in plan_text else plan_text
+    sub_lower = subsystem.lower()
+    for line in body.splitlines():
+        line = line.strip().lstrip("•-* \t")
+        if ":" not in line:
+            continue
+        label, _, rest = line.partition(":")
+        if label.strip().lower() == sub_lower:
+            return rest.strip()
+    return ""
+
+
+def _humanize_param_name(p: str) -> str:
+    """env_1_attack → 'env 1 attack', lfo_2_frequency → 'lfo 2 frequency'."""
+    return p.replace("_", " ").strip()
+
+
+def _format_param_deltas(
+    param_before_after: list[tuple[str, float, float]], max_rows: int = 10
+) -> str:
+    """Format param deltas for the batch-check prompt.
+
+    Shows each param as 'name: before → after' with a direction word appended.
+    Numbers are included so the model can judge magnitude, but the prompt
+    forbids echoing them in the output.
+    """
+    rows: list[str] = []
+    for name, before, after in param_before_after[:max_rows]:
+        try:
+            before_f = float(before) if before is not None else None
+            after_f = float(after) if after is not None else None
+        except (TypeError, ValueError):
+            before_f, after_f = None, None
+        direction = ""
+        if before_f is not None and after_f is not None:
+            if abs(after_f - before_f) < 1e-6:
+                direction = "(unchanged)"
+            elif abs(after_f) < 1e-4 and abs(before_f) > 1e-4:
+                direction = "(disengaged)"
+            elif abs(before_f) < 1e-4 and abs(after_f) > 1e-4:
+                direction = "(engaged)"
+            elif after_f > before_f:
+                pct = (after_f - before_f) / max(abs(before_f), 1e-4)
+                direction = "(substantially increased)" if pct > 0.5 else "(slightly increased)"
+            else:
+                pct = (before_f - after_f) / max(abs(before_f), 1e-4)
+                direction = "(substantially decreased)" if pct > 0.5 else "(slightly decreased)"
+        bstr = f"{before_f:.3f}" if before_f is not None else "?"
+        astr = f"{after_f:.3f}" if after_f is not None else "?"
+        rows.append(f"  - {_humanize_param_name(name)}: {bstr} → {astr} {direction}")
+    if len(param_before_after) > max_rows:
+        rows.append(f"  - (+{len(param_before_after) - max_rows} more)")
+    return "\n".join(rows) if rows else "  (no params changed)"
+
+
 def stage2_batch_check(
     subsystem: str,
-    remaining_gap_str: str,
+    plan_bullet: str,
+    param_deltas: list[tuple[str, float, float]],
     prior_checks: list[str],
     archetype: str,
     stage2_server: str,
@@ -500,29 +574,45 @@ def stage2_batch_check(
     is_final: bool = False,
     n_params_applied: int = 0,
 ) -> str:
-    """Stage 2: write one short sentence describing what THIS batch specifically changed.
+    """Stage 2: write one short sentence describing what THIS batch changed.
 
-    Focuses on the concrete effect of the current subsystem's edits, not the
-    full remaining diff (which causes repetitive "dynamics and spatial effects"
-    phrasing across all batches).
+    Grounded in the actual plan bullet (so narrations don't contradict the plan)
+    and in concrete before→after param values (so narrations describe real
+    direction and magnitude, not templated prose). Variation across samples
+    comes naturally from different presets having different deltas.
     """
     recent = " / ".join(prior_checks[-2:]) if prior_checks else ""
     recent_hint = (
-        f"Prior batch checks (DO NOT repeat these phrasings): \"{recent}\"" if recent else ""
+        f"Prior batch narrations (do not repeat these phrasings): \"{recent}\"" if recent else ""
     )
     final_hint = (
-        "This is the LAST planned batch — note that the preset is now nearly complete." if is_final else ""
+        "This is the LAST planned batch — the preset is now nearly complete." if is_final else ""
     )
+    plan_hint = (
+        f"Plan bullet for this subsystem: \"{plan_bullet}\"" if plan_bullet else
+        f"No explicit plan bullet for {subsystem}; describe the changes directly."
+    )
+    delta_block = _format_param_deltas(param_deltas)
+
     prompt = (
         f"You are a music production AI. You just applied {n_params_applied} {subsystem} "
         f"parameter edits for a Vital preset.\n\n"
-        f"After this batch, remaining subsystem gaps: {remaining_gap_str}.\n\n"
+        f"{plan_hint}\n\n"
+        f"Actual param changes this batch (before → after):\n{delta_block}\n\n"
         f"{recent_hint}\n{final_hint}\n\n"
-        f"Write EXACTLY ONE sentence. Focus on what the {subsystem} edits specifically "
-        f"changed about the sound's character (e.g. 'filter darkened the tone and added "
-        f"resonant sweep' or 'LFO introduced rhythmic pulsing to the brightness'). "
-        f"Do NOT list the remaining subsystems — focus on the effect of THIS batch. "
-        f"Natural language, no snake_case, no **bold**, under 25 words."
+        f"Write EXACTLY ONE sentence (under 28 words) describing what THIS batch did to "
+        f"the sound. Translate the numeric changes into perceptual effects — a producer "
+        f"reading your sentence should be able to tell what direction the {subsystem} "
+        f"moved (longer/shorter, brighter/darker, engaged/disengaged, deeper/subtler).\n\n"
+        f"Rules:\n"
+        f"  - Stay consistent with the plan bullet above — if it says 'disengage', do NOT "
+        f"describe added motion.\n"
+        f"  - Ground your claims in the actual param deltas shown — describe the real "
+        f"direction of change, not generic subsystem prose.\n"
+        f"  - Do NOT cite parameter names, numbers, snake_case tokens, or kHz values.\n"
+        f"  - Do NOT mention effects from other subsystems (no 'chorus' or 'phaser' in an "
+        f"LFO batch, no 'reverb' in an FX batch that only edited chorus).\n"
+        f"  - Natural prose, no **bold**."
     )
     try:
         r = _llm_post(
@@ -530,14 +620,14 @@ def stage2_batch_check(
             {
                 "model": stage2_model,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 100,
-                "temperature": 0.5,
+                "max_tokens": 120,
+                "temperature": 0.7,
             },
             timeout=120.0,
         )
         return r["choices"][0]["message"]["content"].strip().split("\n")[0]
     except Exception:
-        return f"{subsystem.capitalize()} edits applied; remaining gap is in {remaining_gap_str}."
+        return f"{subsystem.capitalize()} edits applied consistent with the plan."
 
 
 def stage2_correction_intro(
@@ -570,7 +660,7 @@ def stage2_correction_intro(
                 "model": stage2_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 80,
-                "temperature": 0.5,
+                "temperature": 0.7,
             },
             timeout=120.0,
         )
@@ -581,26 +671,36 @@ def stage2_correction_intro(
 
 def stage2_verdict(
     perceptual_obs: str,
-    final_remaining_gap: str,
+    residual_delta_summary: str,
     path_complete: bool,
     archetype: str,
-    subsystems_truth: list[str],
     stage2_server: str,
     stage2_model: str,
 ) -> str:
-    """Stage 2: write FINAL ASSESSMENT grounded in residual diff."""
+    """Stage 2: write FINAL ASSESSMENT grounded in a perceptual residual-delta summary.
+
+    The residual summary lists the top 5 concrete differences between the target
+    preset and the final cumulative preset, in perceptual language (no numbers,
+    no param names). The prompt forbids generic 'envelope N' pattern-matching
+    and requires the model to cite one of the specific residuals.
+    """
     status_tag = "(complete)" if path_complete else "(budget_exhausted)"
-    truth_hint = ", ".join(subsystems_truth[:3]) if subsystems_truth else "nothing"
     prompt = (
         f"You are a music production AI writing the final assessment of a "
         f"synth recreation.\n\n"
-        f"Perceptual review:\n{perceptual_obs}\n\n"
-        f"Residual subsystem differences from target: {final_remaining_gap}\n"
+        f"Perceptual review of the recreation:\n{perceptual_obs}\n\n"
+        f"Actual residual differences (what still differs between target and final, "
+        f"sorted by magnitude):\n{residual_delta_summary}\n\n"
         f"Path status: {'converged' if path_complete else 'budget exhausted'}.\n\n"
         f"Write a single line beginning with 'FINAL ASSESSMENT {status_tag}: ' followed "
-        f"by exactly 2 short sentences. Sentence 1 = what matches well. Sentence 2 = the "
-        f"most important remaining difference (reference one of these subsystems if any "
-        f"still differ: {truth_hint}). No snake_case. No **bold**. No kHz numbers."
+        f"by exactly 2 short sentences.\n"
+        f"  Sentence 1: what the recreation captures well about the target's character.\n"
+        f"  Sentence 2: the most important remaining difference — MUST cite one of the "
+        f"specific residuals from the list above in perceptual terms (e.g. 'attack is still "
+        f"too plucky', 'filter should be darker', 'needs more unison detune'). Do NOT "
+        f"default to generic pattern-matching like 'envelope 6' — describe the actual "
+        f"audible problem.\n"
+        f"Rules: no snake_case tokens, no **bold**, no kHz numbers, no parameter names."
     )
     try:
         r = _llm_post(
@@ -609,7 +709,7 @@ def stage2_verdict(
                 "model": stage2_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 160,
-                "temperature": 0.4,
+                "temperature": 0.7,
             },
             timeout=120.0,
         )
@@ -618,10 +718,16 @@ def stage2_verdict(
             text = f"FINAL ASSESSMENT {status_tag}: {text}"
         return text
     except Exception:
-        suffix = final_remaining_gap if not path_complete else "the target is closely matched"
+        if path_complete:
+            return (
+                f"FINAL ASSESSMENT {status_tag}: The recreation captures the target's core "
+                f"character. No significant residuals remain."
+            )
+        # Use the first residual line if available
+        first_residual = residual_delta_summary.split("\n", 1)[0].lstrip("- ").rstrip()
         return (
             f"FINAL ASSESSMENT {status_tag}: The recreation captures the target's core "
-            f"timbre. The most notable remaining difference is in {suffix}."
+            f"timbre. The most notable remaining difference is that {first_residual}."
         )
 
 
@@ -789,10 +895,7 @@ def build_record(
         ),
     })
 
-    # Step 1: check library size
-    messages.append({"role": "assistant", "content": "Checking wavetable library size."})
-    messages.append(_tool_call("bash", {"command": "python scripts/list_wavetables.py --total"}))
-    messages.append({"role": "tool_response", "content": json.dumps({"total": total_named}, ensure_ascii=False)})
+    # Library size (known: 282) — no ceremony turn; first round intro mentions it directly.
 
     # Agent output directory (real path; runtime executor writes files here at inference)
     agent_out_dir = f"/tmp/agents/{sample_id}"
@@ -1102,7 +1205,7 @@ def build_record(
 
     if args.omni_server:
         stage1_obs = omni_stage1_diagnose(
-            str(target_audio_path), str(default_audio_path),
+            str(target_audio_path), target_preset,
             archetype, args.omni_server, args.omni_model,
         )
     else:
@@ -1140,6 +1243,12 @@ def build_record(
     batch_audio_dir.mkdir(parents=True, exist_ok=True)
 
     for bi, b in enumerate(batches):
+        # Snapshot BEFORE values for the params in this batch so we can describe
+        # the perceptual change in Stage 2 narration.
+        batch_before_values: dict[str, float] = {
+            name: float(cumulative["settings"].get(name, 0.0) or 0.0)
+            for name in b.params_applied
+        }
         # Apply batch params to cumulative (uses params_applied which may contain mistake)
         for name, norm in b.params_applied.items():
             cumulative["settings"][name] = _denormalize(name, norm)
@@ -1191,13 +1300,24 @@ def build_record(
         is_last = bi == len(batches) - 1
 
         if args.omni_server:
+            plan_bullet = _extract_plan_bullet(diagnosis_text, b.subsystem)
+            param_deltas: list[tuple[str, float, float]] = [
+                (name, batch_before_values.get(name, 0.0), float(cumulative["settings"].get(name, 0.0) or 0.0))
+                for name in sorted(b.params_applied.keys())
+            ]
             check_sentence = stage2_batch_check(
-                b.subsystem, gap_str, prior_checks, archetype,
-                stage2_server, stage2_model, is_final=is_last and not b.mistake,
+                subsystem=b.subsystem,
+                plan_bullet=plan_bullet,
+                param_deltas=param_deltas,
+                prior_checks=prior_checks,
+                archetype=archetype,
+                stage2_server=stage2_server,
+                stage2_model=stage2_model,
+                is_final=is_last and not b.mistake,
                 n_params_applied=len(b.params),
             )
         else:
-            check_sentence = f"{b.subsystem.capitalize()} edits applied; remaining gap is in {gap_str}."
+            check_sentence = f"{b.subsystem.capitalize()} edits applied consistent with the plan."
         prior_checks.append(check_sentence)
         pending_check = check_sentence
 
@@ -1290,12 +1410,18 @@ def build_record(
         verdict_obs = "The recreation captures the target's core character."
 
     fully_converged = final_gap is not None and final_gap["n_remaining"] == 0
+
+    # Compute perceptual residual delta (what's still different between target
+    # and final cumulative preset) — grounds the verdict in concrete audible
+    # differences instead of pattern-matched 'envelope N'.
+    from scripts.preset_perceptual_summary import summarize_residual_delta_perceptual
+    residual_delta_summary = summarize_residual_delta_perceptual(target_preset, cumulative)
+
     verdict_text = stage2_verdict(
         perceptual_obs=verdict_obs,
-        final_remaining_gap=final_gap_str,
+        residual_delta_summary=residual_delta_summary,
         path_complete=fully_converged,
         archetype=archetype,
-        subsystems_truth=truth_for_verdict,
         stage2_server=stage2_server,
         stage2_model=stage2_model,
     )
