@@ -258,12 +258,49 @@ Record is flagged `meta.variant='no_audio_selected'` so the grader skips the nor
 
 ## Candidate Pool Construction (Build-Time Only)
 
-1. Extract GT wavetable names from target preset (1-3 active oscillators).
-2. Compute CLAP embeddings for each GT wavetable's bare probe.
-3. Slice the 282-wavetable library into N agent slices with an offset rotation chosen to cover at least one GT per sample (unless `--force-research-rate` deliberately misses, to train the re-search branch).
-4. Each search agent applies CLAP-based per-candidate selection (threshold 0.92 vs. any GT) — simulated at build time; Stage 2 only writes reasoning that aligns with the selection labels.
+Three independent mechanisms that together determine what each search agent sees and what ends up in the pool:
 
-CLAP retrieval against fully-processed target audio was evaluated and failed (R@5=4.95%) because it compared processed target audio vs bare wavetable probes. GT-to-index comparison works because both sides are bare probes through the same default preset.
+### 1) Library slicing + GT-coverage rotation
+
+1. Extract GT wavetable names from target preset (1-3 active oscillators).
+2. Compute CLAP embeddings for each GT wavetable's bare probe (used only for the selection step below, never shown to the model).
+3. Slice the 282-wavetable library into N=4 agent slices of ~48 wavetables each. The **base offset** is chosen so at least one slice covers a GT — the builder rotates the offset until this holds (reliable round-1 success by default).
+
+### 2) `--force-research-rate` — deliberately miss the GT in round 1
+
+`scripts/build_main_agent_sft_v3.py:863-864` — for this fraction of samples, **skip the rotation step above**. Slices land wherever the random offset puts them, possibly with no GT in any slice.
+
+Why: the re-search branch of the main agent (dispatch a second round of search agents at shifted offsets when the tuple doesn't match) needs training examples where round 1 genuinely failed. Without forced misses, every sample would find the GT in round 1 and the model would never learn to expand its search. Default 0.30, smoke tests use 0.80 for higher re-search coverage.
+
+### 3) CLAP-grounded per-candidate selection inside the search agent
+
+`scripts/agent_sft_common.py: is_clap_selected(threshold=0.92)` — invoked by the search-agent builder for each candidate in each batch.
+
+What it does: for each candidate in a search agent's slice, the builder labels it **"Selected"** or **"Not selected"** by this rule:
+- If candidate name is exactly a GT wavetable → Selected
+- Else if `cosine(candidate_embedding, any_GT_embedding) >= 0.92` → Selected
+- Otherwise → Not selected
+
+The 0.92 threshold came from `scripts/experiment_clap_wt_threshold.py` — CLAP-similarity distributions showed 0.92 is the cutoff where candidates are acoustically close enough to the GT to serve as plausible building blocks.
+
+Stage 2 (the text model writing the shortlist reasoning) is **told** which label each candidate got and just writes a one-sentence rationale that aligns with the label. This prevents the old contradiction where Stage 2 wrote "Skip" but the builder added the GT back anyway.
+
+### Re-search trigger (exact-name match, NOT CLAP)
+
+`scripts/build_main_agent_sft_v3.py:1286`:
+```python
+all_gt_found = all(gt in pool for gt in gt_names_list)
+if all_gt_found or rounds_used >= max_rounds:
+    break
+```
+
+The main agent keeps dispatching search rounds until **every GT wavetable name** is present in the pool (exact match, not CLAP-similar), or `max_search_rounds=3` is hit. Exact match is the reliable build-time proxy for "the tuple will sound right" — at inference, the model judges by listening to the rendered tuple.
+
+An earlier design used `_pool_covers_gt(threshold=0.92)` as the re-search trigger, but we moved to exact-GT-in-pool because at inference the model can't check CLAP coverage.
+
+### CLAP retrieval was tried differently and failed
+
+CLAP retrieval against fully-processed target audio was evaluated earlier and failed (R@5=4.95%) because it compared processed target audio vs bare wavetable probes. The current usage (GT embedding vs candidate embedding, both bare probes through the same default preset) is apples-to-apples and works.
 
 ## Parallel Tool Dispatch in the JSONL
 
