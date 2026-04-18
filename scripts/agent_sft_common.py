@@ -423,7 +423,11 @@ def validate_ms_swift_multiturn_record(record: dict[str, Any]) -> list[str]:
             errors.append(f"message_{i}_tool_response_before_tool_call")
 
         # Avoid structural chatter patterns that degraded quality in spot checks.
-        if prev_role == role:
+        # EXCEPTION: consecutive tool_call messages represent parallel tool dispatch
+        # (multiple tool_use blocks from a single assistant turn in Anthropic /
+        # claw-code protocol). Consecutive tool_response messages are the matching
+        # parallel results. Both are allowed.
+        if prev_role == role and role not in {"tool_call", "tool_response"}:
             errors.append(f"message_{i}_duplicate_adjacent_role:{role}")
         prev_role = str(role) if role is not None else None
 

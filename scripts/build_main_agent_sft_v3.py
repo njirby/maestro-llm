@@ -877,6 +877,58 @@ def build_record(
     messages: list[dict] = []
     audio_assets: list[str] = [str(target_audio_path), str(default_audio_path)]
 
+    # Edge case (~5%): user says "recreate this sound" without selecting an audio
+    # clip in REAPER. Model should recognise the missing <audio> and ask the
+    # user to select a clip. Single-turn conversation, no search/diagnose flow.
+    no_audio_rate = float(getattr(args, "no_audio_rate", 0.05))
+    if sample_rng.random() < no_audio_rate:
+        messages.append({
+            "role": "user",
+            "content": "Recreate this sound in Vital.",
+        })
+        messages.append({
+            "role": "assistant",
+            "content": (
+                "I don't see an audio clip attached to your message. Please select "
+                "the audio item in REAPER that you want me to recreate (click on the "
+                "clip so it's highlighted) and try again — I need to hear the target "
+                "sound before I can start matching it in Vital."
+            ),
+        })
+        record = {
+            "id": sample_id,
+            "task_type": "main",
+            "tools": _V3_TOOL_SPECS,
+            "messages": messages,
+            "audios": [],  # no audios attached
+            "assets": {
+                "target_audio": "", "current_audio": "",
+                "candidate_audio": [], "selected_candidates": [], "selected_tuples": [],
+            },
+            "labels": {"gt_wavetable_names": gt_names_list, "applied_wavetables": []},
+            "meta": {
+                "pipeline_version": "v3",
+                "sample_id": sample_id,
+                "archetype": archetype,
+                "agent": "main",
+                "variant": "no_audio_selected",  # flag for grader to skip normal metrics
+                "batch_labels": [],
+                "diagnosis_subsystems_mentioned": [],
+                "diagnosis_subsystems_truth": [],
+                "injected_mistake": None,
+                "mistake_caught": None,
+                "path_complete": False,
+                "n_remaining": 0,
+                "commentary_mode": "two_stage",
+                "num_agents": int(args.num_agents),
+                "pool_top_k": int(args.pool_top_k),
+                "max_batches": int(args.max_batches),
+                "mistake_rate": float(args.mistake_rate),
+            },
+        }
+        assert_valid_ms_swift_multiturn_record(record)
+        return record
+
     messages.append({
         "role": "user",
         "content": (
@@ -895,7 +947,11 @@ def build_record(
         ),
     })
 
-    # Library size (known: 282) — no ceremony turn; first round intro mentions it directly.
+    # Check library size — the agent needs to discover this at inference time
+    # (it's what drives how many search agents to dispatch and how to slice).
+    messages.append({"role": "assistant", "content": "Checking wavetable library size."})
+    messages.append(_tool_call("bash", {"command": "python scripts/list_wavetables.py --total"}))
+    messages.append({"role": "tool_response", "content": json.dumps({"total": total_named}, ensure_ascii=False)})
 
     # Agent output directory (real path; runtime executor writes files here at inference)
     agent_out_dir = f"/tmp/agents/{sample_id}"
@@ -1002,33 +1058,38 @@ def build_record(
         if rounds_used == 1:
             intro = (
                 f"Library has {total_named} wavetables. Dispatching {n_agents} search "
-                f"agents across slices [{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
+                f"agents in parallel across slices "
+                f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
             )
         else:
             intro = (
                 f"{_research_prefix}"
-                f"Expanding to different library regions with {n_agents} more search agents: "
+                f"Expanding to different library regions with {n_agents} more search agents "
+                f"in parallel: "
                 f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
             )
             _research_prefix = ""
         messages.append({"role": "assistant", "content": intro})
 
-        # Step 2: Agent tool call per shard
+        # Step 2: Agent tool calls — emit ALL tool_calls first, then ALL tool_responses.
+        # This represents parallel dispatch (multiple tool_use blocks from a single assistant
+        # turn in Anthropic / claw-code protocol). Serial emit would read as sequential.
         round_output_files: list[str] = []
         round_agent_ids: list[str] = []
+        round_agent_meta: list[tuple[int, int, str, str, list[str]]] = []  # (start, end, agent_id, output_file, shortlist)
         for ai, start in enumerate(slice_starts):
             end = min(start + slice_size, total_named)
             if end <= start:
                 continue
             agent_id = f"wavetable_search_{sample_id}_r{rounds_used}_a{ai + 1}"
             round_agent_ids.append(agent_id)
-
-            # Simulate the shortlist this agent would return (build-time)
             sl = _simulate_shortlist(start, end)
             output_file = _write_shortlist_file(agent_id, start, end, sl)
             round_output_files.append(output_file)
+            round_agent_meta.append((start, end, agent_id, output_file, sl))
 
-            # Agent tool call
+        # Emit all Agent tool_calls back-to-back (parallel dispatch)
+        for start, end, agent_id, _out, _sl in round_agent_meta:
             messages.append(_tool_call("Agent", {
                 "subagent_type": "wavetable_search",
                 "description": f"Evaluate wavetables {start}-{end - 1} for target sound",
@@ -1039,8 +1100,11 @@ def build_record(
                     f"and `python scripts/render_wavetable_probes.py --idxs ... --out-dir ...` "
                     f"to hear each candidate. Return a JSON shortlist of 2-4 wavetable names."
                 ),
-                "name": f"search-{rounds_used}-{ai + 1}",
+                "name": f"search-{rounds_used}-{agent_id.split('_a')[-1]}",
             }))
+
+        # Then all tool_responses (one per parallel call)
+        for _start, _end, agent_id, output_file, _sl in round_agent_meta:
             messages.append({
                 "role": "tool_response",
                 "content": json.dumps({
@@ -1082,10 +1146,18 @@ def build_record(
                 if name not in pool:
                     pool.append(name)
 
-        # Build best tuple from current pool.
-        # For each osc: use GT if in pool, else pick the pool member most
-        # CLAP-similar to that osc's GT wavetable. As the pool grows each
-        # round, a better proxy may appear → tuple improves across rounds.
+        # Judge agent: ALWAYS runs after search agents to filter the pool down
+        # to a final tuple. Search agents do local filtering (per-slice); the
+        # judge does global ranking — it's the only step with access to the
+        # combined pool in one auditory view, which matters when GTs are
+        # scattered across slices (each search agent sees one GT + some
+        # false positives; only the judge can pick the correct combination).
+        #
+        # Build-time simulation: judge's "selected tuple" is computed via
+        # GT-if-in-pool + CLAP-best-proxy per osc slot. This is the oracle
+        # answer — at inference the judge model does this perceptually by
+        # listening to the combined pool.
+
         cur_tuple: list[str | None] = [None, None, None]
         used_in_tuple: set[str] = set()
         for osc_idx in active_oscs:
@@ -1112,8 +1184,75 @@ def build_record(
                     used_in_tuple.add(n)
                     break
 
-        # Render the tuple to hear it
         cur_active_names = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
+        n_osc_slots = len(cur_active_names)
+
+        # Write judge output file (simulates runtime judge agent's output)
+        judge_agent_id = f"wavetable_judge_{sample_id}_r{rounds_used}"
+        judge_output_file = Path(agent_out_dir) / f"{judge_agent_id}.json"
+        judge_output_file.parent.mkdir(parents=True, exist_ok=True)
+        judge_reasoning = (
+            f"After listening to the {len(pool)} pool candidates against the target, "
+            f"{', '.join(repr(n) for n in cur_active_names)} together captures the "
+            f"target's character most closely."
+        )
+        with open(judge_output_file, "w") as jf:
+            json.dump({
+                "status": "completed",
+                "agentId": judge_agent_id,
+                "tuple": cur_active_names,
+                "n_osc_slots": n_osc_slots,
+                "reasoning": judge_reasoning,
+            }, jf)
+            jf.write("\n")
+
+        # Dispatch judge agent
+        pool_str = ", ".join(f"'{n}'" for n in pool[:6])
+        if len(pool) > 6:
+            pool_str += f", ...+{len(pool) - 6} more"
+        messages.append({
+            "role": "assistant",
+            "content": (
+                f"Pool has {len(pool)} candidates across {len(round_agent_meta)} slices: "
+                f"[{pool_str}]. Dispatching judge agent to audition the combined pool and "
+                f"select the best {n_osc_slots}-oscillator combination."
+            ),
+        })
+        messages.append(_tool_call("Agent", {
+            "subagent_type": "wavetable_judge",
+            "description": f"Select best {n_osc_slots}-osc tuple from pool of {len(pool)} candidates",
+            "prompt": (
+                f"Target: {target_audio_path}.\n"
+                f"Pool candidates from search agents: {json.dumps(pool)}.\n"
+                f"Target uses {n_osc_slots} active oscillator(s). Listen to each candidate "
+                f"via `python scripts/render_wavetable_probes.py --names ... --out-dir ...` "
+                f"alongside the target, then select the {n_osc_slots} candidates that "
+                f"together best capture the target. Write a JSON file with `tuple` (list "
+                f"of names), `n_osc_slots`, and `reasoning`."
+            ),
+            "name": f"judge-{rounds_used}",
+        }))
+        messages.append({
+            "role": "tool_response",
+            "content": json.dumps({
+                "agentId": judge_agent_id,
+                "subagentType": "wavetable_judge",
+                "status": "completed",
+                "outputFile": str(judge_output_file),
+            }, ensure_ascii=False),
+        })
+
+        # Read judge's tuple selection via cat
+        messages.append({
+            "role": "assistant",
+            "content": "Reading judge's tuple selection.",
+        })
+        messages.append(_tool_call("bash", {"command": f"cat {judge_output_file}"}))
+        with open(judge_output_file) as jf:
+            judge_content = jf.read().strip()
+        messages.append({"role": "tool_response", "content": judge_content})
+
+        # Render tuple to verify the combination sounds right
         osc_args = " ".join(
             f"--osc{oi + 1} {json.dumps(cur_tuple[oi])}" for oi in active_oscs if cur_tuple[oi]
         )
@@ -1125,14 +1264,13 @@ def build_record(
         with serial_lock:
             render_cumulative_audio(synth, _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset), notes, tuple_wav)
 
-        pool_str = ", ".join(f"'{n}'" for n in pool[:6])
-        if len(pool) > 6:
-            pool_str += f", ...+{len(pool) - 6} more"
         tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
-
         messages.append({
             "role": "assistant",
-            "content": f"Pooled {len(pool)} candidates: [{pool_str}]. Rendering tuple [{tuple_names_str}] to evaluate.",
+            "content": (
+                f"Judge selected [{tuple_names_str}]. Rendering the tuple to verify the "
+                f"combination matches the target before applying."
+            ),
         })
         messages.append(_tool_call("bash", {"command": render_cmd}))
         audio_assets.append(str(tuple_wav))
@@ -1510,6 +1648,10 @@ def main() -> None:
         help="Max search rounds before giving up and using best available pool (default 3).")
     ap.add_argument("--force-research-rate", type=float, default=0.30,
         help="Fraction of samples where GT-oracle rotation is skipped, forcing re-search (default 0.30).")
+    ap.add_argument("--no-audio-rate", type=float, default=0.05,
+        help="Fraction of samples where the user's first message has no <audio> tag (~5%%), "
+             "producing a single-turn 'please select an audio clip' refusal. Teaches the model "
+             "to recognise the missing attachment instead of proceeding with a fabricated target.")
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
 
     ap.add_argument("--mistake-rate", type=float, default=0.20,
