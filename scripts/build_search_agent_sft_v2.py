@@ -711,13 +711,18 @@ def main() -> None:
                 cache=candidate_audio,
             )
 
-        # Build one record per search agent, one per slice
-        records = []
+        # Build one record per search agent, one per slice.
+        # Agents within a sample are independent — parallelize their Omni calls.
+        agent_jobs = []
         for ai, start in enumerate(slice_starts):
             end = min(start + slice_size, total_named)
             if end <= start:
                 continue
             agent_rng = random.Random(args.seed + sid_seed + ai + 1)
+            agent_jobs.append((ai, start, end, agent_rng))
+
+        def _run_agent(job):
+            ai, start, end, agent_rng = job
             rec = build_search_record(
                 sample_id=sample_id,
                 agent_idx=ai + 1,
@@ -740,25 +745,56 @@ def main() -> None:
                 shortlist_dir=args.shortlist_dir,
             )
             if rec:
-                # Override id with agent-specific id
                 rec["id"] = f"{sample_id}_agent{ai + 1}_search"
-                records.append(rec)
+            return (ai, rec)
 
+        records_by_ai: dict[int, dict] = {}
+        if len(agent_jobs) > 1:
+            with ThreadPoolExecutor(max_workers=len(agent_jobs)) as ap:
+                for fut in as_completed([ap.submit(_run_agent, j) for j in agent_jobs]):
+                    ai, rec = fut.result()
+                    if rec:
+                        records_by_ai[ai] = rec
+        else:
+            for j in agent_jobs:
+                ai, rec = _run_agent(j)
+                if rec:
+                    records_by_ai[ai] = rec
+
+        records = [records_by_ai[ai] for ai in sorted(records_by_ai)]
         return records
 
     out_path = args.out_jsonl
     out_path.parent.mkdir(parents=True, exist_ok=True)
     all_records: list[dict] = []
 
-    for i, entry in enumerate(entries):
+    def _safe_process(entry):
         try:
-            recs = _process(entry)
-            all_records.extend(recs)
-            print(f"[{i + 1}/{len(entries)}] {entry['sample_id']}: {len(recs)} search records", flush=True)
+            return entry, _process(entry), None
         except Exception as exc:
             import traceback
-            print(f"WARNING: {entry.get('sample_id', '?')} failed: {exc}")
-            traceback.print_exc()
+            return entry, [], (exc, traceback.format_exc())
+
+    if args.workers > 1:
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futs = [pool.submit(_safe_process, e) for e in entries]
+            for i, fut in enumerate(as_completed(futs)):
+                entry, recs, err = fut.result()
+                if err:
+                    print(f"WARNING: {entry.get('sample_id', '?')} failed: {err[0]}")
+                    print(err[1])
+                else:
+                    all_records.extend(recs)
+                    print(f"[{i + 1}/{len(entries)}] {entry['sample_id']}: {len(recs)} search records", flush=True)
+    else:
+        for i, entry in enumerate(entries):
+            entry, recs, err = _safe_process(entry)
+            if err:
+                print(f"WARNING: {entry.get('sample_id', '?')} failed: {err[0]}")
+                print(err[1])
+            else:
+                all_records.extend(recs)
+                print(f"[{i + 1}/{len(entries)}] {entry['sample_id']}: {len(recs)} search records", flush=True)
 
     with open(out_path, "w") as f:
         for r in all_records:
