@@ -126,7 +126,16 @@ Conversation structure:
 user:        <audio>  "Recreate this sound in Vital."
              (OR: no <audio> → early-return refusal)
 
-assistant:   Listening to current default preset baseline.
+# SKILL DISCOVERY + LOAD (claw-code-idiomatic, every normal record)
+assistant:   Let me see which skills are available for this plugin.
+tool_call:   bash ls skills/*/SKILL.md
+tool_resp:   skills/vital/SKILL.md
+assistant:   The vital skill matches. Loading it for plugin-specific instructions,
+             helper-script paths, and recreation strategy.
+tool_call:   Skill { skill: "vital", args: "" }
+tool_resp:   { skill, path, description, prompt: <full SKILL.md contents> }
+
+assistant:   Skill loaded. Listening to current default preset baseline.
 tool_call:   bash listen probe
 tool_resp:   {"baseline_audio": "<audio>", ...}
 
@@ -329,9 +338,13 @@ Serial (tool_call → tool_response → tool_call → tool_response) is used whe
 - `scripts/build_judge_agent_sft.py` — v1 judge (listwise ranking from CLAP scores, no audio listening; superseded by v3 audition-based judge)
 - `scripts/build_main_agent_sft_v2.py` — v2 main (per-step HEARD/HYPOTHESIS/PLAN)
 
-## LLM-as-Judge Grading (v3 path)
+## Grading
 
-`scripts/grade_agent_sft.py` with `--llm-judge-server` runs 7 LLM-judge axes in addition to the structural checks:
+`scripts/grade_agent_sft.py` grades all three agent types through one entry point, dispatching on `task_type` + `meta.pipeline_version`.
+
+### Main agent — LLM-as-Judge (v3 path)
+
+With `--llm-judge-server` the grader runs 7 LLM-judge axes in addition to the structural checks:
 
 | Axis | Purpose |
 |---|---|
@@ -345,18 +358,52 @@ Serial (tool_call → tool_response → tool_call → tool_response) is used whe
 
 Weight split: structural metrics ~52%, LLM-judge ~48% when enabled. Runtime: ~35s for 8 samples at `--workers 8`.
 
-Latest n=8 smoke benchmark (v9): overall **0.841** on normal records; both verdict axes at **1.00**; `llm_narration_templateness` 0.83; `llm_narration_plan_ref` 0.82.
+Latest n=8 smoke benchmarks:
+- **v9**: overall 0.841 on normal records; both verdict axes at 1.00
+- **v13** (with Skill discovery + load): overall 0.839
+
+### Search agent v2 — structural + correctness (no LLM)
+
+| Axis | Weight | Purpose |
+|---|---|---|
+| `gt_recovery` | 35% (conditional) | Fraction of `meta.gt_in_shard` that made it onto the final shortlist |
+| `shortlist_file_written` | 25% | Final bash tool_call writes `*_search_*.json` + matching ok tool_response |
+| `closing_assistant` | 10% | Last message is assistant (task completion signal) |
+| `has_render_probes` | 10% | ≥1 bash tool_call invokes `skills/vital/scripts/render_probes.py` |
+| `shortlist_nonempty` | 10% | Final shortlist has ≥1 name |
+| `snake_case_clean` | 5% | No snake_case in assistant prose |
+| `format_consistent` | 5% | No `**BOLD:**` headers |
+
+Search v12 smoke (n=32): overall **0.994**, gt_recovery 1.00 on all 10 gt-in-shard cases.
+
+### Judge agent v3 — structural + correctness (no LLM)
+
+| Axis | Weight | Purpose |
+|---|---|---|
+| `judge_correct` | 30% | `meta.judge_correct`: selection matches GTs present in pool (oracle) |
+| `tuple_size_correct` | 10% | `len(selected_tuple) == n_osc_slots` |
+| `tuple_names_in_pool` | 10% | Every selected name is in the pool (no hallucinated wavetables) |
+| `output_file_written` | 25% | Last bash writes `{tuple, n_osc_slots, reasoning}` + ok tool_response |
+| `pool_candidates_discussed` | 10% | Fraction of pool names mentioned in judge's deliberation |
+| `has_render_probes` | 5% | Agent rendered pool probes |
+| `closing_assistant` | 5% | Last message is assistant |
+| `format_consistent` | 2.5% | No `**BOLD:**` headers |
+| `snake_case_clean` | 2.5% | No snake_case in assistant prose (agent IDs can trigger false positives) |
+
+Judge v12 smoke (n=8): overall **0.992**, judge_correct 1.00 across all samples.
 
 ## Validation + Tests
 - Contract validator: `validate_ms_swift_multiturn_record(...)` — allows consecutive tool_call/tool_response for parallel dispatch.
 - Test coverage:
   - `tests/test_search_agent_sft_v2.py` — search agent v2 structural invariants
   - `tests/test_agent_sft_contracts_v3.py` — main agent v3 structural invariants
-  - `tests/test_agent_sft_grading.py` — v2 + v3 grading logic
+  - `tests/test_agent_sft_grading.py` — main-agent v2 + v3 grading logic
+  - `tests/test_agent_sft_grading_search_judge.py` — search_v2 + judge_v3 grading logic (15 tests)
   - `tests/test_agent_sft_contracts.py` — v2 legacy (regression guard)
-  - *(Missing: contract tests for `build_judge_agent_sft_v3.py` — follow-up work)*
+  - *(Missing: contract tests for `build_judge_agent_sft_v3.py` record shape — follow-up work)*
 
-Recommended checks:
+Recommended checks (159 tests):
 ```bash
-pytest tests/test_search_agent_sft_v2.py tests/test_agent_sft_contracts_v3.py tests/test_agent_sft_grading.py -x
+pytest tests/test_search_agent_sft_v2.py tests/test_agent_sft_contracts_v3.py \
+       tests/test_agent_sft_grading.py tests/test_agent_sft_grading_search_judge.py -x
 ```

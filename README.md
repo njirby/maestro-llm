@@ -193,12 +193,27 @@ v3 does **not** use path_gen's per-step iterations for conversation structure. I
 
 ```
 user:       <audio> [GT clip]  "Recreate this sound in Vital."
-assistant:  Listening to current default preset baseline.
+
+# SKILL DISCOVERY + LOAD (claw-code-idiomatic, every normal record):
+assistant:  Let me see which skills are available for this plugin.
+tool_call:  bash ls skills/*/SKILL.md
+tool_resp:  skills/vital/SKILL.md
+assistant:  The vital skill matches. Loading it for plugin-specific instructions,
+            helper-script paths, and recreation strategy.
+tool_call:  Skill { skill: "vital", args: "" }
+tool_resp:  { skill, path, description, prompt: <full SKILL.md contents> }
+
+assistant:  Skill loaded. Listening to current default preset baseline.
 tool_resp:  <audio> [default clip]
-assistant:  Library has 282 wavetables. Dispatching 4 search agents...
-            → Agent tool calls (parallel wavetable_search subagents)
-            → bash cat to read shortlists
-            → render tuple → listen → accept (or re-search if target not found)
+assistant:  Checking wavetable library size.
+tool_call:  bash python skills/vital/scripts/list_wavetables.py --total
+tool_resp:  {"total": 282}
+assistant:  Library has 282 wavetables. Dispatching 4 search agents in parallel...
+            → 4 parallel Agent tool_calls (wavetable_search subagents)
+            → bash cat to read all shortlist JSONs
+            → dispatch Agent wavetable_judge to audition combined pool
+            → bash cat judge output → render tuple → listen
+            → accept (or re-search if target not found)
             → bash apply tuple via VitalController
 
 # DIAGNOSIS (one audio turn, one text turn):
@@ -238,9 +253,12 @@ assistant:  FINAL ASSESSMENT (complete): [matches target — 2 sentences grounde
 ```
 
 **Key design decisions:**
+- **Claw-code-style skill architecture.** Per-plugin knowledge lives in `skills/<plugin>/` bundles (`SKILL.md` + `scripts/` + `references/`). Main agent opens each session with a discovery turn (`bash ls skills/*/SKILL.md`) followed by a `Skill(name)` tool call that injects the SKILL.md contents into the conversation. Files are the API — no `pyproject.toml` entry points, no install step — so agent-authored skills (future plugin-explorer task) will work identically to pre-shipped ones.
+- **Three-tier agent hierarchy.** Main agent orchestrates; dispatches 4 parallel `wavetable_search` sub-agents across library slices; dispatches a `wavetable_judge` sub-agent to audition the combined pool and pick the final tuple. All file-based handoff (`/tmp/agents/<sample>/*.json`). Sub-agents start with fresh context; the main agent extracts what they need into their dispatch prompts (scripts, target audio path, n_osc_slots, etc.) rather than propagating the full SKILL.md.
 - **Subsystem batches, not per-param steps.** One batch per presentation subsystem (oscillator, envelope, filter, lfo, fx, modulation, macro). Params are bucketed by `_param_family()` — guarantees 100% batch-param alignment.
 - **Fresh vita-rendered audio per batch.** Each batch's audio reflects exactly the cumulative preset state after that batch.
 - **Inline mistake correction.** ~20% of samples get a deliberate overshoot in one param of one batch. The correction fires immediately after the listen.
+- **No-audio edge case (~5%).** User sends "Recreate this sound in Vital." without attaching audio → single-turn refusal asking them to select an audio clip in REAPER. Teaches the model to recognise the missing attachment instead of fabricating a target. Flagged via `meta.variant='no_audio_selected'`.
 - **Preset-grounded Stage 1 observations.** Omni listens to the target WAV with a perceptual-bucket summary of the target preset injected as a grounding prior (`scripts/preset_perceptual_summary.py: summarize_preset_perceptual`). Avoids the multi-audio target/default comparison that was out-of-distribution for Qwen-Omni and produced hallucinated modulation and flipped attack shapes. The summary is no-numbers/no-param-names — just producer vocabulary.
 - **Plan + param-delta driven batch narrations.** Each per-batch narration receives the plan bullet for its subsystem and the concrete before→after param deltas. Narrations are plan-aligned by construction (no more "LFO drifts with human-like unpredictability" when the plan says "disengage all modulation"). Natural variety comes from different presets having genuinely different deltas — no descriptor-lens bank needed.
 - **Residual-delta-grounded verdict.** FINAL ASSESSMENT is anchored on `summarize_residual_delta_perceptual(target_preset, final_preset)` — the top 5 concrete residual differences between target and final, ranked by magnitude, rendered as perceptual bullets. Verdicts cite "attack is still too plucky" or "filter should be darker" instead of defaulting to "envelope 6".
@@ -250,7 +268,7 @@ Total audio per record: 2 + B clips (GT + default + B batch listens, where B ≈
 **Step 3 — grade and filter:**
 
 ```bash
-# With LLM-as-judge (recommended) — ~35s for 8 samples at --workers 8:
+# Main agent — with LLM-as-judge (recommended) — ~35s for 8 samples at --workers 8:
 python scripts/grade_agent_sft.py \
     --input data/prepared/agent_sft/main_v3.jsonl \
     --output data/prepared/agent_sft/main_v3_graded.jsonl \
@@ -258,12 +276,26 @@ python scripts/grade_agent_sft.py \
     --llm-judge-model Qwen/Qwen3-Omni-30B-A3B-Instruct \
     --workers 8 --verbose
 
-# Structural-only (fast, no LLM calls):
+# Main agent — structural-only (fast, no LLM calls):
 python scripts/grade_agent_sft.py \
     --input data/prepared/agent_sft/main_v3.jsonl \
     --output data/prepared/agent_sft/main_v3_graded.jsonl \
     --no-llm-judge --verbose
+
+# Search agent (task_type=search_v2) — structural/correctness scoring, no LLM:
+python scripts/grade_agent_sft.py \
+    --input data/prepared/agent_sft/search_v2.jsonl \
+    --output data/prepared/agent_sft/search_v2_graded.jsonl \
+    --no-llm-judge --verbose
+
+# Judge agent (task_type=judge, v3_judge) — structural/correctness scoring, no LLM:
+python scripts/grade_agent_sft.py \
+    --input data/prepared/agent_sft/judge_v3.jsonl \
+    --output data/prepared/agent_sft/judge_v3_graded.jsonl \
+    --no-llm-judge --verbose
 ```
+
+The grader dispatches on `task_type` + `meta.pipeline_version` — one entry point for all three agent types.
 
 **Scoring dimensions for v3 `main` records:**
 
@@ -293,16 +325,52 @@ LLM-judge axes (added when `--llm-judge-server` is set):
 
 `execution_fidelity` (from `--live-exec-check`) validates that generated bash tool calls run against a live REAPER session.
 
-**Benchmarks on smoke_test_v10 (n=8) with `--llm-judge-server`:**
+**Scoring dimensions for `search_v2` records** (structural + correctness, no LLM needed):
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| `gt_recovery` | 35% (conditional) | Fraction of `meta.gt_in_shard` that made it onto `meta.final_shortlist`. Only assessable when the slice contained a GT. |
+| `shortlist_file_written` | 25% | Last bash tool_call writes `*_search_*.json` + matching tool_response returns `{status:"ok", file:...}` |
+| `closing_assistant` | 10% | Last message is an assistant turn (signals task completion) |
+| `has_render_probes` | 10% | ≥1 bash tool_call invokes `skills/vital/scripts/render_probes.py` (agent actually auditioned) |
+| `shortlist_nonempty` | 10% | Final shortlist has ≥1 name |
+| `snake_case_clean` | 5% | No raw snake_case param names in assistant prose |
+| `format_consistent` | 5% | No `**BOLD:**` headers |
+
+**Scoring dimensions for `judge` records (v3_judge)** (structural + correctness, no LLM needed):
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| `judge_correct` | 30% | `meta.judge_correct`: selection matches GTs present in pool (oracle) |
+| `tuple_size_correct` | 10% | `len(selected_tuple) == n_osc_slots` |
+| `tuple_names_in_pool` | 10% | Every selected name is in the pool (no hallucinated wavetables) |
+| `output_file_written` | 25% | Last bash tool_call writes judge JSON (`{tuple, n_osc_slots, reasoning}`) + ok tool_response |
+| `pool_candidates_discussed` | 10% | Fraction of pool names mentioned in the judge's deliberation |
+| `has_render_probes` | 5% | Agent actually rendered pool probes |
+| `closing_assistant` | 5% | Last message is assistant |
+| `format_consistent` | 2.5% | No `**BOLD:**` headers |
+| `snake_case_clean` | 2.5% | No raw snake_case (note: agent IDs with underscores are a known false-positive source) |
+
+**Benchmarks on smoke_test_v10 (n=8 samples, full three-agent pipeline):**
+
+Main agent (`--llm-judge-server`, LLM-judge axes):
 
 | Build | overall | audio_grounded | verdict_novelty | verdict_grounded | templateness |
 |---|---|---|---|---|---|
 | v2 original (pre-grounding, lens bank off) | 0.708 | 0.125 | 0.375 | 0.688 | 0.323 |
 | v5 (grounded Stage 1) | 0.776 | 0.438 | 0.500 | 0.750 | 0.583 |
 | v7 (plan+delta narrations, lens bank removed) | 0.762 | 0.625 | 0.500 | 0.625 | 0.542 |
-| **v8** (+ residual-delta verdict) | **0.781** | 0.312 | **0.750** | **0.812** | **0.771** |
+| v8 (+ residual-delta verdict) | 0.781 | 0.312 | 0.750 | 0.812 | 0.771 |
+| **v13** (+ Skill discovery + load protocol) | **0.839** | — | — | — | — |
 
-Structural grader on smoke_v3 (n=32, older pre-grounding): overall mean 0.930, batch_param_alignment 1.0, execution_fidelity 1.0, diagnosis_subsystem_coverage 1.0. That number was dominated by structural floors; the LLM-judge scores above give a truer picture of text-quality.
+Sub-agent rollouts (structural + correctness grading, n=32 search × n=8 judge):
+
+| Rollout | overall | gt_recovery / judge_correct | file_written | pool_discussed |
+|---|---|---|---|---|
+| Search v12 | **0.994** | gt_recovery 1.00 on all 10 assessable samples | 1.00 | — |
+| Judge v12 | **0.992** | judge_correct 1.00 on all 8 samples | 1.00 | 1.00 |
+
+Structural grader on legacy smoke_v3 (n=32, older pre-grounding, main agent only): overall mean 0.930, batch_param_alignment 1.0, execution_fidelity 1.0, diagnosis_subsystem_coverage 1.0. That number was dominated by structural floors; the LLM-judge scores above give a truer picture of text-quality.
 
 **Audio-grounding spot-check HTML:** `scripts/build_audio_grounding_spotcheck.py` renders a self-contained HTML (audio embedded as base64) with target + default playback, preset summary, observations, per-batch narrations with judge badges. Supports side-by-side comparison between two graded files (`--compare-grades`).
 
@@ -789,7 +857,7 @@ scripts/
   render_iter_presets.py      # Batch-render GT + probe clips; write manifest.jsonl
   build_main_agent_sft_v3.py  # Primary SFT builder: diagnose → subsystem-batched execute
   build_main_agent_sft_v2.py  # Legacy SFT builder: per-step two-stage commentary
-  grade_agent_sft.py          # Quality grader + v3 LLM-as-judge (7 axes) + cross-sample refs
+  grade_agent_sft.py          # Quality grader: main (structural + 7-axis LLM-judge), search_v2, judge_v3
   preset_perceptual_summary.py # Perceptual-bucket preset summaries (grounding prior for Stage 1) + residual-delta summary (grounding for verdict)
   build_audio_grounding_spotcheck.py # Self-contained HTML spot-check (audio embedded, compare mode)
   validate_grounded_observations.py  # A/B runner: current vs preset-grounded Stage 1 observations
@@ -838,7 +906,7 @@ configs/
 - `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions; entry-level + agent-level concurrency via `--workers`
 - `build_judge_agent_sft_v3.py` — judge agent's own SFT rollouts. Takes combined pool from all search agents (simulated at build time), renders probes, listens to target + all pool candidates in one Omni call (each `<audio>` labelled by wavetable name), picks the best N (=active oscillator slots), writes selection to output file that the main agent consumes via `cat`. Build-time oracle: GT-if-in-pool + CLAP-best-proxy
 - `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
-- `grade_agent_sft.py` — v2 + v3 scoring paths; v3 LLM-as-judge across 7 axes (narration plan_ref / param_specific / templateness-cross-sample / no-hallucination, observations audio-grounded, verdict residual_grounded / novelty-cross-sample); live-exec-check against REAPER
+- `grade_agent_sft.py` — grades all three agent types via one entry point (dispatched on `task_type` + `meta.pipeline_version`). Main-agent v3: structural axes (batch_param_alignment, diagnosis_subsystem_coverage, clap_net_improvement, verdict_grounded, mistake_recovery) + 7-axis LLM judge (narration plan_ref / param_specific / templateness-cross-sample / no-hallucination, observations audio-grounded, verdict residual_grounded / novelty-cross-sample). Search v2: gt_recovery (conditional), shortlist_file_written, has_render_probes, closing_assistant. Judge v3: judge_correct (oracle), tuple_size_correct, tuple_names_in_pool, output_file_written, pool_candidates_discussed. Live-exec-check against REAPER available for main-agent records.
 - `build_audio_grounding_spotcheck.py` — self-contained HTML spot-check with embedded audio + judge-badge breakdown; `--compare-grades` renders two graded files side-by-side
 - Legacy wavetable-retrieval SFT builders (search v1 / judge — superseded by search v2)
 - Lua tuple pipeline for melody transcription SFT data
