@@ -1,116 +1,323 @@
-# Agent SFT Architecture (Search v2 → Main v3)
+# Agent SFT Architecture (Search v2 → Judge v3 → Main v3)
 
 This document captures the current training-data architecture for agentic Vital sound recreation in REAPER.
 
 ## Goal
 Train a terminal coding agent that can:
 1. Listen to a target audio clip.
-2. Search a wavetable library by ear to find matching building blocks.
-3. Assemble and evaluate wavetable combinations (tuples) by rendering and listening.
-4. Apply iterative subsystem-batched parameter edits with inline correction.
+2. Dispatch search sub-agents in parallel to search a wavetable library by ear.
+3. Audition the combined search pool via a judge sub-agent to pick the final wavetable tuple.
+4. Render and listen to the chosen tuple, then iteratively apply subsystem-batched parameter edits grounded in the ground-truth preset delta.
+5. Recognise edge cases (missing audio attachment → ask user to select a clip).
 
-The objective is realistic listen → plan → act → listen trajectories with genuine audio reasoning and explicit tool use.
+The objective is realistic listen → plan → act → listen trajectories with genuine audio reasoning, explicit tool use, and a claw-code-style hierarchical sub-agent architecture.
 
 ## Agent Hierarchy
+
+```
+┌──────────────────┐
+│   Main Agent     │  (task_type=main, pipeline_version=v3)
+│                  │
+│ user selects     │
+│ audio in REAPER  │
+└────────┬─────────┘
+         │ dispatches
+         │  (parallel Agent tool_calls)
+         ▼
+┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
+│  Search Agent 1  │      │  Search Agent 2  │      │  Search Agent 3  │      │  Search Agent 4  │
+│  (slice 0-47)    │      │  (slice 70-117)  │      │  (slice 140-187) │      │  (slice 210-257) │
+└────────┬─────────┘      └────────┬─────────┘      └────────┬─────────┘      └────────┬─────────┘
+         │                          │                         │                         │
+         └──────────────────────────┴─────────────────────────┴─────────────────────────┘
+                                              │
+                                              │ each writes shortlist JSON to
+                                              │ /tmp/agents/<sample_id>/*.json
+                                              ▼
+                                    ┌──────────────────┐
+                                    │  Main Agent      │
+                                    │  cats all 4 files│
+                                    │  → combined pool │
+                                    └────────┬─────────┘
+                                             │ dispatches
+                                             ▼
+                                    ┌──────────────────┐
+                                    │  Judge Agent     │  (task_type=judge, v3_judge)
+                                    │                  │
+                                    │ Audions target + │
+                                    │ all pool cands   │
+                                    │ in ONE Omni call │
+                                    │ Picks final tuple│
+                                    │ → writes JSON    │
+                                    └────────┬─────────┘
+                                             │
+                                             ▼
+                                    ┌──────────────────┐
+                                    │  Main Agent      │
+                                    │  reads judge out │
+                                    │  renders tuple   │
+                                    │  → listens       │
+                                    │  → diagnose/plan │
+                                    │  → apply batches │
+                                    │  → verdict       │
+                                    └──────────────────┘
+```
 
 ### 1) Search Agent (`task_type=search_v2`)
 
 **Builder:** `scripts/build_search_agent_sft_v2.py`
 
 Scope:
-- Receives a disjoint shard of the candidate wavetable pool.
-- Iterates through batches of candidates (target audio + 6-8 candidate probes per round).
-- Maintains a running shortlist across rounds, evaluating each candidate's raw character as potential raw material for the target.
-- Returns a shortlist of wavetable names (not tuples, not role-tagged).
+- Receives one slice (48 consecutive wavetables by index) of the library.
+- Iterates through batches of 8 candidates per round. For each batch: renders probe audios, Omni listens to target + 8 candidate probes, Stage 2 writes per-candidate one-sentence assessment.
+- CLAP-grounded selection (threshold 0.92): the builder decides which candidates are "Selected" / "Not selected" at build time; Stage 2 only writes reasoning that aligns with the correct labels.
+- Returns a shortlist of wavetable names (no ranking, no role-tagging).
 
 Key features:
-- **Iterative batch listening**: multiple rounds, shortlist evolves.
-- **GT-grounded reasoning**: when a GT wavetable appears, Stage 2 receives the target preset's processing chain (filter, envelope, modulation, FX) and writes reasoning about how the raw wavetable transforms under that specific processing.
-- **Names in token space**: each candidate has `<audio>` + its wavetable name, so the model can reference it in code.
-- **No CLAP at inference**: CLAP is used only at build time for candidate pool construction (GT-to-index apples-to-apples similarity, top-K=48).
+- **Iterative batch listening**: 6 batches × 8 candidates = 48 evaluated per agent.
+- **GT-grounded reasoning**: when a GT wavetable appears in a batch, Stage 2 receives the target preset's processing chain (filter, envelope, modulation, FX) and writes reasoning about how the raw wavetable transforms under that processing.
+- **Audio-labelled names**: each candidate probe is paired with its wavetable name in the Omni prompt so the model learns the audio↔name mapping.
+- **Concurrency**: `--workers` parallelises at the entry level; each sample also runs its 4 search agents in parallel (entry × 4 agents saturates vLLM at ~24 in-flight requests).
 
 Output:
-- Final shortlist of 2-4 wavetable names per search agent.
+- Shortlist of 2-4 wavetable names per slice.
+- Per-agent JSON file written to `/tmp/agents/<sample_id>/<agent_id>.json` (mirrors the runtime executor's file-handoff protocol).
 
-### 2) Main Agent (`task_type=main`, `pipeline_version=v3`)
+### 2) Judge Agent (`task_type=judge`, `pipeline_version=v3_judge`)
+
+**Builder:** `scripts/build_judge_agent_sft_v3.py`
+
+Scope:
+- Receives the combined pool from all 4 search agents in a single auditory view (each `<audio>` labelled by wavetable name in the prompt).
+- Renders probes for all pool candidates in one batch.
+- Omni listens to target + all N pool candidates in ONE audio call; Stage 2 formats per-candidate reasoning + final "SELECTED: [...]" line.
+- Writes the final tuple + reasoning to a JSON file.
+
+Why the judge exists:
+- Each search agent only sees its own slice. When ground-truth wavetables are scattered across slices, each agent finds one GT + some false positives. None has the global view to pick the correct combination.
+- The judge has the whole pool in one auditory view — it's the only agent that can reliably pick N complementary wavetables (N = target's active oscillator count).
+
+Build-time oracle:
+- Selected tuple = GT-if-in-pool + CLAP-best-proxy per osc slot.
+- Stage 2 is told the oracle answer and writes per-candidate reasoning that aligns with the selection.
+- `meta.judge_correct` flags whether the selection matches the GTs present in the pool.
+
+Output:
+- Shortlist → tuple of 1-3 wavetable names (matching `n_osc_slots`).
+- JSON file: `{"tuple": [...], "n_osc_slots": N, "reasoning": "..."}` written via bash Python heredoc during the conversation.
+
+### 3) Main Agent (`task_type=main`, `pipeline_version=v3`)
 
 **Builder:** `scripts/build_main_agent_sft_v3.py`
 
 Scope:
-- Dispatches search agents and collects pooled candidate wavetable names.
-- Renders 2-3 tuple combinations through Vital and listens to pick the best.
-- Applies chosen wavetables via library lookup by name (inference-compatible).
-- Writes an upfront DIAGNOSIS (subsystem plan) grounded in GT-vs-init preset diff.
-- Executes subsystem-batched parameter edits with fresh vita-rendered per-batch audio.
-- Inline mistake correction (~20% of samples).
-- Final assessment comparing recreation vs target.
+- Listens to the target + renders/listens to default baseline.
+- Checks library size (single bash ceremony turn).
+- Dispatches 4 search agents in parallel (all `Agent` tool_calls emitted back-to-back, then all tool_responses — represents parallel dispatch in the claw-code tool-use protocol).
+- Reads search shortlists via `cat`, pools candidates.
+- Dispatches judge agent. Reads judge's output JSON via `cat`.
+- Renders the selected tuple via `render_wavetable_tuple.py`, listens, decides.
+- If tuple doesn't match target (or GTs missing from pool): triggers another search round with shifted slices, then another judge pass.
+- Once tuple matches: applies wavetables via VitalController, writes DIAGNOSIS (preset-grounded OBSERVATIONS + subsystem PLAN), executes subsystem-batched parameter edits with per-batch audio and plan-aligned narration, optional inline mistake correction, FINAL ASSESSMENT grounded in residual delta.
+- Edge case (~5% of samples): user message arrives without `<audio>` attachment → single-turn refusal asking user to select an audio clip in REAPER.
 
 Conversation structure:
 ```
-Block 0  — Baseline listen + WT search dispatch + collect
-Block 1  — Tuple render + listen + select + library-lookup apply
-Block 2  — DIAGNOSIS (Omni Stage 1 + Stage 2 subsystem plan)
-Block 3..K — Subsystem batches (oscillator → envelope → filter → lfo → fx → modulation → macro)
-Block K+1 — CORRECTION (inline, if mistake was injected)
-Block K+2 — FINAL ASSESSMENT
+user:        <audio>  "Recreate this sound in Vital."
+             (OR: no <audio> → early-return refusal)
+
+assistant:   Listening to current default preset baseline.
+tool_call:   bash listen probe
+tool_resp:   {"baseline_audio": "<audio>", ...}
+
+assistant:   Checking wavetable library size.
+tool_call:   bash python scripts/list_wavetables.py --total
+tool_resp:   {"total": 282}
+
+# PARALLEL SEARCH DISPATCH
+assistant:   Library has 282 wavetables. Dispatching 4 search agents in parallel...
+tool_call:   Agent wavetable_search #1    ┐
+tool_call:   Agent wavetable_search #2    │  emitted back-to-back
+tool_call:   Agent wavetable_search #3    │  (parallel tool_use blocks)
+tool_call:   Agent wavetable_search #4    ┘
+tool_resp:   agent_1 outputFile           ┐
+tool_resp:   agent_2 outputFile           │  matching parallel responses
+tool_resp:   agent_3 outputFile           │
+tool_resp:   agent_4 outputFile           ┘
+
+assistant:   Reading shortlists from 4 search agents.
+tool_call:   bash cat ...search_1.json ...search_4.json
+tool_resp:   {4 concatenated shortlist JSONs}
+
+# JUDGE DISPATCH
+assistant:   Pool has 12 candidates across 4 slices. Dispatching judge agent...
+tool_call:   Agent wavetable_judge
+tool_resp:   {agentId: wavetable_judge_..., outputFile: .../judge_r1.json}
+
+assistant:   Reading judge's tuple selection.
+tool_call:   bash cat .../judge_r1.json
+tool_resp:   {"tuple": ["X", "Y"], "n_osc_slots": 2, "reasoning": "..."}
+
+# TUPLE VERIFY
+assistant:   Judge selected [X, Y]. Rendering the tuple to verify the combination.
+tool_call:   bash python scripts/render_wavetable_tuple.py --osc1 X --osc2 Y --out ...
+tool_resp:   {"tuple_audio": "<audio>", ...}
+
+assistant:   This tuple matches the target well. Applying.
+             OR: The rendered tuple doesn't capture the target's character closely
+             enough. Expanding to different library regions... (re-search, re-judge)
+
+# APPLY + DIAGNOSE + EXECUTE + VERDICT
+assistant:   (apply tuple via VitalController)
+assistant:   OBSERVATIONS: [preset-grounded perceptual description from Omni Stage 1
+             with preset summary as grounding prior]
+             PLAN:
+               • Oscillator: ...
+               • Envelope: ...
+               ...
+             Executing plan by subsystem.
+             Applying oscillator changes.
+tool_call:   bash VitalController set_params (oscillator batch)
+tool_resp:   {"status": "ok"}
+assistant:   Listening after oscillator batch.
+tool_call:   bash listen probe (fresh vita render of cumulative state)
+tool_resp:   {"batch_audio": "<audio>", ...}
+assistant:   [plan-aligned narration grounded in this batch's plan bullet +
+             before→after param deltas]
+
+# (repeat for envelope, filter, lfo, fx, modulation, macro)
+
+# CORRECTION (inline, ~20% of samples)
+assistant:   Overshot on {subsystem} — backing off {param}.
+tool_call:   bash VitalController corrective set_param
+tool_resp:   {"status": "ok"}
+assistant:   Listening to the corrected preset.
+tool_call:   bash listen probe
+tool_resp:   {"corrected_audio": "<audio>", ...}
+
+# VERDICT (grounded in residual preset delta)
+assistant:   FINAL ASSESSMENT (complete|budget_exhausted): [what matches well; one
+             specific concrete residual cited from summarize_residual_delta_perceptual]
 ```
 
 ## Data Contract (MS-Swift-Friendly)
 
-Both task types follow one strict schema:
+All three task types follow one strict schema:
 - JSONL (one JSON object per line).
 - `messages[*].content` is always a string.
 - Allowed roles only: `user`, `assistant`, `tool_call`, `tool_response`.
 - First message role is `user`, last is `assistant`.
-- No adjacent duplicate conversational roles.
+- No adjacent duplicate conversational roles, **except** for consecutive `tool_call` or consecutive `tool_response` messages, which represent parallel tool dispatch (multiple tool_use blocks from a single assistant turn in the claw-code / Anthropic protocol).
 - Max one `<audio>` tag per `user` or `assistant` message (tool_response may have multiple).
 - Total `<audio>` tag count equals `len(audios)`.
 
 Tools are represented in-message via:
-- `tool_call` content: JSON string like `{ "name": "bash", "arguments": {...} }`.
+- `tool_call` content: JSON string like `{"name": "bash", "arguments": {...}}` or `{"name": "Agent", "arguments": {"subagent_type": ..., "description": ..., "prompt": ..., "name": ...}}`.
 - `tool_response` content: JSON/string output payload.
 
-## Search → Main Handoff
+## Search → Judge → Main Handoff
 
-1. Main agent starts from target audio + default baseline.
-2. Main dispatches search agents (tool_call: `spawn_search_agents`).
-3. Search agents (trained separately) evaluate candidates by ear across multiple rounds.
-4. Main collects pooled shortlist (tool_call: `collect_search_reports`).
-5. Main renders 2-3 tuple combinations through Vital, listens, selects the best.
-6. Main applies chosen wavetables via library lookup (inference-compatible).
-7. Main writes DIAGNOSIS and executes subsystem-batched parameter edits.
+1. **Main agent** starts from target audio + default baseline; determines `n_osc_slots` from target preset.
+2. **Main dispatches 4 search agents in parallel** (one `Agent` tool_call per slice, all emitted before any tool_response). Each search agent runs as its own independent SFT task at training time; at inference, the harness executes them concurrently.
+3. **Search agents** each evaluate 48 candidates across 6 batches by ear, write shortlist JSON files (2-4 names per slice).
+4. **Main cats all 4 shortlist files** and forms the combined pool (~12 unique candidates).
+5. **Main dispatches judge agent** with the pool. The judge auditions target + all pool candidates in one Omni call, picks the final tuple matching `n_osc_slots`, writes output JSON.
+6. **Main cats judge output**, reads the tuple, renders it via `render_wavetable_tuple.py`, listens.
+7. **If tuple doesn't match target** (or GTs missing from pool): main agent triggers a new search round with shifted slices, then a new judge pass. Up to `max_search_rounds` total.
+8. **Once tuple matches**: main applies wavetables via VitalController, writes diagnosis, executes subsystem batches, produces verdict.
 
-## Candidate Pool Construction
+## Preset-Grounded Stage 1 Observations
 
-At build time (not model-visible):
+`scripts/preset_perceptual_summary.py`
+
+Multi-audio target/default comparison was out-of-distribution for Qwen-Omni (hallucinated modulation, flipped attack shape, wrote generic differential prose). The pipeline now relies on what text Qwen actually knows — sound-design vocabulary and param-to-perception mapping — while keeping audio in the loop as a perceptual grounding prior.
+
+Flow:
+1. Extract perceptual buckets from the target preset (no numbers, no param names): envelope ADSR (plucky/gradual/swell + short/moderate/long/lingering), filter (brightness + resonance + model), unison (voice count + detune), active LFOs, active effects, prominent modulation routes.
+2. Inject the bucket summary into Stage 1's Omni prompt alongside the target audio.
+3. Stage 1 prompt enforces coverage of five sound-design aspects (envelope shape, tone+filter, oscillator body, motion, space+effects) so observations are reverse-engineerable by another producer.
+
+`summarize_residual_delta_perceptual(target, final)` does the same for the FINAL ASSESSMENT — identifies the top 5 concrete differences between target and final preset (envelope ADSR mismatches, filter cutoff/resonance/on-off, unison voices/detune, effect on/off) ranked by magnitude. Verdicts cite these residuals instead of defaulting to "envelope N".
+
+## Plan + Param-Delta Driven Narrations
+
+The per-batch narration (assistant turn after each subsystem batch) used to pull from a 28-lens descriptor bank that rotated across batches. Problem: lenses could push the narration to describe motion on a batch that actually disengaged motion, contradicting the plan.
+
+Current approach (no lens bank):
+- Narration generator receives the plan's bullet for this subsystem + the concrete before→after values for the params changed in this batch (with direction words: substantially increased / slightly decreased / disengaged / unchanged).
+- Prompt instructs: stay consistent with the plan direction; ground claims in the actual param deltas; translate numeric change into perceptual effect.
+- Natural variety comes from different presets having genuinely different deltas.
+
+## No-Audio Edge Case
+
+`--no-audio-rate` (default 0.05): for ~5% of samples, the user message has no `<audio>` tag. The assistant responds with a single-turn refusal:
+
+> "I don't see an audio clip attached to your message. Please select the audio item in REAPER that you want me to recreate..."
+
+Record is flagged `meta.variant='no_audio_selected'` so the grader skips the normal metrics.
+
+## Candidate Pool Construction (Build-Time Only)
+
 1. Extract GT wavetable names from target preset (1-3 active oscillators).
-2. Look up GT wavetable embeddings in the CLAP wavetable index (bare probes through default preset).
-3. Compute cosine similarity of GT embeddings against all 568 wavetable index entries (apples-to-apples).
-4. Take top-K=48 most similar as hard negatives. GT always included.
-5. Shuffle and split into disjoint shards for search agents.
+2. Compute CLAP embeddings for each GT wavetable's bare probe.
+3. Slice the 282-wavetable library into N agent slices with an offset rotation chosen to cover at least one GT per sample (unless `--force-research-rate` deliberately misses, to train the re-search branch).
+4. Each search agent applies CLAP-based per-candidate selection (threshold 0.92 vs. any GT) — simulated at build time; Stage 2 only writes reasoning that aligns with the selection labels.
 
 CLAP retrieval against fully-processed target audio was evaluated and failed (R@5=4.95%) because it compared processed target audio vs bare wavetable probes. GT-to-index comparison works because both sides are bare probes through the same default preset.
 
+## Parallel Tool Dispatch in the JSONL
+
+The claw-code / Anthropic tool-use protocol represents parallel tool calls as multiple `tool_use` blocks in a single assistant message. Our ms-swift JSONL simplifies this to per-message roles, but represents the same parallel semantics by emitting **all N `tool_call` messages back-to-back, then all N `tool_response` messages**. The validator (`agent_sft_common.assert_valid_ms_swift_multiturn_record`) permits consecutive `tool_call` / `tool_response` as an explicit exception to the no-adjacent-duplicate rule.
+
+Used for:
+- 4 parallel search-agent dispatches at the start of each search round.
+
+Serial (tool_call → tool_response → tool_call → tool_response) is used when calls have data dependencies (e.g. cat shortlists → dispatch judge → cat judge output).
+
 ## Current Builders
-- `scripts/build_search_agent_sft_v2.py` — search agent (iterative batch listening)
-- `scripts/build_main_agent_sft_v3.py` — main agent (diagnose → subsystem batches)
-- `scripts/grade_agent_sft.py` — v2 + v3 scoring paths
-- `scripts/agent_sft_common.py` — shared helpers including `build_gt_similarity_pool()`
+
+- `scripts/build_search_agent_sft_v2.py` — search agent (iterative batch listening, CLAP-grounded selection, entry + agent concurrency)
+- `scripts/build_judge_agent_sft_v3.py` — judge agent (audition combined pool in one Omni call, pick final tuple, write output file)
+- `scripts/build_main_agent_sft_v3.py` — main agent (parallel search dispatch → judge → tuple render+listen → diagnose → subsystem batches → residual-grounded verdict)
+- `scripts/preset_perceptual_summary.py` — perceptual-bucket preset summaries (grounding prior for Stage 1 and verdict)
+- `scripts/grade_agent_sft.py` — v2 + v3 scoring; v3 LLM-as-judge across 7 axes; cross-sample template detection
+- `scripts/build_audio_grounding_spotcheck.py` — self-contained HTML spot-check (audio embedded, optional compare mode)
+- `scripts/validate_grounded_observations.py` — A/B runner for Stage 1 observation variants
+- `scripts/agent_sft_common.py` — shared helpers including `build_gt_similarity_pool()`, `build_name_embedding_map()`, `is_clap_selected()`
 - `scripts/experiment_clap_wt_threshold.py` — CLAP threshold experiment
 - `scripts/experiment_omni_batch_listen.py` — Omni batch listening validation
 
 ### Legacy (superseded)
 - `scripts/build_search_agent_sft.py` — v1 search (template proposals from CLAP rankings)
-- `scripts/build_judge_agent_sft.py` — judge (listwise ranking from CLAP scores)
+- `scripts/build_judge_agent_sft.py` — v1 judge (listwise ranking from CLAP scores, no audio listening; superseded by v3 audition-based judge)
 - `scripts/build_main_agent_sft_v2.py` — v2 main (per-step HEARD/HYPOTHESIS/PLAN)
 
+## LLM-as-Judge Grading (v3 path)
+
+`scripts/grade_agent_sft.py` with `--llm-judge-server` runs 7 LLM-judge axes in addition to the structural checks:
+
+| Axis | Purpose |
+|---|---|
+| `llm_observations_audio_grounded` | Omni listens to target WAV and judges whether OBSERVATIONS matches audio |
+| `llm_narration_no_hallucination` | Per-batch binary: does narration reference param families not in the batch? |
+| `llm_narration_plan_ref` | Does narration pick up plan's subsystem bullet? |
+| `llm_narration_param_specific` | Does narration cite audible consequences of the edited params? |
+| `llm_narration_templateness` | **Cross-sample binary** — compares phrasing against 3 other samples' same-subsystem narrations |
+| `llm_verdict_residual_grounded` | Does verdict cite concrete residual (not generic "envelope N")? |
+| `llm_verdict_novelty` | **Cross-sample binary** — compares against 3 other samples' verdicts |
+
+Weight split: structural metrics ~52%, LLM-judge ~48% when enabled. Runtime: ~35s for 8 samples at `--workers 8`.
+
+Latest n=8 smoke benchmark (v9): overall **0.841** on normal records; both verdict axes at **1.00**; `llm_narration_templateness` 0.83; `llm_narration_plan_ref` 0.82.
+
 ## Validation + Tests
-- Contract validator: `validate_ms_swift_multiturn_record(...)`
+- Contract validator: `validate_ms_swift_multiturn_record(...)` — allows consecutive tool_call/tool_response for parallel dispatch.
 - Test coverage:
   - `tests/test_search_agent_sft_v2.py` — search agent v2 structural invariants
   - `tests/test_agent_sft_contracts_v3.py` — main agent v3 structural invariants
   - `tests/test_agent_sft_grading.py` — v2 + v3 grading logic
   - `tests/test_agent_sft_contracts.py` — v2 legacy (regression guard)
+  - *(Missing: contract tests for `build_judge_agent_sft_v3.py` — follow-up work)*
 
 Recommended checks:
 ```bash
