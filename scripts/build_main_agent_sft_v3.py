@@ -1485,6 +1485,8 @@ def build_record(
     pool: list[str] = []
     rounds_used = 0
     round_offsets_used: list[list[int]] = []
+    verdicts_by_round: list[str] = []
+    judge_exhausted_fallback = False
 
     def _simulate_shortlist(start: int, end: int) -> list[str]:
         """Build-time simulation of search agent shortlist for a given shard.
@@ -1690,23 +1692,70 @@ def build_record(
         cur_active_names = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
         n_osc_slots = len(cur_active_names)
 
-        # Write judge output file (simulates runtime judge agent's output)
+        # VERDICT: judge says "good" iff every active-osc-slot's GT name is in
+        # the pool. Otherwise "no_match" — the main agent will branch into a
+        # re-search round (or exit with best-available if budget exhausted).
+        needed_gt_names = [
+            target_preset.get("settings", {}).get("wavetables", [None, None, None])[oi].get("name", "")
+            if oi < len(target_preset.get("settings", {}).get("wavetables", []))
+            else ""
+            for oi in active_oscs
+        ]
+        needed_gt_names = [n for n in needed_gt_names if n]
+        all_gt_in_pool = bool(needed_gt_names) and all(n in pool for n in needed_gt_names)
+        judge_verdict = "good" if all_gt_in_pool else "no_match"
+        # Pre-compute a static missing-character hint for the no_match case —
+        # the main builder doesn't call Omni per-sample (would slow builds);
+        # uses the GT wavetable name as a stand-in for the character. The
+        # actual judge subagent SFT does the perceptual derivation via Omni.
+        if judge_verdict == "no_match":
+            missing_character = (
+                f"raw timbre of '{needed_gt_names[0]}'"
+                if needed_gt_names
+                else "timbral character of the target"
+            )
+        else:
+            missing_character = ""
+
+        verdicts_by_round.append(judge_verdict)
+
+        # Write judge output file (simulates runtime judge agent's output) —
+        # new schema with verdict + missing_character + nullable tuple.
         judge_agent_id = f"wavetable_judge_{sample_id}_r{rounds_used}"
         judge_output_file = Path(agent_out_dir) / f"{judge_agent_id}.json"
         judge_output_file.parent.mkdir(parents=True, exist_ok=True)
-        judge_reasoning = (
-            f"After listening to the {len(pool)} pool candidates against the target, "
-            f"{', '.join(repr(n) for n in cur_active_names)} together captures the "
-            f"target's character most closely."
-        )
-        with open(judge_output_file, "w") as jf:
-            json.dump({
+        if judge_verdict == "good":
+            judge_reasoning = (
+                f"After listening to the {len(pool)} pool candidates against the target, "
+                f"{', '.join(repr(n) for n in cur_active_names)} together captures the "
+                f"target's character most closely."
+            )
+            judge_output_payload = {
                 "status": "completed",
                 "agentId": judge_agent_id,
+                "verdict": "good",
+                "missing_character": "",
                 "tuple": cur_active_names,
                 "n_osc_slots": n_osc_slots,
                 "reasoning": judge_reasoning,
-            }, jf)
+            }
+        else:
+            judge_reasoning = (
+                f"Pool of {len(pool)} candidates lacks any wavetable with the "
+                f"{missing_character} the target relies on. Recommending re-search "
+                f"across unexplored library regions."
+            )
+            judge_output_payload = {
+                "status": "completed",
+                "agentId": judge_agent_id,
+                "verdict": "no_match",
+                "missing_character": missing_character,
+                "tuple": None,
+                "n_osc_slots": n_osc_slots,
+                "reasoning": judge_reasoning,
+            }
+        with open(judge_output_file, "w") as jf:
+            json.dump(judge_output_payload, jf)
             jf.write("\n")
 
         # Dispatch judge agent
@@ -1745,17 +1794,35 @@ def build_record(
             }, ensure_ascii=False),
         })
 
-        # Read judge's tuple selection via cat
+        # Read judge's verdict + tuple via cat. The main agent's branch
+        # decision is now driven by `verdict`, not by an oracle peek.
         messages.append({
             "role": "assistant",
-            "content": "Reading judge's tuple selection.",
+            "content": "Reading judge's verdict and selection.",
         })
         messages.append(_tool_call("bash", {"command": f"cat {judge_output_file}"}))
         with open(judge_output_file) as jf:
             judge_content = jf.read().strip()
         messages.append({"role": "tool_response", "content": judge_content})
 
-        # Render tuple to verify the combination sounds right
+        # Branch on judge verdict.
+        if judge_verdict == "no_match":
+            # Judge said the pool is insufficient. Skip tuple render entirely
+            # and go to a re-search round (or exit with best-available if budget
+            # exhausted).
+            if rounds_used >= max_rounds:
+                judge_exhausted_fallback = True
+                break
+            _research_prefix = (
+                f"The judge reports the pool of {len(pool)} candidates doesn't contain "
+                f"any wavetable with the {missing_character} of the target. "
+                f"Expanding search to unexplored library regions. "
+            )
+            base_offset = (base_offset + stride // 2) % stride
+            slice_starts = _compute_slices(base_offset)
+            continue
+
+        # verdict == "good" → render tuple, listen, break out of search loop.
         osc_args = " ".join(
             f"--osc{oi + 1} {json.dumps(cur_tuple[oi])}" for oi in active_oscs if cur_tuple[oi]
         )
@@ -1771,8 +1838,50 @@ def build_record(
         messages.append({
             "role": "assistant",
             "content": (
-                f"Judge selected [{tuple_names_str}]. Rendering the tuple to verify the "
-                f"combination matches the target before applying."
+                f"Judge confirmed pool is sufficient and selected [{tuple_names_str}]. "
+                f"Rendering the tuple as a final pre-apply sanity check."
+            ),
+        })
+        messages.append(_tool_call("bash", {"command": render_cmd}))
+        audio_assets.append(str(tuple_wav))
+        messages.append({
+            "role": "tool_response",
+            "content": json.dumps({
+                "status": "ok", "tuple_audio": "<audio>",
+                "out": str(tuple_wav), "wavetables": cur_active_names,
+            }, ensure_ascii=False),
+        })
+        # Verdict was good → done with search, exit loop.
+        break
+
+    # The best tuple from the last search round is cur_tuple. For verdict="good"
+    # rounds it was already rendered + heard inside the loop. For the
+    # judge_exhausted_fallback case (max_rounds reached on no_match) we have
+    # not rendered the tuple yet — render it here so the apply step has a
+    # tuple_wav to reference and the model gets a final listen.
+    if judge_exhausted_fallback:
+        osc_args = " ".join(
+            f"--osc{oi + 1} {json.dumps(cur_tuple[oi])}" for oi in active_oscs if cur_tuple[oi]
+        )
+        tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}_fallback.wav"
+        render_cmd = (
+            f"python skills/vital/scripts/render_tuple.py {osc_args} "
+            f"--out {tuple_wav}"
+        )
+        with serial_lock:
+            render_cumulative_audio(
+                synth,
+                _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
+                notes, tuple_wav,
+            )
+        cur_active_names = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
+        tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
+        messages.append({
+            "role": "assistant",
+            "content": (
+                f"Search budget exhausted after {max_rounds} rounds; the judge still "
+                f"reports no_match on the final pool. Rendering the best-available "
+                f"combination [{tuple_names_str}] to make progress before parameter tuning."
             ),
         })
         messages.append(_tool_call("bash", {"command": render_cmd}))
@@ -1785,33 +1894,19 @@ def build_record(
             }, ensure_ascii=False),
         })
 
-        # Re-search decision: are ALL GT wavetable names in the pool?
-        all_gt_found = all(gt in pool for gt in gt_names_list)
-        if all_gt_found or rounds_used >= max_rounds:
-            break
-
-        # Tuple doesn't have all GTs → re-search.
-        # Store re-search text to merge into next round's dispatch intro
-        # (avoids adjacent assistant messages).
-        _research_prefix = (
-            "The rendered tuple doesn't capture the target's character closely enough. "
-        )
-
-        # Shift offsets for next round — avoid re-searching same regions
-        base_offset = (base_offset + stride // 2) % stride
-        slice_starts = _compute_slices(base_offset)
-
-    # The best tuple from the last search round is cur_tuple (already rendered + heard).
-    # Use it for the apply step.
     gt_tuple = cur_tuple
     apply_names = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
     osc_assignments = ", ".join(
         f"oscillator {oi + 1} = '{gt_tuple[oi]}'" for oi in active_oscs if gt_tuple[oi]
     )
-    if all_gt_found:
+    final_verdict = verdicts_by_round[-1] if verdicts_by_round else "good"
+    if final_verdict == "good" and not judge_exhausted_fallback:
         selection_text = f"This tuple matches the target well. Applying: {osc_assignments}."
     else:
-        selection_text = f"Search budget exhausted. Applying best available: {osc_assignments}."
+        selection_text = (
+            f"Search budget exhausted; applying best-available combination: "
+            f"{osc_assignments}."
+        )
 
     apply_assignments = ", ".join(
         f'({oi}, {json.dumps(gt_tuple[oi])})' for oi in active_oscs if gt_tuple[oi]
@@ -2093,6 +2188,9 @@ def build_record(
             "search_pool_size": len(pool),
             "search_rounds_used": rounds_used,
             "search_slice_starts_per_round": round_offsets_used,
+            "search_judge_verdicts": verdicts_by_round,
+            "search_final_verdict": verdicts_by_round[-1] if verdicts_by_round else None,
+            "search_rounds_exhausted_on_no_match": judge_exhausted_fallback,
         },
         "meta": {
             "pipeline_version": "v3",

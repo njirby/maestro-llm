@@ -1603,33 +1603,74 @@ def llm_judge_v3_record(
 
     other_by_sub = other_narrations_by_subsystem or {}
 
-    per_batch: list[dict] = []
     plan_refs: list[float] = []
     param_specs: list[float] = []
     templateness: list[float] = []
     no_halluc: list[float] = []
-    for (subsystem, narration), label in zip(narrations, batch_labels):
-        param_names = list(label.get("param_names", []))
-        # Pick up to 3 other-sample narrations from the same subsystem as template reference
-        other_nars = list(other_by_sub.get(subsystem, []))[:3]
-        nres = _llm_judge_v3_narration(
-            plan_text=plan_text,
-            subsystem=subsystem,
-            param_names=param_names,
-            narration=narration,
-            server_url=server_url,
-            model=model,
-            other_narrations=other_nars,
+    # Parallelize: every batch's narration + hallucination judge calls are
+    # independent of every other batch's. Plus verdict + observations are
+    # independent of all batches. Fire everything in one ThreadPoolExecutor
+    # so vLLM's batching can absorb the whole record's LLM-judge workload.
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    n_batches = len(narrations)
+    max_workers = max(2, min(32, 2 * n_batches + 2))  # 2 calls per batch + verdict + obs
+
+    subsystems = [bl.get("subsystem", "") for bl in batch_labels]
+    per_batch_entries: list[dict | None] = [None] * n_batches
+
+    def _run_narr(i: int, subsystem: str, narration: str, param_names: list, other_nars: list):
+        return i, _llm_judge_v3_narration(
+            plan_text=plan_text, subsystem=subsystem, param_names=param_names,
+            narration=narration, server_url=server_url, model=model,
+            other_narrations=other_nars, timeout=timeout,
+        )
+
+    def _run_hall(i: int, subsystem: str, narration: str, param_names: list):
+        return i, _llm_judge_v3_param_hallucination(
+            subsystem=subsystem, param_names=param_names, narration=narration,
+            server_url=server_url, model=model, timeout=timeout,
+        )
+
+    def _run_verdict():
+        return _llm_judge_v3_verdict(
+            plan_text=plan_text, subsystems=subsystems, verdict=verdict,
+            server_url=server_url, model=model, other_verdicts=other_verdicts,
             timeout=timeout,
         )
-        hres = _llm_judge_v3_param_hallucination(
-            subsystem=subsystem,
-            param_names=param_names,
-            narration=narration,
-            server_url=server_url,
-            model=model,
-            timeout=timeout,
+
+    def _run_obs():
+        return _llm_judge_v3_observations_audio(
+            observations=observations, target_audio_path=target_audio,
+            server_url=server_url, model=model,
         )
+
+    nres_by_idx: dict[int, dict | None] = {}
+    hres_by_idx: dict[int, dict | None] = {}
+    verdict_res: dict | None = None
+    obs_res: dict | None = None
+    with _TPE(max_workers=max_workers) as ex:
+        narr_futs = []
+        hall_futs = []
+        for i, ((subsystem, narration), label) in enumerate(zip(narrations, batch_labels)):
+            param_names = list(label.get("param_names", []))
+            other_nars = list(other_by_sub.get(subsystem, []))[:3]
+            narr_futs.append(ex.submit(_run_narr, i, subsystem, narration, param_names, other_nars))
+            hall_futs.append(ex.submit(_run_hall, i, subsystem, narration, param_names))
+        verdict_fut = ex.submit(_run_verdict)
+        obs_fut = ex.submit(_run_obs)
+        for fut in narr_futs:
+            i, nres = fut.result()
+            nres_by_idx[i] = nres
+        for fut in hall_futs:
+            i, hres = fut.result()
+            hres_by_idx[i] = hres
+        verdict_res = verdict_fut.result()
+        obs_res = obs_fut.result()
+
+    per_batch: list[dict] = []
+    for i, ((subsystem, _narration), _label) in enumerate(zip(narrations, batch_labels)):
+        nres = nres_by_idx.get(i)
+        hres = hres_by_idx.get(i)
         entry: dict[str, Any] = {"subsystem": subsystem}
         if nres is not None:
             plan_refs.append(nres["plan_reference"])
@@ -1647,24 +1688,6 @@ def llm_judge_v3_record(
             entry["no_hallucination"] = None
             entry["hallucination_reasoning"] = "(hallucination judge unavailable)"
         per_batch.append(entry)
-
-    subsystems = [bl.get("subsystem", "") for bl in batch_labels]
-    verdict_res = _llm_judge_v3_verdict(
-        plan_text=plan_text,
-        subsystems=subsystems,
-        verdict=verdict,
-        server_url=server_url,
-        model=model,
-        other_verdicts=other_verdicts,
-        timeout=timeout,
-    )
-
-    obs_res = _llm_judge_v3_observations_audio(
-        observations=observations,
-        target_audio_path=target_audio,
-        server_url=server_url,
-        model=model,
-    )
 
     def _mean(xs: list[float]) -> float | None:
         return round(sum(xs) / len(xs), 4) if xs else None
@@ -1893,21 +1916,39 @@ def _score_candidate_audio_grounding(
         triples = rng.sample(triples, target_n)
     details: list[dict] = []
     scores: list[float] = []
-    for name, desc, path in triples:
-        result = _llm_judge_candidate_audio(
-            description=desc,
-            audio_path=path,
-            server_url=llm_judge_server,
-            model=llm_judge_model,
-        )
-        if result is None:
-            continue
-        scores.append(result["audio_grounded"])
-        details.append({
-            "name": name,
-            "audio_grounded": result["audio_grounded"],
-            "reasoning": result["reasoning"],
-        })
+    # Parallelize the per-candidate Omni calls — vLLM's continuous batching
+    # serves N concurrent requests far faster than N sequential ones. With
+    # `--workers W` records in flight and `_per_record_concurrency` checks
+    # per record, the in-flight Omni-request count is roughly W * concurrency.
+    _per_record_concurrency = min(16, len(triples))
+    if _per_record_concurrency <= 1:
+        for name, desc, path in triples:
+            result = _llm_judge_candidate_audio(
+                description=desc, audio_path=path,
+                server_url=llm_judge_server, model=llm_judge_model,
+            )
+            if result is None:
+                continue
+            scores.append(result["audio_grounded"])
+            details.append({"name": name, "audio_grounded": result["audio_grounded"], "reasoning": result["reasoning"]})
+        if not scores:
+            return None, details
+        return round(sum(scores) / len(scores), 4), details
+
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    futures_in_order: list = []
+    with _TPE(max_workers=_per_record_concurrency) as ex:
+        for name, desc, path in triples:
+            futures_in_order.append((name, ex.submit(
+                _llm_judge_candidate_audio,
+                desc, path, llm_judge_server, llm_judge_model,
+            )))
+        for name, fut in futures_in_order:
+            result = fut.result()
+            if result is None:
+                continue
+            scores.append(result["audio_grounded"])
+            details.append({"name": name, "audio_grounded": result["audio_grounded"], "reasoning": result["reasoning"]})
     if not scores:
         return None, details
     return round(sum(scores) / len(scores), 4), details
@@ -2055,38 +2096,77 @@ def score_judge_v3_record(
 ) -> dict[str, Any]:
     """Score a v3 judge record.
 
-    The judge agent audions the combined search pool in one Omni call, picks
-    the best N wavetables (N = active oscillator slots), and writes the
-    selection to a JSON output file via explicit bash tool_call.
+    Verdict-aware: judge emits verdict ∈ {"good", "no_match"}. Tuple-related
+    dimensions only apply when verdict == "good"; missing-character + no_match
+    narration dimensions apply only when verdict == "no_match". Records without
+    a verdict field default to "good" for back-compat with v18/v19.
 
     Dimensions:
-      judge_correct                  (25%)            — meta.judge_correct: selection matches the GTs present in the pool (oracle correctness).
-      output_file_written            (20%)            — final bash tool_call writes judge_*.json, tool_response confirms.
-      llm_candidates_audio_grounded  (15% conditional) — mean single-audio Omni grounding across per-pool-candidate descriptions. Catches audition-call audio-position confusion. Requires --llm-judge-server.
-      tuple_size_correct             (10%)            — len(selected_tuple) == n_osc_slots.
-      tuple_names_in_pool            (10%)            — every selected name is from the pool.
-      pool_candidates_discussed      (10%)            — fraction of pool names mentioned in deliberation.
-      has_render_probes              (5%)             — ≥1 bash tool_call invokes render_probes.py.
+      verdict_correct                (25%)            — judge's emitted verdict matches the oracle (gt ⊆ pool).
+      output_file_written            (15%)            — final bash writes judge JSON; tool_response ok.
+      output_schema_valid            (5%)             — embedded write_cmd JSON has all required keys.
+      judge_correct                  (15% cond:good)  — meta.judge_correct: tuple matches GTs in pool.
+      tuple_size_correct             (5%  cond:good)  — len(selected_tuple) == n_osc_slots.
+      tuple_names_in_pool            (5%  cond:good)  — every selected name is from the pool.
+      missing_character_nonempty     (5%  cond:no_match) — meta.missing_character has ≥3 words.
+      no_match_narration_present     (5%  cond:no_match) — assistant text contains no_match/re-search hints.
+      llm_candidates_audio_grounded  (10% conditional) — single-audio Omni grounding (requires --llm-judge-server).
+      pool_candidates_discussed      (5%)             — fraction of pool names mentioned in deliberation.
+      has_render_probes              (2.5%)           — ≥1 bash tool_call invokes render_probes.py.
       closing_assistant              (2.5%)           — last message is assistant.
-      format_consistent              (1.25%)          — no **BOLD:** headers.
-      snake_case_clean               (1.25%)          — no snake_case in assistant text.
+      format_consistent              (2.5%)           — no **BOLD:** headers.
+      snake_case_clean               (2.5%)           — no snake_case in assistant text.
     """
     messages = record.get("messages", [])
     meta = record.get("meta", {})
     assistant_turns = [m.get("content", "") or "" for m in messages if m.get("role") == "assistant"]
 
+    # Verdict resolution: explicit field wins; default to "good" for back-compat.
+    verdict = meta.get("verdict") or "good"
+    is_good = verdict == "good"
+    is_no_match = verdict == "no_match"
+
     selected_tuple: list[str] = list(meta.get("selected_tuple") or [])
     pool: list[str] = list(meta.get("pool") or [])
     n_osc_slots: int = int(meta.get("n_osc_slots") or 0)
+    gt_names: list[str] = list(meta.get("gt_wavetable_names") or [])
+    missing_character = str(meta.get("missing_character") or "")
 
-    judge_correct: float = 1.0 if meta.get("judge_correct") else 0.0
-    tuple_size_correct: float = 1.0 if len(selected_tuple) == n_osc_slots else 0.0
-    tuple_names_in_pool: float = (
-        1.0 if selected_tuple and all(n in pool for n in selected_tuple) else 0.0
-    )
+    # Verdict correctness: oracle = "good" iff every GT name appears in pool.
+    expected_verdict = "good" if (gt_names and all(g in pool for g in gt_names)) else "no_match"
+    if not gt_names:
+        # No GT info available — can't grade verdict correctness.
+        verdict_correct: float | None = None
+    else:
+        verdict_correct = 1.0 if verdict == expected_verdict else 0.0
 
-    # Output file written
+    # Tuple-related dimensions (good only)
+    if is_good:
+        judge_correct: float | None = 1.0 if meta.get("judge_correct") else 0.0
+        tuple_size_correct: float | None = 1.0 if len(selected_tuple) == n_osc_slots else 0.0
+        tuple_names_in_pool: float | None = (
+            1.0 if selected_tuple and all(n in pool for n in selected_tuple) else 0.0
+        )
+    else:
+        judge_correct = None
+        tuple_size_correct = None
+        tuple_names_in_pool = None
+
+    # No_match-specific dimensions
+    if is_no_match:
+        missing_character_nonempty: float | None = (
+            1.0 if len(missing_character.split()) >= 3 else 0.0
+        )
+        _no_match_kw = ("no_match", "no-match", "re-search", "research", "doesn't contain", "does not contain")
+        _hits = any(any(kw in (t or "").lower() for kw in _no_match_kw) for t in assistant_turns)
+        no_match_narration_present: float | None = 1.0 if _hits else 0.0
+    else:
+        missing_character_nonempty = None
+        no_match_narration_present = None
+
+    # Output file written + schema valid
     output_file_written: float = 0.0
+    output_schema_valid: float = 0.0
     last_bash_idx = -1
     for i, m in enumerate(messages):
         if m.get("role") == "tool_call":
@@ -2100,8 +2180,10 @@ def score_judge_v3_record(
         try:
             tc = json.loads(messages[last_bash_idx]["content"])
             cmd = tc.get("arguments", {}).get("command", "")
-            # Check for the tuple/n_osc_slots/reasoning schema in the command
-            if "tuple" in cmd and "n_osc_slots" in cmd and "reasoning" in cmd:
+            # Loosened heuristic: must reference n_osc_slots + reasoning. The "tuple"
+            # check is omitted because tuple may be null on no_match records, but
+            # the literal "tuple" key is still present so we keep that as a soft check.
+            if "n_osc_slots" in cmd and "reasoning" in cmd and "tuple" in cmd:
                 nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
                 if nxt and nxt.get("role") == "tool_response":
                     try:
@@ -2110,6 +2192,29 @@ def score_judge_v3_record(
                             output_file_written = 1.0
                     except Exception:
                         pass
+            # Schema-valid: parse the embedded JSON literal in the heredoc and
+            # verify the new keys are present. Lenient — for back-compat with
+            # records lacking verdict/missing_character we only require the
+            # legacy {tuple, n_osc_slots, reasoning} keys.
+            required_legacy = {"tuple", "n_osc_slots", "reasoning"}
+            required_new = required_legacy | {"verdict", "missing_character"}
+            try:
+                # Find the largest brace-balanced JSON-looking substring
+                _braces = re.findall(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", cmd, re.DOTALL)
+                _payload_keys: set[str] = set()
+                for blob in _braces:
+                    try:
+                        _parsed = json.loads(blob)
+                        if isinstance(_parsed, dict) and required_legacy.issubset(_parsed.keys()):
+                            _payload_keys = set(_parsed.keys())
+                            break
+                    except Exception:
+                        continue
+                target_keys = required_new if (verdict and verdict in ("good", "no_match")) else required_legacy
+                if target_keys.issubset(_payload_keys):
+                    output_schema_valid = 1.0
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -2148,23 +2253,32 @@ def score_judge_v3_record(
     )
 
     weights: dict[str, float] = {
-        "judge_correct": 0.25,
-        "output_file_written": 0.20,
-        "llm_candidates_audio_grounded": 0.15,
-        "tuple_size_correct": 0.10,
-        "tuple_names_in_pool": 0.10,
-        "pool_candidates_discussed": 0.10,
-        "has_render_probes": 0.05,
+        "verdict_correct": 0.25,
+        "output_file_written": 0.15,
+        "output_schema_valid": 0.05,
+        "judge_correct": 0.15,
+        "tuple_size_correct": 0.05,
+        "tuple_names_in_pool": 0.05,
+        "missing_character_nonempty": 0.05,
+        "no_match_narration_present": 0.05,
+        "llm_candidates_audio_grounded": 0.10,
+        "pool_candidates_discussed": 0.05,
+        "has_render_probes": 0.025,
         "closing_assistant": 0.025,
-        "format_consistent": 0.0125,
-        "snake_case_clean": 0.0125,
+        "format_consistent": 0.025,
+        "snake_case_clean": 0.025,
     }
     raw: dict[str, Any] = {
-        "judge_correct": judge_correct,
+        "verdict": verdict,
+        "verdict_correct": verdict_correct,
         "output_file_written": output_file_written,
-        "llm_candidates_audio_grounded": audio_grounded_mean,
+        "output_schema_valid": output_schema_valid,
+        "judge_correct": judge_correct,
         "tuple_size_correct": tuple_size_correct,
         "tuple_names_in_pool": tuple_names_in_pool,
+        "missing_character_nonempty": missing_character_nonempty,
+        "no_match_narration_present": no_match_narration_present,
+        "llm_candidates_audio_grounded": audio_grounded_mean,
         "pool_candidates_discussed": pool_candidates_discussed,
         "has_render_probes": has_render_probes,
         "closing_assistant": closing_assistant,

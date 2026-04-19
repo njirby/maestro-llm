@@ -279,18 +279,75 @@ def omni_judge_audition(
         return "\n".join(lines) + "\nRECOMMENDATION: [] : (fallback — synth call failed)"
 
 
+# Verdict constants — judge emits one of these in its output JSON.
+_VERDICT_GOOD = "good"
+_VERDICT_NO_MATCH = "no_match"
+
+
+def _derive_missing_character(
+    target_wav: Path | str,
+    omni_server: str,
+    omni_model: str,
+    timeout: float = 30.0,
+) -> str:
+    """Single-audio Omni call: in 3-6 words, name the dominant timbral quality
+    of the target. Used when the judge's pool lacks GT — produces a perceptual
+    hint for the re-search recommendation. Falls back to a static phrase."""
+    if not omni_server:
+        return "timbral character of the target"
+    prompt_text = (
+        "In 3-6 words, name the dominant timbral quality of this synth sound — "
+        "the single phrase a sound designer would use to describe its core "
+        "character. Examples: 'metallic FM buzz', 'breathy vocal pad', "
+        "'punchy plucked bass', 'glassy resonant bell'. Respond with the "
+        "phrase only — no preamble, no quotes."
+    )
+    desc = _omni_single_audio_call(
+        audio_path=Path(str(target_wav)),
+        prompt_text=prompt_text,
+        omni_server=omni_server,
+        omni_model=omni_model,
+        max_tokens=40,
+        temperature=0.4,
+        timeout=timeout,
+        fallback="timbral character of the target",
+    )
+    # Strip surrounding quotes/punctuation if present.
+    desc = desc.strip().strip(".'\" ")
+    if not desc or len(desc.split()) < 2:
+        return "timbral character of the target"
+    return desc[:120]
+
+
 def stage2_format_judge_response(
     omni_observations: str,
     pool: list[str],
     selected_tuple: list[str],
     n_osc_slots: int,
     gt_names_in_pool: list[str],
+    verdict: str,
+    missing_character: str,
     stage2_server: str,
     stage2_model: str,
     timeout: float = 180.0,
 ) -> str:
-    """Stage 2 text model formats Omni's observations into the final judge response,
-    with the selection pre-determined by the oracle. Stage 2 writes rationale only."""
+    """Stage 2 text model formats Omni's observations into the final judge response.
+
+    Branches on verdict:
+      - "good": existing template. Final line: SELECTED: [names]: <reason>.
+      - "no_match": new template. Stage-2 instructed NOT to pick a tuple.
+        Final line: NO_MATCH: <missing_character>: <re-search recommendation>.
+    """
+    if verdict == _VERDICT_NO_MATCH:
+        return _stage2_no_match_response(
+            omni_observations=omni_observations,
+            pool=pool,
+            missing_character=missing_character,
+            stage2_server=stage2_server,
+            stage2_model=stage2_model,
+            timeout=timeout,
+        )
+    # verdict == "good"
     gt_hint = (
         f"Ground truth (hidden from the judge at inference): the target actually uses "
         f"{', '.join(repr(g) for g in gt_names_in_pool)} from the pool. "
@@ -321,18 +378,87 @@ def stage2_format_judge_response(
              "max_tokens": 800, "temperature": 0.6},
             timeout=timeout,
         )
-        return r["choices"][0]["message"]["content"].strip()
+        out = r["choices"][0]["message"]["content"].strip()
     except Exception:
         per_cand = "\n".join(f'"{n}": Candidate evaluated.' for n in pool)
         return f"{per_cand}\nSELECTED: [{selected_list_str}]: Best combination from pool for the target."
+    # Defensive: if Stage-2 emitted a NO_MATCH line for a good verdict, strip it.
+    if "NO_MATCH:" in out:
+        out_lines = [ln for ln in out.splitlines() if not ln.strip().upper().startswith("NO_MATCH:")]
+        out = "\n".join(out_lines).strip()
+        if "SELECTED:" not in out:
+            out = out + f"\nSELECTED: [{selected_list_str}]: Best combination from pool for the target."
+    return out
+
+
+def _stage2_no_match_response(
+    omni_observations: str,
+    pool: list[str],
+    missing_character: str,
+    stage2_server: str,
+    stage2_model: str,
+    timeout: float = 180.0,
+) -> str:
+    """Stage-2 prompt for the no_match verdict: explicitly recommend re-search,
+    no tuple pick. Output ends with `NO_MATCH: <missing_character>: <reason>`."""
+    prompt = (
+        f"You are a music production AI formatting the judge agent's final response.\n\n"
+        f"Omni listened to the target + all pool candidates and wrote:\n"
+        f"---\n{omni_observations}\n---\n\n"
+        f"Pool candidates: {json.dumps(pool)}\n"
+        f"The ORACLE has determined the pool DOES NOT contain any wavetable that "
+        f"captures the target's defining character — specifically the "
+        f"'{missing_character}' quality.\n\n"
+        f"Write exactly {len(pool) + 1} lines:\n"
+        f"  - For each candidate, one line: '<name>': <one-sentence assessment of "
+        f"why it's not a good match for the target despite any partial overlap>.\n"
+        f"  - Final line: 'NO_MATCH: {missing_character}: <one-sentence "
+        f"recommendation that the main agent re-dispatch search across "
+        f"unexplored library regions to find wavetables with this character>'.\n\n"
+        f"Do NOT pick any selection. Do NOT emit a SELECTED line. The pool is "
+        f"insufficient — the correct response is to recommend re-search.\n"
+        f"Use the EXACT names. Natural language. No snake_case, no numeric values."
+    )
+    try:
+        r = _llm_post(
+            f"{stage2_server}/v1/chat/completions",
+            {"model": stage2_model,
+             "messages": [{"role": "user", "content": prompt}],
+             "max_tokens": 800, "temperature": 0.6},
+            timeout=timeout,
+        )
+        out = r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        per_cand = "\n".join(f'"{n}": Does not carry the {missing_character} of the target.' for n in pool)
+        return (
+            f"{per_cand}\nNO_MATCH: {missing_character}: Pool lacks any wavetable "
+            f"with this character — recommending re-search across unexplored regions."
+        )
+    # Defensive: if Stage-2 leaked a SELECTED line, strip it and substitute NO_MATCH.
+    if "SELECTED:" in out and "NO_MATCH:" not in out:
+        out_lines = [ln for ln in out.splitlines() if not ln.strip().upper().startswith("SELECTED:")]
+        out = "\n".join(out_lines).rstrip()
+        out += (
+            f"\nNO_MATCH: {missing_character}: Pool lacks any wavetable with "
+            f"this character — recommending re-search across unexplored regions."
+        )
+    elif "NO_MATCH:" not in out:
+        # Stage-2 produced no terminator — append one.
+        out += (
+            f"\nNO_MATCH: {missing_character}: Pool lacks any wavetable with "
+            f"this character — recommending re-search across unexplored regions."
+        )
+    return out
 
 
 def _extract_final_reasoning(stage2_text: str) -> str:
-    """Pull the SELECTED: line's justification for use in the output JSON file."""
+    """Pull the SELECTED: or NO_MATCH: line's justification for use in the
+    output JSON file. Format-tolerant — handles both verdict types."""
     for line in reversed(stage2_text.splitlines()):
         line = line.strip()
-        if line.upper().startswith("SELECTED:"):
-            # Format: "SELECTED: [...]: <reasoning>"
+        upper = line.upper()
+        if upper.startswith("SELECTED:") or upper.startswith("NO_MATCH:"):
+            # Format: "SELECTED: [...]: <reasoning>" OR "NO_MATCH: <character>: <reasoning>"
             parts = line.split(":", 2)
             if len(parts) >= 3:
                 return parts[2].strip()
@@ -415,8 +541,21 @@ def build_judge_record(
         "content": json.dumps({"status": "ok", "rendered": rendered_entries}, ensure_ascii=False),
     })
 
-    # Build-time oracle: GT-in-pool + CLAP-best proxy per osc slot
+    # Verdict computation: "good" iff every active-osc-slot's GT name is in
+    # the pool. When any required GT is absent, the judge emits "no_match" and
+    # recommends re-search; the tuple field is null.
     wts = target_preset.get("settings", {}).get("wavetables", [])
+    needed_gt_names = [
+        wts[oi].get("name", "") if oi < len(wts) else ""
+        for oi in active_oscs
+    ]
+    needed_gt_names = [n for n in needed_gt_names if n]
+    all_required_gt_in_pool = bool(needed_gt_names) and all(n in pool for n in needed_gt_names)
+    verdict = _VERDICT_GOOD if all_required_gt_in_pool else _VERDICT_NO_MATCH
+
+    # Build-time oracle: GT-in-pool + CLAP-best proxy per osc slot.
+    # We compute the tuple even on no_match (used in meta for analysis), but
+    # the output JSON's `tuple` field will be null when verdict is no_match.
     cur_tuple: list[str | None] = [None, None, None]
     used_in_tuple: set[str] = set()
     for osc_idx in active_oscs:
@@ -440,7 +579,19 @@ def build_judge_record(
                 break
 
     selected_tuple: list[str] = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
+    selected_tuple_for_output: list[str] | None = (
+        selected_tuple if verdict == _VERDICT_GOOD else None
+    )
     gts_in_pool = [g for g in gt_wavetable_names if g in pool]
+
+    # Missing-character hint (only meaningful for no_match; empty otherwise).
+    missing_character = ""
+    if verdict == _VERDICT_NO_MATCH:
+        missing_character = _derive_missing_character(
+            target_wav=target_audio_path,
+            omni_server=omni_server,
+            omni_model=omni_model,
+        )
 
     # Omni Stage 1: audition target + all pool candidates
     if omni_server:
@@ -453,28 +604,39 @@ def build_judge_record(
             omni_model=omni_model,
         )
     else:
-        omni_response = "\n".join(f'"{n}": Candidate evaluated.' for n in pool) + \
-            f"\nRECOMMENDATION: [{', '.join(repr(n) for n in selected_tuple)}] : Best combination from pool."
+        if verdict == _VERDICT_GOOD:
+            omni_response = "\n".join(f'"{n}": Candidate evaluated.' for n in pool) + \
+                f"\nRECOMMENDATION: [{', '.join(repr(n) for n in selected_tuple)}] : Best combination from pool."
+        else:
+            omni_response = "\n".join(
+                f'"{n}": Does not carry the {missing_character} of the target.' for n in pool
+            )
 
-    # Stage 2: format with oracle-selected tuple
+    # Stage 2: format with oracle-selected verdict + tuple
     stage2_response = stage2_format_judge_response(
         omni_observations=omni_response,
         pool=pool,
         selected_tuple=selected_tuple,
         n_osc_slots=n_osc_slots,
         gt_names_in_pool=gts_in_pool,
+        verdict=verdict,
+        missing_character=missing_character,
         stage2_server=stage2_server,
         stage2_model=stage2_model,
     )
     final_reasoning = _extract_final_reasoning(stage2_response)
 
     # Assistant narration: the whole deliberation
+    if verdict == _VERDICT_GOOD:
+        narration_outro = "Writing selection to output file."
+    else:
+        narration_outro = "Writing audit verdict to output file."
     messages.append({
         "role": "assistant",
         "content": (
             f"Listening to the target alongside all {len(pool)} pool candidates at once.\n\n"
             f"{stage2_response}\n\n"
-            f"Writing selection to output file."
+            f"{narration_outro}"
         ),
     })
 
@@ -482,7 +644,9 @@ def build_judge_record(
     judge_output = {
         "status": "completed",
         "agentId": judge_agent_id,
-        "tuple": selected_tuple,
+        "verdict": verdict,
+        "missing_character": missing_character,
+        "tuple": selected_tuple_for_output,
         "n_osc_slots": n_osc_slots,
         "reasoning": final_reasoning,
     }
@@ -509,15 +673,24 @@ def build_judge_record(
         "role": "tool_response",
         "content": json.dumps({"status": "ok", "file": str(judge_output_file)}, ensure_ascii=False),
     })
-    # Closing assistant turn — confirms the selection and signals the main agent
-    # can now read the output file.
-    tuple_str = ", ".join(repr(n) for n in selected_tuple)
-    messages.append({
-        "role": "assistant",
-        "content": (
+    # Closing assistant turn — confirms the verdict and signals the main agent
+    # what to do next (apply tuple OR re-search).
+    if verdict == _VERDICT_GOOD:
+        tuple_str = ", ".join(repr(n) for n in selected_tuple)
+        closing = (
             f"Selection written. Final tuple: [{tuple_str}]. The main agent can now read "
             f"{judge_output_file} and apply the chosen wavetables."
-        ),
+        )
+    else:
+        closing = (
+            f"Pool audit complete. NO_MATCH — none of these {len(pool)} candidates carries "
+            f"the {missing_character} of the target. Recommending the main agent re-dispatch "
+            f"search across unexplored library regions. Audit verdict written to "
+            f"{judge_output_file}."
+        )
+    messages.append({
+        "role": "assistant",
+        "content": closing,
     })
 
     # Judge correctness: did the selection match the GTs present in the pool
@@ -540,6 +713,10 @@ def build_judge_record(
             "active_oscs": active_oscs,
             "gt_wavetable_names": gt_wavetable_names,
             "gts_in_pool": gts_in_pool,
+            "verdict": verdict,
+            "missing_character": missing_character,
+            # selected_tuple stays populated even on no_match for analysis;
+            # the OUTPUT JSON's tuple field is null on no_match (see judge_output above).
             "selected_tuple": selected_tuple,
             "judge_correct": judge_correct,
             "output_file": str(judge_output_file),
