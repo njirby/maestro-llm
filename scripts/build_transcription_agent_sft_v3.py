@@ -21,9 +21,11 @@ Build-time oracle:
   exactly correct at build time; no Omni call is needed during synthesis.
 
 Note representation:
-  Each note is {"pitch": "C2", "start_s": 0.0, "dur_s": 1.25, "velocity": 90}.
-  Note names are musically natural (model already references them); the
-  bash heredoc converts to MIDI ints + PPQ for the REAPER API inline.
+  Each note is {"pitch": 36, "start_s": 0.0, "dur_s": 1.25, "velocity": 90}.
+  Pitch is a MIDI int (matches what RPR_MIDI_InsertNote takes directly —
+  zero conversion). `dur_s` instead of `end_s` aligns with how notes are
+  described verbally ("dur 1.25s") and saves a redundant subtraction at
+  insert time.
 """
 from __future__ import annotations
 
@@ -74,18 +76,11 @@ _TRANSCRIPTION_TOOL_SPECS = [
 ]
 
 
-_PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
-
-def _midi_to_name(pitch: int) -> str:
-    """MIDI int → note name, e.g. 36 → 'C2'."""
-    return f"{_PITCH_NAMES[pitch % 12]}{(pitch // 12) - 1}"
-
-
 def load_notes_from_midi(midi_path: str | Path) -> list[dict]:
     """Return a sorted list of note dicts loaded from a MIDI file.
 
-    Each note: {"pitch": "<note-name>", "start_s": float, "dur_s": float, "velocity": int}.
+    Each note: {"pitch": int, "start_s": float, "dur_s": float, "velocity": int}.
+    Pitch is a MIDI int — matches RPR_MIDI_InsertNote directly.
     """
     pm = pretty_midi.PrettyMIDI(str(midi_path))
     notes: list[dict] = []
@@ -94,7 +89,7 @@ def load_notes_from_midi(midi_path: str | Path) -> list[dict]:
             start_s = round(float(n.start), 4)
             end_s = round(float(n.end), 4)
             notes.append({
-                "pitch": _midi_to_name(int(n.pitch)),
+                "pitch": int(n.pitch),
                 "start_s": start_s,
                 "dur_s": round(end_s - start_s, 4),
                 "velocity": int(n.velocity),
@@ -129,20 +124,6 @@ def build_insert_and_write_cmd(
         "from pathlib import Path\n"
         "import reapy\n"
         "\n"
-        "_PITCH_NAMES = {n: i for i, n in enumerate(\n"
-        "    ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']\n"
-        ")}\n"
-        "# Support flats as well as sharps.\n"
-        "_PITCH_NAMES.update({'Db':1,'Eb':3,'Gb':6,'Ab':8,'Bb':10})\n"
-        "def pitch_to_midi(name):\n"
-        "    # Expect e.g. 'C2', 'F#3', 'Bb4'.\n"
-        "    octave_idx = len(name) - 1\n"
-        "    while octave_idx > 0 and name[octave_idx] not in '-0123456789':\n"
-        "        octave_idx -= 1\n"
-        "    pitch_class = name[:octave_idx]\n"
-        "    octave = int(name[octave_idx:])\n"
-        "    return _PITCH_NAMES[pitch_class] + (octave + 1) * 12\n"
-        "\n"
         f"notes = {notes_json}\n"
         f"bpm = {bpm}\n"
         f"ppb = {ppb}\n"
@@ -161,7 +142,7 @@ def build_insert_and_write_cmd(
         "        start_ppq = int(n['start_s'] * (bpm / 60.0) * ppb)\n"
         "        end_ppq = int((n['start_s'] + n['dur_s']) * (bpm / 60.0) * ppb)\n"
         "        rpr.MIDI_InsertNote(take, False, False, start_ppq, end_ppq,\n"
-        "                            0, pitch_to_midi(n['pitch']), int(n['velocity']), False)\n"
+        "                            0, int(n['pitch']), int(n['velocity']), False)\n"
         "        inserted += 1\n"
         "    rpr.MIDI_Sort(take)\n"
         "\n"

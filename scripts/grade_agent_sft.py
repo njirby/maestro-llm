@@ -2350,7 +2350,9 @@ def _pitch_name_for_grader(pitch: int) -> str:
 
 
 def _pitch_to_int(value) -> int | None:
-    """Accept either a MIDI int or a note-name string ('C2', 'F#3', 'Bb4')."""
+    """MIDI int or float → int. Strings are accepted for back-compat only
+    (an earlier builder emitted note-name strings like 'C2'; the current
+    builder uses MIDI ints directly)."""
     if isinstance(value, int):
         return value
     if isinstance(value, float):
