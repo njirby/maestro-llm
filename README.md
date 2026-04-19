@@ -212,10 +212,7 @@ tool_call:  bash reapy → InsertTrackAtIndex + TrackFX_AddByName("Vital", ...)
 tool_resp:  {"status":"ok","track_idx":0,"track_name":"target_melody"}
 assistant:  Dispatching the transcription subagent to populate the track from the target.
 tool_call:  Agent { subagent_type: "melody_transcription", ... }
-tool_resp:  {agentId, outputFile: "/tmp/agents/<sid>/transcription.json", status: completed}
-assistant:  Reading the transcribed note list.
-tool_call:  bash cat /tmp/agents/<sid>/transcription.json
-tool_resp:  {"notes": [...], "n_notes": 12, "duration_s": 5.0}
+tool_resp:  {agentId, outputFile: "/tmp/agents/<sid>/transcription.json", status: completed, n_notes, duration_s}
 
 assistant:  MIDI ready on track 0 — 12 notes, ~5.0s. Checking wavetable library size.
 tool_call:  bash python skills/vital/scripts/list_wavetables.py --total
@@ -973,7 +970,7 @@ configs/
 - `preset_perceptual_summary.py` — perceptual-bucket preset summaries (no numbers, no param names) used as a grounding prior by Stage 1 observations; `summarize_residual_delta_perceptual` feeds the final verdict
 - `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions; entry-level + agent-level concurrency via `--workers`
 - `build_judge_agent_sft_v3.py` — judge agent's own SFT rollouts. Takes combined pool from all search agents (simulated at build time), renders probes, listens to target + all pool candidates in one Omni call (each `<audio>` labelled by wavetable name), picks the best N (=active oscillator slots), writes selection to output file that the main agent consumes via `cat`. Build-time oracle: GT-if-in-pool + CLAP-best-proxy
-- `build_transcription_agent_sft_v3.py` — melody-transcription subagent's SFT rollouts. Loads `source_midi_path` from the manifest as the oracle note list, combines with an Omni perceptual impression (contour + rhythm feel) to form a per-note narration, then writes the bash `reapy` code that inserts the notes via `RPR_MIDI_InsertNote` at PPQ positions (same convention as the legacy Lua example). Output JSON `{notes, n_notes, duration_s}` lands at `/tmp/agents/<sample_id>/transcription.json` for the main agent to `cat`. The main agent dispatches this subagent right after the skill-load turn, before the library-size check.
+- `build_transcription_agent_sft_v3.py` — melody-transcription subagent's SFT rollouts. Loads `source_midi_path` from the manifest as the oracle note list and emits a minimal 5-message record: user (audio + dispatch prompt) → brief acknowledgment → single bash heredoc that both inserts MIDI via `RPR_MIDI_InsertNote` AND writes the transcription JSON → tool_response → closing assistant. Notes use musical note names (`"pitch": "C2"`) and `start_s`/`dur_s`; the heredoc converts to MIDI ints + PPQ inline. No Omni call at build time (no narration — the main agent never inspects the note list, so per-note prose was dead weight). Output lands at `/tmp/transcription_outputs/<sample_id>/transcription.json`.
 - `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
 - `grade_agent_sft.py` — grades all three agent types via one entry point (dispatched on `task_type` + `meta.pipeline_version`). Main-agent v3: structural axes (batch_param_alignment, diagnosis_subsystem_coverage, clap_net_improvement, verdict_grounded, mistake_recovery) + 7-axis LLM judge (narration plan_ref / param_specific / templateness-cross-sample / no-hallucination, observations audio-grounded, verdict residual_grounded / novelty-cross-sample). Search v2: gt_recovery (conditional), shortlist_file_written, has_render_probes, closing_assistant. Judge v3: judge_correct (oracle), tuple_size_correct, tuple_names_in_pool, output_file_written, pool_candidates_discussed. Live-exec-check against REAPER available for main-agent records.
 - `build_audio_grounding_spotcheck.py` — self-contained HTML spot-check with embedded audio + judge-badge breakdown; `--compare-grades` renders two graded files side-by-side

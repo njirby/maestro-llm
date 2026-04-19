@@ -2215,8 +2215,12 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
 
     oracle_notes: list[dict] = list(meta.get("notes") or [])
     oracle_n: int = int(meta.get("n_notes") or 0)
-    oracle_pitches: set[int] = {int(n.get("pitch", -1)) for n in oracle_notes}
-    oracle_pitches.discard(-1)
+    # Pitch may be a MIDI int (legacy format) or a note-name string ("C2", "F#3", etc.).
+    oracle_pitches: set[int] = set()
+    for n in oracle_notes:
+        p = _pitch_to_int(n.get("pitch"))
+        if p is not None:
+            oracle_pitches.add(p)
 
     # has_reapy_midi_insert: walk bash tool_calls for MIDI_InsertNote
     has_reapy_midi_insert: float = 0.0
@@ -2333,10 +2337,39 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
     return {**raw, "overall": overall}
 
 
+_PITCH_NAMES_FOR_GRADER = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_PITCH_CLASS_TO_INT = {
+    **{n: i for i, n in enumerate(_PITCH_NAMES_FOR_GRADER)},
+    "Db": 1, "Eb": 3, "Gb": 6, "Ab": 8, "Bb": 10,
+}
+
+
 def _pitch_name_for_grader(pitch: int) -> str:
-    names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
     octave = (pitch // 12) - 1
-    return f"{names[pitch % 12]}{octave}"
+    return f"{_PITCH_NAMES_FOR_GRADER[pitch % 12]}{octave}"
+
+
+def _pitch_to_int(value) -> int | None:
+    """Accept either a MIDI int or a note-name string ('C2', 'F#3', 'Bb4')."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    # Split "<pitch-class><octave>" — the octave may be negative.
+    i = len(value) - 1
+    while i > 0 and value[i] not in "-0123456789":
+        i -= 1
+    pc = value[:i]
+    try:
+        octave = int(value[i:])
+    except ValueError:
+        return None
+    cls = _PITCH_CLASS_TO_INT.get(pc)
+    if cls is None:
+        return None
+    return cls + (octave + 1) * 12
 
 
 def score_record(

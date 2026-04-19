@@ -1069,11 +1069,10 @@ def build_record(
 
     # --- TRANSCRIPTION BLOCK ---
     # Before search, create a REAPER track and dispatch the melody_transcription
-    # subagent to populate it with MIDI notes. At inference the harness runs the
-    # reapy code against a live REAPER session. At build time we synthesise the
-    # subagent's output file directly from source_midi_path (oracle) so the main
-    # agent's `cat` turn surfaces the same note list the transcription subagent's
-    # own SFT rollout would produce.
+    # subagent to populate it with MIDI notes. The subagent's Agent tool_response
+    # already reports {status: completed, outputFile}; the main agent never
+    # actually inspects the note list — it just acknowledges and moves on —
+    # so there is no `cat` of the transcription file.
     source_midi_path = entry.get("source_midi_path")
     transcription_summary_text = ""
     if source_midi_path and Path(source_midi_path).exists():
@@ -1086,14 +1085,16 @@ def build_record(
             _trans_notes = []
         if _trans_notes:
             _trans_n_notes = len(_trans_notes)
-            _trans_duration_s = round(max(n["end_s"] for n in _trans_notes), 2)
+            _trans_duration_s = round(
+                max(n["start_s"] + n["dur_s"] for n in _trans_notes), 2,
+            )
             _trans_track_idx = 0
             _trans_track_name = "target_melody"
             _trans_output_file = f"/tmp/agents/{sample_id}/transcription.json"
             _trans_agent_id = f"melody_transcription_{sample_id}"
 
-            # Persist the transcription output file on disk so `cat` works at
-            # build time and points to a real artifact.
+            # Persist the transcription output file on disk so the path is real
+            # at build time (live-exec grading and downstream tools can read it).
             _trans_payload = {
                 "status": "completed",
                 "notes": _trans_notes,
@@ -1135,7 +1136,9 @@ def build_record(
                 }, ensure_ascii=False),
             })
 
-            # Step 2: dispatch the melody_transcription subagent
+            # Step 2: dispatch the melody_transcription subagent. The Agent
+            # tool_response reports completion + outputFile; we trust it and
+            # skip any per-note inspection on the main-agent side.
             messages.append({
                 "role": "assistant",
                 "content": "Dispatching the transcription subagent to listen to the target and populate the track with MIDI notes.",
@@ -1145,9 +1148,9 @@ def build_record(
                 "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
                 "prompt": (
                     f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
-                    f"(reapy.inside_reaper() → RPR_MIDI_InsertNote at PPQ positions) that "
-                    f"inserts the MIDI notes on that track, then save the final note list "
-                    f"as JSON to {_trans_output_file} with shape "
+                    f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the MIDI "
+                    f"notes on that track, and save the final note list as JSON to "
+                    f"{_trans_output_file} with shape "
                     f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
                 ),
                 "name": f"transcribe-{sample_id}",
@@ -1159,20 +1162,9 @@ def build_record(
                     "subagentType": "melody_transcription",
                     "status": "completed",
                     "outputFile": _trans_output_file,
+                    "n_notes": _trans_n_notes,
+                    "duration_s": _trans_duration_s,
                 }, ensure_ascii=False),
-            })
-
-            # Step 3: read the subagent's transcription output
-            messages.append({
-                "role": "assistant",
-                "content": "Reading the transcribed note list.",
-            })
-            messages.append(_tool_call("bash", {"command": f"cat {_trans_output_file}"}))
-            with open(_trans_output_file) as _trf:
-                _trans_file_content = _trf.read().strip()
-            messages.append({
-                "role": "tool_response",
-                "content": _trans_file_content,
             })
 
             transcription_summary_text = (
