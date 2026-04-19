@@ -205,7 +205,19 @@ tool_resp:  { skill, path, description, prompt: <full SKILL.md contents> }
 
 assistant:  Skill loaded. Listening to current default preset baseline.
 tool_resp:  <audio> [default clip]
-assistant:  Checking wavetable library size.
+
+# MIDI TRANSCRIPTION BLOCK:
+assistant:  Creating a REAPER track to hold the transcribed MIDI before search.
+tool_call:  bash reapy → InsertTrackAtIndex + TrackFX_AddByName("Vital", ...)
+tool_resp:  {"status":"ok","track_idx":0,"track_name":"target_melody"}
+assistant:  Dispatching the transcription subagent to populate the track from the target.
+tool_call:  Agent { subagent_type: "melody_transcription", ... }
+tool_resp:  {agentId, outputFile: "/tmp/agents/<sid>/transcription.json", status: completed}
+assistant:  Reading the transcribed note list.
+tool_call:  bash cat /tmp/agents/<sid>/transcription.json
+tool_resp:  {"notes": [...], "n_notes": 12, "duration_s": 5.0}
+
+assistant:  MIDI ready on track 0 — 12 notes, ~5.0s. Checking wavetable library size.
 tool_call:  bash python skills/vital/scripts/list_wavetables.py --total
 tool_resp:  {"total": 282}
 assistant:  Library has 282 wavetables. Dispatching 4 search agents in parallel...
@@ -351,7 +363,20 @@ LLM-judge axes (added when `--llm-judge-server` is set):
 | `format_consistent` | 2.5% | No `**BOLD:**` headers |
 | `snake_case_clean` | 2.5% | No raw snake_case (note: agent IDs with underscores are a known false-positive source) |
 
-**Benchmarks on smoke_test_v10 (n=8 samples, full three-agent pipeline):**
+**Scoring dimensions for `melody_transcription` records** (structural + oracle correctness, no LLM needed):
+
+| Dimension | Weight | What it measures |
+|---|---|---|
+| `has_reapy_midi_insert` | 20% | ≥1 bash tool_call contains `MIDI_InsertNote` (or `RPR_MIDI_InsertNote`) — the subagent actually emits reapy insert code |
+| `output_file_written` | 25% | Final bash tool_call writes `transcription.json` with `{notes, n_notes, duration_s}` schema + matching ok tool_response |
+| `note_count_match` | 20% | N notes in the payload matches `meta.n_notes` (oracle count from the source MIDI) |
+| `pitch_coverage` | 10% | Fraction of oracle MIDI pitches mentioned in deliberation or insert command |
+| `has_render_listen` | 10% | First user message carries `<audio>` (subagent received the target for listening) |
+| `closing_assistant` | 5% | Last message is assistant |
+| `snake_case_clean` | 5% | No snake_case in assistant prose |
+| `format_consistent` | 5% | No `**BOLD:**` headers |
+
+**Benchmarks on smoke_test_v10 (n=8 samples, full four-agent pipeline):**
 
 Main agent (`--llm-judge-server`, LLM-judge axes):
 
@@ -833,6 +858,45 @@ bash scripts/serve_qwen3_omni.sh
 
 Venv: `/home/nate/Documents/maestro-llm/.venv`
 
+### Vital plugin setup (required for live-exec grading)
+
+**Vital's Linux-native builds (VST2/VST3/CLAP, all versions through 1.6.0) crash REAPER** when loading preset state containing any real wavetable. The crash fires inside Vital's own state deserializer — it's not a transport issue and can't be worked around via chunked writes or file-handoff. Any `VitalController.set_preset()` call with a non-trivial wavetable will segfault REAPER.
+
+**Workaround:** run Vital as a Windows plugin bridged through [yabridge](https://github.com/robbert-vdh/yabridge) + WINE. This is a **hard dependency** for live-exec grading (`scripts/grade_agent_sft.py --live-exec-check`) and for any agent rollout that applies wavetables to a live REAPER session.
+
+```bash
+# 1. WINE staging
+sudo dpkg --add-architecture i386
+sudo mkdir -pm755 /etc/apt/keyrings
+sudo wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+sudo wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources
+sudo apt update
+sudo apt install --install-recommends winehq-staging
+
+# 2. yabridge (user-local)
+mkdir -p ~/.local/share/yabridge ~/.local/bin
+# Download latest yabridge release tarball from https://github.com/robbert-vdh/yabridge/releases
+tar xzf yabridge-*.tar.gz -C ~/.local/share/yabridge --strip-components=1
+ln -sf ~/.local/share/yabridge/yabridgectl ~/.local/bin/yabridgectl
+
+# 3. Install Windows Vital via WINE (requires VitalInstaller.exe from vital.audio)
+#    In the installer component screen, check: VST3, VST, CLAP
+wine ~/VitalInstaller.exe
+
+# 4. Bridge the plugins into Linux plugin paths
+yabridgectl add "$HOME/.wine/drive_c/Program Files/Common Files/VST3"
+yabridgectl add "$HOME/.wine/drive_c/Program Files/Common Files/CLAP"
+yabridgectl add "$HOME/.wine/drive_c/Program Files/Steinberg/VstPlugins"
+yabridgectl sync
+
+# 5. Move aside any Linux-native Vital so REAPER picks the bridged one
+for d in ~/.vst3/Vital.vst3 ~/.vst/Vital.so ~/.clap/Vital.clap; do
+    [ -e "$d" ] && mv "$d" "$d.linux-native-bak"
+done
+```
+
+Restart REAPER; it will scan and register the bridged plugins under the usual "Vital (Vital Audio)" names.
+
 ---
 
 ## Repository Layout
@@ -864,6 +928,7 @@ scripts/
   agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, GT-similarity pool
   build_search_agent_sft_v2.py # Search-agent SFT v2: iterative batch-listening (--workers for entry + agent parallelism)
   build_judge_agent_sft_v3.py # Judge-agent SFT v3: audition combined search pool in one Omni call, pick final tuple, write output file
+  build_transcription_agent_sft_v3.py # Melody-transcription SFT: listen to target, write reapy code that inserts MIDI notes on a REAPER track, save note list JSON
   build_search_agent_sft.py   # Search-agent SFT v1 (legacy: template proposals)
   build_judge_agent_sft.py    # Judge-agent SFT (legacy: listwise ranking from CLAP)
   merge_agent_sft.py          # Merge task JSONL files, shuffle
@@ -905,6 +970,7 @@ configs/
 - `preset_perceptual_summary.py` — perceptual-bucket preset summaries (no numbers, no param names) used as a grounding prior by Stage 1 observations; `summarize_residual_delta_perceptual` feeds the final verdict
 - `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions; entry-level + agent-level concurrency via `--workers`
 - `build_judge_agent_sft_v3.py` — judge agent's own SFT rollouts. Takes combined pool from all search agents (simulated at build time), renders probes, listens to target + all pool candidates in one Omni call (each `<audio>` labelled by wavetable name), picks the best N (=active oscillator slots), writes selection to output file that the main agent consumes via `cat`. Build-time oracle: GT-if-in-pool + CLAP-best-proxy
+- `build_transcription_agent_sft_v3.py` — melody-transcription subagent's SFT rollouts. Loads `source_midi_path` from the manifest as the oracle note list, combines with an Omni perceptual impression (contour + rhythm feel) to form a per-note narration, then writes the bash `reapy` code that inserts the notes via `RPR_MIDI_InsertNote` at PPQ positions (same convention as the legacy Lua example). Output JSON `{notes, n_notes, duration_s}` lands at `/tmp/agents/<sample_id>/transcription.json` for the main agent to `cat`. The main agent dispatches this subagent right after the skill-load turn, before the library-size check.
 - `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
 - `grade_agent_sft.py` — grades all three agent types via one entry point (dispatched on `task_type` + `meta.pipeline_version`). Main-agent v3: structural axes (batch_param_alignment, diagnosis_subsystem_coverage, clap_net_improvement, verdict_grounded, mistake_recovery) + 7-axis LLM judge (narration plan_ref / param_specific / templateness-cross-sample / no-hallucination, observations audio-grounded, verdict residual_grounded / novelty-cross-sample). Search v2: gt_recovery (conditional), shortlist_file_written, has_render_probes, closing_assistant. Judge v3: judge_correct (oracle), tuple_size_correct, tuple_names_in_pool, output_file_written, pool_candidates_discussed. Live-exec-check against REAPER available for main-agent records.
 - `build_audio_grounding_spotcheck.py` — self-contained HTML spot-check with embedded audio + judge-badge breakdown; `--compare-grades` renders two graded files side-by-side
@@ -915,6 +981,8 @@ configs/
 **Planned / not yet implemented:**
 - **Plugin-explorer agent task** — SFT data for an agent that meets an unfamiliar plugin, systematically probes it (parameter sweeps, structured listens, hypothesis-forming), then writes its own `skills/<plugin>/SKILL.md` + bundled helper scripts. Closes the loop on the agent-writes-its-own-skill vision and unlocks generalisation beyond Vital without per-plugin training curation.
 - Second-plugin proof-of-generalisation — even a simple subtractive synth's SFT data would validate whether the strategy layer (`listen → decompose → search → audition → apply → verify`) actually transfers across plugins or whether we're over-fit to Vital's vocabulary.
+- **Longer-audio melody transcription** — `melody_transcription` currently ships with a ~30 s audio cap (the `vita` render ceiling). Longer clips would need parallel-slice transcription (multiple subagents on overlapping chunks, merged results) or a streaming-chunk backend.
+- **Error-correction transcription review** — main agent could re-invoke `melody_transcription` after hearing a wrong note in the recreation, to fix individual notes. Currently transcription is one-shot.
 - Agent inference loop (the trained model running against a live REAPER session; see `/home/nate/Documents/maestro-reaper-plugin/`)
 - REAPER-bench for RLVR
 - RL training stage

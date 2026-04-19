@@ -655,6 +655,83 @@ class VitalController:
         gc.collect()
         return preset
 
+    # REAPER's ReaScript Python bridge segfaults when a string argument to
+    # TrackFX_SetNamedConfigParm exceeds ~256 KiB. Vital's default chunk is
+    # ~232 KiB; any real wavetable swap bumps it above the threshold. Above
+    # this size we hand off via a file + in-REAPER ReaScript.
+    _SAFE_RPC_CHUNK_BYTES: int = 200 * 1024  # 200 KiB — safely under 256 KiB
+
+    _REAPER_SIDE_CHUNK_PATH: str = "/tmp/vital_chunk_payload.b64"
+    _REAPER_SIDE_REQ_PATH: str = "/tmp/vital_chunk_req.json"
+    _REAPER_SIDE_DONE_PATH: str = "/tmp/vital_chunk_done.json"
+
+    def _set_preset_via_file(self, encoded: str, parm_name: str) -> None:
+        """Large-chunk path: write chunk to disk and trigger an in-REAPER Lua script.
+
+        We use a Lua ReaScript (not Python) because REAPER's ReaScript Python
+        binding segfaults on large string arguments to TrackFX_SetNamedConfigParm
+        even when called from inside REAPER's own process — the limit is in the
+        C string marshalling, not the RPC layer. Lua's native length-prefixed
+        strings sidestep that path entirely.
+        """
+        import os
+        script_path = os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..", "..", "skills", "vital", "scripts", "reaper_side_set_chunk.lua",
+            )
+        )
+        if not os.path.exists(script_path):
+            raise RuntimeError(
+                f"reaper-side chunk-set script not found at {script_path}"
+            )
+
+        # Clean up any stale status file before triggering
+        try:
+            os.remove(self._REAPER_SIDE_DONE_PATH)
+        except FileNotFoundError:
+            pass
+
+        with open(self._REAPER_SIDE_CHUNK_PATH, "w") as f:
+            f.write(encoded)
+        with open(self._REAPER_SIDE_REQ_PATH, "w") as f:
+            json.dump(
+                {
+                    "chunk_path": self._REAPER_SIDE_CHUNK_PATH,
+                    "track_idx": self._track_idx,
+                    "fx_idx": self._fx_idx,
+                    "parm_name": parm_name,
+                },
+                f,
+            )
+
+        cmd_id = self._call(
+            "RPR_AddRemoveReaScript", True, 0, script_path, True
+        )
+        if isinstance(cmd_id, (tuple, list)):
+            cmd_id = cmd_id[0] if cmd_id else 0
+        if not cmd_id or int(cmd_id) <= 0:
+            raise RuntimeError(
+                f"AddRemoveReaScript failed to register {script_path}"
+            )
+        try:
+            self._call("RPR_Main_OnCommand", int(cmd_id), 0)
+        finally:
+            self._call("RPR_AddRemoveReaScript", False, 0, script_path, True)
+
+        # Verify the reaper-side script wrote a success status
+        try:
+            with open(self._REAPER_SIDE_DONE_PATH) as f:
+                status = json.load(f)
+        except Exception as exc:
+            raise RuntimeError(
+                f"reaper-side set_preset did not produce status file: {exc}"
+            ) from exc
+        if status.get("status") != "ok":
+            raise RuntimeError(
+                f"reaper-side set_preset failed: {status!r}"
+            )
+
     def set_preset(self, preset: dict):
         """
         Write a modified preset dict back to Vital via the VST chunk.
@@ -672,7 +749,7 @@ class VitalController:
             self._chunk_prefix, preset, self._chunk_suffix
         )
         parm_name = getattr(self, "_chunk_parm_name", "vst_chunk")
-        # Force GC before the large chunk write to release prior buffer refs.
+        # Force GC before the chunk write to release prior buffer refs.
         gc.collect()
         # Brief yield: releasing the Python GIL via time.sleep() allows
         # REAPER's internal VST3 processing thread to complete any pending
@@ -681,6 +758,11 @@ class VitalController:
         # NOT need to be at the top level of the ReaScript — any time.sleep()
         # call releases the GIL and lets REAPER's threads run.
         time.sleep(self._VITAL_WRITE_SETTLE_S)
+
+        if len(encoded) > self._SAFE_RPC_CHUNK_BYTES:
+            self._set_preset_via_file(encoded, parm_name)
+            return
+
         self._call(
             "RPR_TrackFX_SetNamedConfigParm",
             self._track, self._fx_idx, parm_name, encoded
