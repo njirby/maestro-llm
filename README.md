@@ -337,31 +337,33 @@ LLM-judge axes (added when `--llm-judge-server` is set):
 
 `execution_fidelity` (from `--live-exec-check`) validates that generated bash tool calls run against a live REAPER session.
 
-**Scoring dimensions for `search_v2` records** (structural + correctness, no LLM needed):
+**Scoring dimensions for `search_v2` records** (structural + correctness + optional LLM audio grounding):
 
 | Dimension | Weight | What it measures |
 |---|---|---|
 | `gt_recovery` | 35% (conditional) | Fraction of `meta.gt_in_shard` that made it onto `meta.final_shortlist`. Only assessable when the slice contained a GT. |
-| `shortlist_file_written` | 25% | Last bash tool_call writes `*_search_*.json` + matching tool_response returns `{status:"ok", file:...}` |
-| `closing_assistant` | 10% | Last message is an assistant turn (signals task completion) |
+| `shortlist_file_written` | 20% | Last bash tool_call writes `*_search_*.json` + matching tool_response returns `{status:"ok", file:...}` |
+| `llm_candidates_audio_grounded` | 15% (conditional) | Mean single-audio Omni grounding check across (candidate, description) pairs. Each check sends ONE candidate audio + its written description and asks whether the timbral claims are audible. Catches position-confusion hallucinations from multi-audio build-time calls. Requires `--llm-judge-server`. Sample rate controllable via `--audio-grounding-sample-rate`. |
 | `has_render_probes` | 10% | ≥1 bash tool_call invokes `skills/vital/scripts/render_probes.py` (agent actually auditioned) |
 | `shortlist_nonempty` | 10% | Final shortlist has ≥1 name |
-| `snake_case_clean` | 5% | No raw snake_case param names in assistant prose |
-| `format_consistent` | 5% | No `**BOLD:**` headers |
+| `closing_assistant` | 5% | Last message is an assistant turn (signals task completion) |
+| `snake_case_clean` | 2.5% | No raw snake_case param names in assistant prose |
+| `format_consistent` | 2.5% | No `**BOLD:**` headers |
 
-**Scoring dimensions for `judge` records (v3_judge)** (structural + correctness, no LLM needed):
+**Scoring dimensions for `judge` records (v3_judge)** (structural + correctness + optional LLM audio grounding):
 
 | Dimension | Weight | What it measures |
 |---|---|---|
-| `judge_correct` | 30% | `meta.judge_correct`: selection matches GTs present in pool (oracle) |
+| `judge_correct` | 25% | `meta.judge_correct`: selection matches GTs present in pool (oracle) |
+| `output_file_written` | 20% | Last bash tool_call writes judge JSON (`{tuple, n_osc_slots, reasoning}`) + ok tool_response |
+| `llm_candidates_audio_grounded` | 15% (conditional) | Same single-audio grounding check as search, applied to per-pool-candidate descriptions in the deliberation. Requires `--llm-judge-server`. |
 | `tuple_size_correct` | 10% | `len(selected_tuple) == n_osc_slots` |
 | `tuple_names_in_pool` | 10% | Every selected name is in the pool (no hallucinated wavetables) |
-| `output_file_written` | 25% | Last bash tool_call writes judge JSON (`{tuple, n_osc_slots, reasoning}`) + ok tool_response |
 | `pool_candidates_discussed` | 10% | Fraction of pool names mentioned in the judge's deliberation |
 | `has_render_probes` | 5% | Agent actually rendered pool probes |
-| `closing_assistant` | 5% | Last message is assistant |
-| `format_consistent` | 2.5% | No `**BOLD:**` headers |
-| `snake_case_clean` | 2.5% | No raw snake_case (note: agent IDs with underscores are a known false-positive source) |
+| `closing_assistant` | 2.5% | Last message is assistant |
+| `format_consistent` | 1.25% | No `**BOLD:**` headers |
+| `snake_case_clean` | 1.25% | No raw snake_case (note: agent IDs with underscores are a known false-positive source) |
 
 **Scoring dimensions for `melody_transcription` records** (structural + oracle correctness, no LLM needed):
 
@@ -606,7 +608,8 @@ python scripts/build_search_agent_sft_v2.py \
 
 **Key design features:**
 - **Candidate pool** built from GT wavetable CLAP embeddings (apples-to-apples index comparison, top-K=48). CLAP is used only at build time for pool construction — the model never sees or uses CLAP.
-- **Iterative batch listening**: target + 6-8 candidates per round, multiple rounds, shortlist evolves across rounds.
+- **Sequential batching**: each search agent walks its 48-candidate slice in index order and splits into 6 fixed batches of 8. No shuffling — the model learns to cover a slice systematically rather than relying on batch-position heuristics. GT candidates land wherever they fall in the slice; `is_clap_selected` guarantees they're sticky once on the shortlist (append-only, never removed).
+- **Single-audio policy at build time** *(anti-hallucination)*: every Omni call that takes audio sends exactly ONE clip. The build-time flow is: (1) describe the target once, (2) describe each candidate in isolation (parallelized), (3) text-only synthesis of the per-candidate building-block assessments against the cached target description. This replaces the earlier multi-audio batch call (target + 8 candidates in one message), which produced position-confusion hallucinations where the model scrambled which description belonged to which clip. Measured hallucination rate: 53.6% → 17.7% zero-grounding on a search smoke, 59.4% → 19.8% on judge.
 - **GT grounding**: when a GT wavetable appears, Stage 2 receives the target preset's processing chain (`describe_key_transforms`) and writes reasoning about how the raw wavetable transforms under that processing. The model learns to reason about raw→processed transformation.
 - **Names in token space**: each candidate has both `<audio>` and its wavetable name, so the model can reference it in code.
 - **No CLAP, no role-tagging, no tuple assembly** — just a shortlist of wavetable names that "sound like they belong."

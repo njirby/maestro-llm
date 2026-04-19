@@ -27,7 +27,6 @@ import argparse
 import base64
 import hashlib
 import json
-import random
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -146,49 +145,124 @@ def describe_key_transforms(target_preset: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def omni_batch_compare(
-    target_wav: Path,
-    candidate_names: list[str],
-    candidate_audio: dict[str, Path],
-    archetype: str,
+def omni_describe_single_audio(
+    audio_path: Path,
+    prompt_text: str,
     omni_server: str,
     omni_model: str,
+    max_tokens: int = 160,
+    temperature: float = 0.4,
+    timeout: float = 60.0,
+    fallback: str = "",
 ) -> str:
-    """Omni Stage 1: hear target + N candidates, write per-candidate comparison."""
-    content: list[dict] = [
-        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(target_wav)}"}},
+    """Single-audio Omni call. Sends ONE audio clip + ONE text prompt, returns
+    the model's completion stripped. Used in place of multi-audio batch calls
+    to avoid position-confusion hallucinations where the model scrambles
+    which description belongs to which clip.
+    """
+    content = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(audio_path)}"}},
+        {"type": "text", "text": prompt_text},
     ]
-    valid_names = [n for n in candidate_names if n in candidate_audio]
-    for name in valid_names:
-        content.append(
-            {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(candidate_audio[name])}"}}
-        )
-
-    candidate_list = "\n".join(
-        f"  Audio {i + 2}: \"{name}\"" for i, name in enumerate(valid_names)
-    )
-    content.append({"type": "text", "text": (
-        f"You are a sound design assistant. Audio 1 is the TARGET sound.\n"
-        f"Audios 2-{len(valid_names) + 1} are candidate wavetables rendered through a "
-        f"default synthesizer preset.\n\n"
-        f"Candidate list:\n{candidate_list}\n\n"
-        f"For EACH candidate, write one sentence about how its raw character relates to "
-        f"the target — could this wavetable be a building block for recreating the target "
-        f"once filters, envelopes, and effects are applied?\n\n"
-        f"Format: '\"<name>\": <one sentence>'\n"
-        f"Be specific about harmonic character, brightness, texture, and attack shape."
-    )})
-
     try:
         r = _llm_post(
             f"{omni_server}/v1/chat/completions",
             {"model": omni_model, "messages": [{"role": "user", "content": content}],
-             "max_tokens": 500, "temperature": 0.4},
-            timeout=180.0,
+             "max_tokens": max_tokens, "temperature": temperature},
+            timeout=timeout,
         )
         return r["choices"][0]["message"]["content"].strip()
     except Exception:
-        return "\n".join(f'"{n}": Candidate wavetable evaluated.' for n in valid_names)
+        return fallback
+
+
+def describe_target(
+    target_wav: Path,
+    archetype: str,
+    omni_server: str,
+    omni_model: str,
+) -> str:
+    """One call: describe the target sound's timbre. Cached per-record, reused across batches."""
+    return omni_describe_single_audio(
+        audio_path=target_wav,
+        prompt_text=(
+            f"This is a target {archetype} sound we're trying to recreate with a Vital synth.\n"
+            f"Describe its TIMBRE in one or two sentences: harmonic content (pure/rich/bright/dull), "
+            f"texture (smooth/buzzy/metallic/vocal), attack shape (sharp/slow), and any distinctive "
+            f"effects you hear (reverb, chorus, distortion). Focus on timbral qualities only — "
+            f"do not mention note pattern or melody."
+        ),
+        omni_server=omni_server,
+        omni_model=omni_model,
+        max_tokens=180,
+        fallback=f"A {archetype} sound.",
+    )
+
+
+def describe_candidate(
+    candidate_name: str,
+    candidate_wav: Path,
+    omni_server: str,
+    omni_model: str,
+) -> str:
+    """One call: describe a candidate wavetable's timbre in isolation."""
+    return omni_describe_single_audio(
+        audio_path=candidate_wav,
+        prompt_text=(
+            f"This is a wavetable rendered through a default Vital preset (probe: 4 triads "
+            f"over ~10s). The note pattern is the same across all probes; what varies is the "
+            f"wavetable's TIMBRE.\n\n"
+            f"In ONE sentence, describe only this wavetable's timbral character: harmonic content "
+            f"(pure/rich/inharmonic), brightness, texture (smooth/buzzy/metallic), and attack shape. "
+            f"Ignore note pattern. Do not guess the wavetable's name."
+        ),
+        omni_server=omni_server,
+        omni_model=omni_model,
+        max_tokens=120,
+        fallback="Candidate wavetable.",
+    )
+
+
+def synthesize_batch_observations(
+    target_description: str,
+    candidate_descriptions: dict[str, str],
+    archetype: str,
+    stage2_server: str,
+    stage2_model: str,
+) -> str:
+    """Text-only call: given the target's timbre description and per-candidate
+    descriptions (both obtained via single-audio calls), write per-candidate
+    building-block assessments. Drops back to the existing `'<name>': <text>`
+    line format so downstream Stage 2 can merge with selection labels."""
+    cand_block = "\n".join(
+        f"  '{name}': {desc}" for name, desc in candidate_descriptions.items()
+    )
+    prompt = (
+        f"You are a sound design assistant evaluating wavetable candidates for a {archetype} target.\n\n"
+        f"Target timbre (described from a separate isolated listen):\n"
+        f"  {target_description}\n\n"
+        f"Candidate wavetables (each described in isolation):\n"
+        f"{cand_block}\n\n"
+        f"For EACH candidate, write ONE sentence about how its raw timbre relates to the target — "
+        f"could this wavetable be a building block for recreating the target once filters, "
+        f"envelopes, and effects are applied?\n\n"
+        f"Format one line per candidate, in the order above:\n"
+        f"  '<name>': <one sentence tying its timbre to the target>\n\n"
+        f"Use the EXACT names. Do not mention the note pattern or number of notes."
+    )
+    try:
+        r = _llm_post(
+            f"{stage2_server}/v1/chat/completions",
+            {"model": stage2_model,
+             "messages": [{"role": "user", "content": prompt}],
+             "max_tokens": 500, "temperature": 0.4},
+            timeout=120.0,
+        )
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return "\n".join(
+            f"'{n}': {d}" for n, d in candidate_descriptions.items()
+        )
 
 
 def stage2_batch_notes(
@@ -330,7 +404,6 @@ def build_search_record(
     omni_model: str,
     stage2_server: str,
     stage2_model: str,
-    rng: random.Random,
     candidates_per_batch: int = 8,
     shortlist_dir: Path | None = None,
     clap_threshold: float = 0.92,
@@ -356,39 +429,15 @@ def build_search_record(
     # Compute processing chain description for GT grounding
     gt_transform_desc = describe_key_transforms(target_preset) if gt_in_shard else ""
 
-    # Arrange batches: GT should NOT appear in batch 1 (teach the model to search,
-    # not get lucky). Place GT in batch 2 or later.
-    non_gt = [n for n in shard if n not in gt_set]
-    rng.shuffle(non_gt)
-
-    # Build batch sequence: batch 1 = all non-GT, batch 2+ = include GT
-    all_ordered = []
-    gt_inserted = False
-    batch_idx = 0
-    ptr = 0
-    while ptr < len(non_gt) or not gt_inserted:
-        batch = []
-        # First batch: only non-GT
-        if batch_idx == 0:
-            batch = non_gt[ptr:ptr + candidates_per_batch]
-            ptr += len(batch)
-        else:
-            # Insert GT candidates into this batch if not yet done
-            if not gt_inserted and gt_in_shard:
-                batch = list(gt_in_shard)
-                gt_inserted = True
-                remaining_slots = candidates_per_batch - len(batch)
-                batch.extend(non_gt[ptr:ptr + remaining_slots])
-                ptr += remaining_slots
-            else:
-                batch = non_gt[ptr:ptr + candidates_per_batch]
-                ptr += len(batch)
-        if not batch:
-            break
-        rng.shuffle(batch)
-        all_ordered.append(batch)
-        batch_idx += 1
-
+    # Sequential batching: walk the shard in index order, chunking into
+    # fixed-size batches. GT (if present in shard) falls wherever its index
+    # places it — no special-casing. `is_clap_selected` returns True for
+    # exact GT matches, and `selected_so_far` is append-only, so once GT is
+    # found it stays in the shortlist for the rest of the slice.
+    all_ordered = [
+        shard[i:i + candidates_per_batch]
+        for i in range(0, len(shard), candidates_per_batch)
+    ]
     if not all_ordered:
         return None
 
@@ -440,6 +489,20 @@ def build_search_record(
     selected_so_far: list[str] = []  # CLAP-selected candidates, accumulated across batches
     pending_notes: str | None = None
 
+    # Single-audio policy (anti-hallucination): describe the target ONCE via a
+    # single-audio Omni call. This description is reused as context across all
+    # batches. Per-candidate descriptions happen inside each batch below, also
+    # via single-audio calls. The per-candidate and target descriptions are then
+    # synthesized into the assistant-visible observation text by a text-only call.
+    target_description = (
+        describe_target(
+            target_wav=target_audio_path,
+            archetype=archetype,
+            omni_server=omni_server,
+            omni_model=omni_model,
+        ) if omni_server else f"A {archetype} sound."
+    )
+
     for bi, batch in enumerate(all_ordered):
         batch_num = bi + 1
         gt_in_batch = [n for n in batch if n in gt_set]
@@ -490,15 +553,33 @@ def build_search_record(
             if n not in selected_so_far:
                 selected_so_far.append(n)
 
-        # Omni Stage 1: batch comparison (audio observations)
+        # Omni Stage 1 (single-audio policy): describe each candidate in
+        # isolation, then synthesize against the cached target description.
         if omni_server:
-            omni_obs = omni_batch_compare(
-                target_wav=target_audio_path,
-                candidate_names=batch,
-                candidate_audio=candidate_audio,
+            valid_batch = [n for n in batch if n in candidate_audio]
+            cand_descs: dict[str, str] = {}
+            if valid_batch:
+                with ThreadPoolExecutor(max_workers=min(8, len(valid_batch))) as ex:
+                    futures = {
+                        ex.submit(
+                            describe_candidate,
+                            name,
+                            candidate_audio[name],
+                            omni_server,
+                            omni_model,
+                        ): name
+                        for name in valid_batch
+                    }
+                    for fut in as_completed(futures):
+                        cand_descs[futures[fut]] = fut.result()
+            # Preserve batch order in the dict (Python 3.7+ dicts keep insertion order)
+            ordered_descs = {n: cand_descs.get(n, "Candidate wavetable.") for n in valid_batch}
+            omni_obs = synthesize_batch_observations(
+                target_description=target_description,
+                candidate_descriptions=ordered_descs,
                 archetype=archetype,
-                omni_server=omni_server,
-                omni_model=omni_model,
+                stage2_server=stage2_server,
+                stage2_model=stage2_model,
             )
         else:
             omni_obs = "\n".join(f'"{n}": Candidate evaluated.' for n in batch)
@@ -649,7 +730,6 @@ def main() -> None:
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
     ap.add_argument("--shortlist-dir", type=Path, default=None,
         help="Directory to write per-agent shortlist JSON files (used by main agent's cat tool calls).")
-    ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--omni-server", default="")
     ap.add_argument("--omni-model", default="Qwen/Qwen3-Omni-30B-A3B-Instruct")
     ap.add_argument("--stage2-server", default="")
@@ -711,7 +791,6 @@ def main() -> None:
         _name_to_emb = build_name_embedding_map(shortlist_data["embeddings"], index_rows)
 
         sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
-        rng = random.Random(args.seed + sid_seed)
 
         # Compute slice offsets: N evenly-spaced slices of size candidates_per_slice.
         slice_size = args.candidates_per_slice
@@ -770,11 +849,10 @@ def main() -> None:
             end = min(start + slice_size, total_named)
             if end <= start:
                 continue
-            agent_rng = random.Random(args.seed + sid_seed + ai + 1)
-            agent_jobs.append((ai, start, end, agent_rng))
+            agent_jobs.append((ai, start, end))
 
         def _run_agent(job):
-            ai, start, end, agent_rng = job
+            ai, start, end = job
             rec = build_search_record(
                 sample_id=sample_id,
                 agent_idx=ai + 1,
@@ -792,7 +870,6 @@ def main() -> None:
                 omni_model=args.omni_model,
                 stage2_server=stage2_server,
                 stage2_model=stage2_model,
-                rng=agent_rng,
                 candidates_per_batch=args.candidates_per_batch,
                 shortlist_dir=args.shortlist_dir,
             )

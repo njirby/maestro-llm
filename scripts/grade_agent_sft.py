@@ -293,6 +293,27 @@ def _classify_bash_command(command: str) -> str:
     return "bash_generic"
 
 
+_TAUTOLOGY_READ_RE = re.compile(r"^\s*(cat|head|tail)\b")
+_TAUTOLOGY_ECHO_RE = re.compile(r"^\s*(echo|printf)\b")
+
+
+def _is_tautological_bash_command(command: str) -> bool:
+    """Return True when execing *command* can't surface a real failure.
+
+    These are builder round-trips — reads of files the builder itself wrote,
+    or bare echo/printf of literals. Their tool_response is predetermined by
+    conversation state, not by any system behaviour worth verifying.
+    """
+    first_line = command.strip().splitlines()[0] if command.strip() else ""
+    if _TAUTOLOGY_READ_RE.match(first_line):
+        return True
+    if _TAUTOLOGY_ECHO_RE.match(first_line) and not any(
+        tok in first_line for tok in ("|", "`", "$(", "$")
+    ):
+        return True
+    return False
+
+
 def _check_live_exec_environment() -> None:
     """Ensure a live REAPER + reapy session is reachable before executing checks."""
     try:
@@ -307,6 +328,48 @@ def _check_live_exec_environment() -> None:
         ) from exc
 
 
+def _reset_reaper_project(record: dict[str, Any] | None = None) -> None:
+    """Reset tracks/items in REAPER so each record starts from a clean slate.
+
+    Avoids File→Close/New because those commands pop a modal "save changes?"
+    dialog on a dirty project and hang the reapy RPC. Instead we delete all
+    tracks in the current project.
+
+    For ``melody_transcription`` records, which are dispatched by a parent
+    agent that already created the target track, we pre-insert tracks up to
+    ``meta.track_idx`` so the rollout's reapy code lands in a valid index.
+    For ``main`` records we leave the project empty — the rollout's first
+    reapy turn creates the track and loads Vital itself.
+    """
+    try:
+        import reapy  # noqa: PLC0415
+
+        required_tracks = 0
+        if record is not None:
+            task_type = record.get("task_type", "")
+            if task_type == "melody_transcription":
+                meta = record.get("meta") or {}
+                tidx = meta.get("track_idx")
+                if isinstance(tidx, int) and tidx >= 0:
+                    required_tracks = tidx + 1
+
+        with reapy.inside_reaper():
+            rpr = reapy.reascript_api  # type: ignore[attr-defined]
+            project = reapy.Project()
+            for track in reversed(list(project.tracks)):
+                try:
+                    track.delete()
+                except Exception:
+                    pass
+            for i in range(required_tracks):
+                rpr.InsertTrackAtIndex(i, False)
+    except Exception:
+        # Non-fatal — the per-record exec will still run and fail loudly if
+        # REAPER state leaks. Avoid aborting a whole grade run on a transient
+        # reapy hiccup.
+        pass
+
+
 def run_live_execution_checks_for_record(
     record: dict[str, Any],
     timeout_sec: float = 30.0,
@@ -317,6 +380,7 @@ def run_live_execution_checks_for_record(
     checks: list[dict[str, Any]] = []
     assessed = 0
     passed = 0
+    skipped_tautologies = 0
     call_budget = max_calls if (max_calls is not None and max_calls > 0) else None
 
     for i, msg in enumerate(messages):
@@ -330,6 +394,10 @@ def run_live_execution_checks_for_record(
 
         command = tc.get("arguments", {}).get("command", "")
         if not isinstance(command, str) or not command.strip():
+            continue
+
+        if _is_tautological_bash_command(command):
+            skipped_tautologies += 1
             continue
 
         expected_payload: dict[str, Any] | None = None
@@ -383,6 +451,7 @@ def run_live_execution_checks_for_record(
         "execution_checks": checks,
         "execution_calls_assessed": assessed,
         "execution_calls_passed": passed,
+        "execution_calls_skipped_tautology": skipped_tautologies,
     }
 
 
@@ -1052,6 +1121,206 @@ Respond ONLY with JSON:
 """
 
 
+_CANDIDATE_AUDIO_JUDGE_SYSTEM = (
+    "You evaluate whether a written TIMBRE description of a wavetable audio "
+    "clip matches what is audible. Focus only on TIMBRAL qualities (harmonic "
+    "content, brightness, texture, roughness, formants, attack shape) — NOT "
+    "on the note pattern, melody, or number of notes in the clip."
+)
+
+_CANDIDATE_AUDIO_JUDGE_PROMPT = """\
+You will hear a wavetable audio clip (a probe render: a fixed test pattern of 4 triads over ~10s through a default synth preset) and a one-sentence description written about the wavetable's TIMBRE.
+
+Description:
+"{desc}"
+
+Judge only whether the TIMBRAL claims in the description are audible. Ignore anything the description says — or fails to say — about melody, notes, or note count. The note pattern is identical across all probes; what varies is the wavetable's timbre.
+
+Examples of timbral claims to verify:
+  • harmonic content: pure/rich/bright/dull, odd-only/even-only/inharmonic, buzzy/smooth
+  • attack/decay shape: sharp pluck vs slow swell, static vs evolving
+  • formant/resonance: nasal, hollow, vowel-like, peaky
+  • overall character: warm/cold, clean/dirty, metallic, vocal, etc.
+
+Scoring:
+  1.0 = the timbral claims are clearly audible in the clip.
+  0.5 = the description is generic/vague or only weakly supported, but not contradicted.
+  0.0 = at least one concrete TIMBRAL claim is contradicted by what you hear (e.g. "bright and aggressive" but the clip is mellow and smooth).
+
+Respond ONLY with JSON:
+{{"audio_grounded": <0.0|0.5|1.0>, "reasoning": "<one sentence citing one audible timbral attribute that did or did not match>"}}
+"""
+
+
+def _resolve_audio(path: str | Path) -> Path | None:
+    p = Path(str(path))
+    if p.is_absolute():
+        return p if p.exists() else None
+    abs_p = ROOT / p
+    return abs_p if abs_p.exists() else None
+
+
+def _llm_judge_candidate_audio(
+    description: str,
+    audio_path: str,
+    server_url: str,
+    model: str,
+    timeout: float = 30.0,
+) -> dict | None:
+    """Single-audio grounding check: does the description match this clip?
+
+    Catches multi-audio position-confusion hallucinations that originate in
+    the build-time batch Omni call (where N audios are sent in one request
+    and the model can scramble which description belongs to which clip).
+    """
+    if not _HTTPX_AVAILABLE or not description.strip() or not audio_path:
+        return None
+    resolved = _resolve_audio(audio_path)
+    if resolved is None:
+        return None
+    try:
+        audio_b64 = _b64(resolved)
+    except Exception:
+        return None
+    prompt = _CANDIDATE_AUDIO_JUDGE_PROMPT.format(desc=description.strip()[:400])
+    content = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"}},
+        {"type": "text", "text": prompt},
+    ]
+    try:
+        resp = _httpx.post(
+            f"{server_url.rstrip('/')}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _CANDIDATE_AUDIO_JUDGE_SYSTEM},
+                    {"role": "user", "content": content},
+                ],
+                "max_tokens": 200,
+                "temperature": 0.0,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        text = resp.json()["choices"][0]["message"]["content"].strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+        parsed = json.loads(text)
+        return {
+            "audio_grounded": float(parsed.get("audio_grounded", 0.0)),
+            "reasoning": str(parsed.get("reasoning", "")),
+        }
+    except Exception:
+        return None
+
+
+def _extract_candidate_description(notes: str, name: str) -> str | None:
+    """Parse a per-candidate line of form '<name>': <description>[. Selected|Not selected].
+
+    Search agent output includes a trailing 'Selected' or 'Not selected' label;
+    judge agent output omits that (uses a single 'RECOMMENDATION:' line at the
+    end instead). Either format is accepted. Works line-by-line so a name-match
+    in one line can't capture description text from a later line.
+    """
+    if not notes:
+        return None
+    esc = re.escape(name)
+    line_pat = re.compile(rf"""^\s*['"]{esc}['"]\s*:\s*(.+?)\s*$""")
+    for line in notes.splitlines():
+        m = line_pat.match(line)
+        if not m:
+            continue
+        desc = m.group(1).strip()
+        # Strip trailing Selected/Not selected label if present (search format).
+        desc = re.sub(
+            r"\.\s*(Selected|Not selected)\s*\.?\s*$",
+            "",
+            desc,
+            flags=re.IGNORECASE,
+        ).strip()
+        return desc or None
+    return None
+
+
+def _extract_search_candidate_triples(
+    record: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Yield (name, description, audio_path) for each candidate in a search record.
+
+    Walks tool_responses with a `rendered` list; each entry flagged
+    `"audio": "<audio>"` consumes one slot from record["audios"][1:]
+    (index 0 is the target). The description is pulled from the assistant
+    turn immediately following each rendered-batch response.
+    """
+    messages = record.get("messages", []) or []
+    audios = record.get("audios", []) or []
+    if len(audios) <= 1:
+        return []
+    cursor = 1  # skip target audio
+    triples: list[tuple[str, str, str]] = []
+    for i, m in enumerate(messages):
+        if m.get("role") != "tool_response":
+            continue
+        try:
+            resp = json.loads(m.get("content", "") or "")
+        except Exception:
+            continue
+        rendered = resp.get("rendered")
+        if not isinstance(rendered, list):
+            continue
+        batch_pairs: list[tuple[str, str]] = []
+        for entry in rendered:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not name:
+                continue
+            if entry.get("audio") != "<audio>":
+                continue
+            if cursor >= len(audios):
+                break
+            batch_pairs.append((str(name), str(audios[cursor])))
+            cursor += 1
+        nxt = messages[i + 1] if i + 1 < len(messages) else None
+        if not nxt or nxt.get("role") != "assistant":
+            continue
+        notes = nxt.get("content", "") or ""
+        for name, path in batch_pairs:
+            desc = _extract_candidate_description(notes, name)
+            if desc:
+                triples.append((name, desc, path))
+    return triples
+
+
+def _extract_judge_candidate_triples(
+    record: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Yield (name, description, audio_path) for each pool candidate in a judge record."""
+    messages = record.get("messages", []) or []
+    audios = record.get("audios", []) or []
+    if len(audios) <= 1:
+        return []
+    # audios[0] is target; audios[1:] are pool candidate audios in append order.
+    # The judge dumps per-candidate lines in the assistant deliberation turn(s).
+    pool: list[str] = list((record.get("meta") or {}).get("pool") or [])
+    if not pool:
+        return []
+    # Join all assistant content so the regex can find each candidate line.
+    assistant_text = "\n".join(
+        m.get("content", "") or ""
+        for m in messages
+        if m.get("role") == "assistant"
+    )
+    triples: list[tuple[str, str, str]] = []
+    for i, name in enumerate(pool):
+        audio_idx = i + 1  # offset past target
+        if audio_idx >= len(audios):
+            break
+        desc = _extract_candidate_description(assistant_text, name)
+        if desc:
+            triples.append((name, desc, str(audios[audio_idx])))
+    return triples
+
+
 _V3_OBSERVATIONS_JUDGE_SYSTEM = (
     "You are evaluating whether the agent's written OBSERVATIONS about a target "
     "audio clip match the actual audible content of that clip. You have access "
@@ -1508,7 +1777,7 @@ def score_main_v3_record(
         if m.get("role") == "assistant" and "FINAL ASSESSMENT" in m.get("content", ""):
             verdict_turn = m["content"]
             break
-    residual_subs = list((meta.get("batch_labels", [{}])[-1] or {}).get("param_names", []))[:3]
+    residual_subs = list(((meta.get("batch_labels") or [{}])[-1] or {}).get("param_names", []))[:3]
     # Try simpler: check that verdict mentions any subsystem name from SUBSYSTEM_ORDER
     from scripts.build_main_agent_sft_v3 import _SUBSYSTEM_ALIASES
     verdict_lower = verdict_turn.lower()
@@ -1591,7 +1860,66 @@ def score_main_v3_record(
 # Search v2 scoring — narrow, structural + correctness
 # ---------------------------------------------------------------------------
 
-def score_search_v2_record(record: dict[str, Any]) -> dict[str, Any]:
+def _score_candidate_audio_grounding(
+    triples: list[tuple[str, str, str]],
+    llm_judge_server: str | None,
+    llm_judge_model: str,
+    max_candidates: int | None = None,
+    sample_rate: float = 1.0,
+    sample_seed: int | None = None,
+) -> tuple[float | None, list[dict]]:
+    """Run the per-candidate audio-grounding check. Returns (mean_score, details).
+
+    Returns (None, []) if llm_judge_server is not set or no triples can be
+    checked. Catches multi-audio position-confusion hallucinations from the
+    build-time batch Omni call.
+
+    - `sample_rate` in (0, 1]: fraction of triples to evaluate (rounded up,
+      at least 1). Random subset by default; set `sample_seed` for reproducible
+      sampling. 1.0 (default) checks every candidate.
+    - `max_candidates`: optional hard cap applied after sampling.
+    """
+    if not llm_judge_server or not triples:
+        return None, []
+    import math
+    import random
+    rng = random.Random(sample_seed) if sample_seed is not None else random
+    target_n = len(triples)
+    if 0.0 < sample_rate < 1.0:
+        target_n = max(1, math.ceil(len(triples) * sample_rate))
+    if max_candidates is not None and max_candidates > 0:
+        target_n = min(target_n, max_candidates)
+    if target_n < len(triples):
+        triples = rng.sample(triples, target_n)
+    details: list[dict] = []
+    scores: list[float] = []
+    for name, desc, path in triples:
+        result = _llm_judge_candidate_audio(
+            description=desc,
+            audio_path=path,
+            server_url=llm_judge_server,
+            model=llm_judge_model,
+        )
+        if result is None:
+            continue
+        scores.append(result["audio_grounded"])
+        details.append({
+            "name": name,
+            "audio_grounded": result["audio_grounded"],
+            "reasoning": result["reasoning"],
+        })
+    if not scores:
+        return None, details
+    return round(sum(scores) / len(scores), 4), details
+
+
+def score_search_v2_record(
+    record: dict[str, Any],
+    llm_judge_server: str | None = None,
+    llm_judge_model: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+    max_audio_grounding_candidates: int | None = None,
+    audio_grounding_sample_rate: float = 1.0,
+) -> dict[str, Any]:
     """Score a search_v2 record.
 
     The search agent evaluates one slice of the wavetable library across 6
@@ -1599,13 +1927,14 @@ def score_search_v2_record(record: dict[str, Any]) -> dict[str, Any]:
     the shortlist to an output file via an explicit bash tool_call.
 
     Dimensions:
-      gt_recovery             (35% conditional) — fraction of GTs in the shard that made it onto the shortlist. Only assessable when gt_in_shard is non-empty.
-      shortlist_file_written  (25%)             — the transcript ends with a bash tool_call that writes the shortlist JSON, followed by a tool_response confirming success.
-      closing_assistant       (10%)             — final message is an assistant turn (validator invariant + task-completion signal).
-      has_render_probes       (10%)             — at least one bash tool_call invokes skills/vital/scripts/render_probes.py (the agent actually listened).
-      shortlist_nonempty      (10%)             — the final shortlist has ≥1 name (agent produced output).
-      snake_case_clean        (5%)              — no snake_case param leak in assistant text.
-      format_consistent       (5%)              — no **BOLD:** headers.
+      gt_recovery                    (35% conditional) — fraction of GTs in the shard that made it onto the shortlist. Only assessable when gt_in_shard is non-empty.
+      shortlist_file_written         (20%)             — last bash tool_call writes the shortlist JSON, tool_response confirms.
+      llm_candidates_audio_grounded  (15% conditional) — mean single-audio Omni grounding check across all (candidate, description) pairs. Catches batch-call audio-position confusion. Requires --llm-judge-server.
+      has_render_probes              (10%)             — ≥1 bash tool_call invokes skills/vital/scripts/render_probes.py.
+      shortlist_nonempty             (10%)             — final shortlist has ≥1 name.
+      closing_assistant              (5%)              — last message is assistant.
+      snake_case_clean               (2.5%)            — no snake_case param leak.
+      format_consistent              (2.5%)            — no **BOLD:** headers.
     """
     messages = record.get("messages", [])
     meta = record.get("meta", {})
@@ -1674,23 +2003,33 @@ def score_search_v2_record(record: dict[str, Any]) -> dict[str, Any]:
     bold_hits = sum(bool(_BOLD_HEADER_RE.search(t)) for t in assistant_turns)
     format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
 
+    # Per-candidate audio grounding (optional, requires LLM judge server).
+    triples = _extract_search_candidate_triples(record)
+    audio_grounded_mean, audio_grounded_details = _score_candidate_audio_grounding(
+        triples, llm_judge_server, llm_judge_model, max_audio_grounding_candidates,
+        sample_rate=audio_grounding_sample_rate,
+    )
+
     weights: dict[str, float] = {
         "gt_recovery": 0.35,
-        "shortlist_file_written": 0.25,
-        "closing_assistant": 0.10,
+        "shortlist_file_written": 0.20,
+        "llm_candidates_audio_grounded": 0.15,
         "has_render_probes": 0.10,
         "shortlist_nonempty": 0.10,
-        "snake_case_clean": 0.05,
-        "format_consistent": 0.05,
+        "closing_assistant": 0.05,
+        "snake_case_clean": 0.025,
+        "format_consistent": 0.025,
     }
     raw: dict[str, Any] = {
         "gt_recovery": gt_recovery,
         "shortlist_file_written": shortlist_file_written,
-        "closing_assistant": closing_assistant,
+        "llm_candidates_audio_grounded": audio_grounded_mean,
         "has_render_probes": has_render_probes,
         "shortlist_nonempty": shortlist_nonempty,
+        "closing_assistant": closing_assistant,
         "snake_case_clean": snake_case_clean,
         "format_consistent": format_consistent,
+        "llm_candidates_audio_grounded_details": audio_grounded_details,
     }
     weighted_sum = 0.0
     weight_sum = 0.0
@@ -1707,7 +2046,13 @@ def score_search_v2_record(record: dict[str, Any]) -> dict[str, Any]:
 # Judge v3 scoring — narrow, structural + correctness
 # ---------------------------------------------------------------------------
 
-def score_judge_v3_record(record: dict[str, Any]) -> dict[str, Any]:
+def score_judge_v3_record(
+    record: dict[str, Any],
+    llm_judge_server: str | None = None,
+    llm_judge_model: str = "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+    max_audio_grounding_candidates: int | None = None,
+    audio_grounding_sample_rate: float = 1.0,
+) -> dict[str, Any]:
     """Score a v3 judge record.
 
     The judge agent audions the combined search pool in one Omni call, picks
@@ -1715,15 +2060,16 @@ def score_judge_v3_record(record: dict[str, Any]) -> dict[str, Any]:
     selection to a JSON output file via explicit bash tool_call.
 
     Dimensions:
-      judge_correct            (30%)            — meta.judge_correct: selection matches the GTs present in the pool (structural correctness oracle).
-      tuple_size_correct       (10%)            — len(selected_tuple) == n_osc_slots.
-      tuple_names_in_pool      (10%)            — every selected name is from the pool (no hallucinated wavetables).
-      output_file_written      (25%)            — the final bash tool_call writes judge_*.json with {tuple,n_osc_slots,reasoning} schema, tool_response confirms ok.
-      pool_candidates_discussed (10%)           — fraction of pool names mentioned in the judge's assistant deliberation.
-      has_render_probes        (5%)             — at least one bash tool_call invokes skills/vital/scripts/render_probes.py.
-      closing_assistant        (5%)             — last message is an assistant turn.
-      format_consistent        (2.5%)           — no **BOLD:** headers.
-      snake_case_clean         (2.5%)           — no snake_case in assistant text.
+      judge_correct                  (25%)            — meta.judge_correct: selection matches the GTs present in the pool (oracle correctness).
+      output_file_written            (20%)            — final bash tool_call writes judge_*.json, tool_response confirms.
+      llm_candidates_audio_grounded  (15% conditional) — mean single-audio Omni grounding across per-pool-candidate descriptions. Catches audition-call audio-position confusion. Requires --llm-judge-server.
+      tuple_size_correct             (10%)            — len(selected_tuple) == n_osc_slots.
+      tuple_names_in_pool            (10%)            — every selected name is from the pool.
+      pool_candidates_discussed      (10%)            — fraction of pool names mentioned in deliberation.
+      has_render_probes              (5%)             — ≥1 bash tool_call invokes render_probes.py.
+      closing_assistant              (2.5%)           — last message is assistant.
+      format_consistent              (1.25%)          — no **BOLD:** headers.
+      snake_case_clean               (1.25%)          — no snake_case in assistant text.
     """
     messages = record.get("messages", [])
     meta = record.get("meta", {})
@@ -1795,27 +2141,36 @@ def score_judge_v3_record(record: dict[str, Any]) -> dict[str, Any]:
     bold_hits = sum(bool(_BOLD_HEADER_RE.search(t)) for t in assistant_turns)
     format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
 
+    triples = _extract_judge_candidate_triples(record)
+    audio_grounded_mean, audio_grounded_details = _score_candidate_audio_grounding(
+        triples, llm_judge_server, llm_judge_model, max_audio_grounding_candidates,
+        sample_rate=audio_grounding_sample_rate,
+    )
+
     weights: dict[str, float] = {
-        "judge_correct": 0.30,
+        "judge_correct": 0.25,
+        "output_file_written": 0.20,
+        "llm_candidates_audio_grounded": 0.15,
         "tuple_size_correct": 0.10,
         "tuple_names_in_pool": 0.10,
-        "output_file_written": 0.25,
         "pool_candidates_discussed": 0.10,
         "has_render_probes": 0.05,
-        "closing_assistant": 0.05,
-        "format_consistent": 0.025,
-        "snake_case_clean": 0.025,
+        "closing_assistant": 0.025,
+        "format_consistent": 0.0125,
+        "snake_case_clean": 0.0125,
     }
     raw: dict[str, Any] = {
         "judge_correct": judge_correct,
+        "output_file_written": output_file_written,
+        "llm_candidates_audio_grounded": audio_grounded_mean,
         "tuple_size_correct": tuple_size_correct,
         "tuple_names_in_pool": tuple_names_in_pool,
-        "output_file_written": output_file_written,
         "pool_candidates_discussed": pool_candidates_discussed,
         "has_render_probes": has_render_probes,
         "closing_assistant": closing_assistant,
         "format_consistent": format_consistent,
         "snake_case_clean": snake_case_clean,
+        "llm_candidates_audio_grounded_details": audio_grounded_details,
     }
     weighted_sum = 0.0
     weight_sum = 0.0
@@ -1828,6 +2183,162 @@ def score_judge_v3_record(record: dict[str, Any]) -> dict[str, Any]:
     return {**raw, "overall": overall}
 
 
+# ---------------------------------------------------------------------------
+# Melody transcription v3 scoring — structural + oracle correctness
+# ---------------------------------------------------------------------------
+
+def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Score a melody_transcription record.
+
+    The transcription subagent listens to the target audio, writes Python
+    (reapy) code that inserts MIDI notes on a REAPER track, and saves the
+    note list as a JSON handoff file.
+
+    Dimensions:
+      has_reapy_midi_insert  (20%) — ≥1 bash tool_call contains MIDI_InsertNote
+                                    (or RPR_MIDI_InsertNote).
+      output_file_written    (25%) — final bash writes transcription.json with
+                                    notes/n_notes/duration_s + ok tool_response.
+      note_count_match       (20%) — n notes in payload matches meta.n_notes
+                                    (oracle count).
+      pitch_coverage         (10%) — fraction of oracle pitches that appear in
+                                    deliberation or insert command.
+      has_render_listen      (10%) — first user message has <audio> (subagent
+                                    actually received the target for listening).
+      closing_assistant      (5%)  — last message is an assistant turn.
+      snake_case_clean       (5%)  — no snake_case in assistant prose.
+      format_consistent      (5%)  — no **BOLD:** headers.
+    """
+    messages = record.get("messages", [])
+    meta = record.get("meta", {})
+    assistant_turns = [m.get("content", "") or "" for m in messages if m.get("role") == "assistant"]
+
+    oracle_notes: list[dict] = list(meta.get("notes") or [])
+    oracle_n: int = int(meta.get("n_notes") or 0)
+    oracle_pitches: set[int] = {int(n.get("pitch", -1)) for n in oracle_notes}
+    oracle_pitches.discard(-1)
+
+    # has_reapy_midi_insert: walk bash tool_calls for MIDI_InsertNote
+    has_reapy_midi_insert: float = 0.0
+    insert_cmd_text = ""
+    for m in messages:
+        if m.get("role") != "tool_call":
+            continue
+        try:
+            tc = json.loads(m.get("content", ""))
+            if tc.get("name") != "bash":
+                continue
+            cmd = tc.get("arguments", {}).get("command", "") or ""
+            if "MIDI_InsertNote" in cmd:
+                has_reapy_midi_insert = 1.0
+                insert_cmd_text = cmd
+                break
+        except Exception:
+            pass
+
+    # output_file_written: final bash tool_call writes transcription JSON with
+    # the expected shape + matching ok tool_response.
+    output_file_written: float = 0.0
+    note_count_match: float = 0.0
+    last_bash_idx = -1
+    for i, m in enumerate(messages):
+        if m.get("role") == "tool_call":
+            try:
+                tc = json.loads(m.get("content", ""))
+                if tc.get("name") == "bash":
+                    last_bash_idx = i
+            except Exception:
+                pass
+    if last_bash_idx >= 0:
+        try:
+            tc = json.loads(messages[last_bash_idx]["content"])
+            cmd = tc.get("arguments", {}).get("command", "") or ""
+            # require n_notes + notes + duration_s schema in the heredoc
+            has_schema = all(tok in cmd for tok in ('"n_notes"', '"notes"', '"duration_s"'))
+            if has_schema and ".json" in cmd:
+                nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
+                if nxt and nxt.get("role") == "tool_response":
+                    try:
+                        resp = json.loads(nxt.get("content", ""))
+                        if resp.get("status") == "ok" and resp.get("file"):
+                            output_file_written = 1.0
+                    except Exception:
+                        pass
+                # note count match: parse n_notes from the heredoc payload string
+                m_count = re.search(r'"n_notes"\s*:\s*(\d+)', cmd)
+                if m_count:
+                    emitted_n = int(m_count.group(1))
+                    if oracle_n > 0 and emitted_n == oracle_n:
+                        note_count_match = 1.0
+        except Exception:
+            pass
+
+    # pitch_coverage: how many oracle pitches appear in the assistant/insert_cmd text
+    combined_text = " ".join(assistant_turns) + " " + insert_cmd_text
+    if oracle_pitches:
+        seen = 0
+        for p in oracle_pitches:
+            # Match as integer token (word-bounded) OR note name
+            if re.search(rf"\b{p}\b", combined_text):
+                seen += 1
+                continue
+            name = _pitch_name_for_grader(p)
+            if name and name in combined_text:
+                seen += 1
+        pitch_coverage: float | None = round(seen / len(oracle_pitches), 4)
+    else:
+        pitch_coverage = None
+
+    # has_render_listen: first user message carries an <audio> tag
+    has_render_listen: float = 0.0
+    if messages and messages[0].get("role") == "user":
+        if "<audio>" in str(messages[0].get("content", "")):
+            has_render_listen = 1.0
+
+    closing_assistant: float = 1.0 if messages and messages[-1].get("role") == "assistant" else 0.0
+
+    snake_hits = sum(bool(_SNAKE_CASE_RE.search(t)) for t in assistant_turns)
+    snake_case_clean = 1.0 - min(1.0, snake_hits / max(1, len(assistant_turns)))
+    bold_hits = sum(bool(_BOLD_HEADER_RE.search(t)) for t in assistant_turns)
+    format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
+
+    weights: dict[str, float] = {
+        "has_reapy_midi_insert": 0.20,
+        "output_file_written": 0.25,
+        "note_count_match": 0.20,
+        "pitch_coverage": 0.10,
+        "has_render_listen": 0.10,
+        "closing_assistant": 0.05,
+        "snake_case_clean": 0.05,
+        "format_consistent": 0.05,
+    }
+    raw: dict[str, Any] = {
+        "has_reapy_midi_insert": has_reapy_midi_insert,
+        "output_file_written": output_file_written,
+        "note_count_match": note_count_match,
+        "pitch_coverage": pitch_coverage,
+        "has_render_listen": has_render_listen,
+        "closing_assistant": closing_assistant,
+        "snake_case_clean": snake_case_clean,
+        "format_consistent": format_consistent,
+    }
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for k, w in weights.items():
+        v = raw.get(k)
+        if v is not None:
+            weighted_sum += v * w
+            weight_sum += w
+    overall = round(weighted_sum / weight_sum, 4) if weight_sum > 0 else 0.0
+    return {**raw, "overall": overall}
+
+
+def _pitch_name_for_grader(pitch: int) -> str:
+    names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    octave = (pitch // 12) - 1
+    return f"{names[pitch % 12]}{octave}"
+
+
 def score_record(
     record: dict[str, Any],
     llm_judge_server: str | None = None,
@@ -1837,6 +2348,7 @@ def score_record(
     live_exec_max_calls: int | None = None,
     other_verdicts: list[str] | None = None,
     other_narrations_by_subsystem: dict[str, list[str]] | None = None,
+    audio_grounding_sample_rate: float = 1.0,
 ) -> dict[str, Any]:
     task = record.get("task_type", "")
     meta = record.get("meta", {})
@@ -1850,9 +2362,17 @@ def score_record(
     elif task == "main":
         scores = score_main_record(record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model)
     elif task == "search_v2":
-        scores = score_search_v2_record(record)
+        scores = score_search_v2_record(
+            record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model,
+            audio_grounding_sample_rate=audio_grounding_sample_rate,
+        )
     elif task == "judge" and meta.get("pipeline_version") == "v3_judge":
-        scores = score_judge_v3_record(record)
+        scores = score_judge_v3_record(
+            record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model,
+            audio_grounding_sample_rate=audio_grounding_sample_rate,
+        )
+    elif task == "melody_transcription":
+        scores = score_transcription_record(record)
     elif task == "search":
         scores = score_search_record(record)  # legacy v1
     elif task == "judge":
@@ -1862,6 +2382,9 @@ def score_record(
 
     # Optional live runtime validation: execute bash tool calls and check that
     # runtime outputs/effects align with emitted tool_response payloads.
+    # Hard-fail filter: any non-passing call forces overall=0 so the record is
+    # filtered out at `--min-score` thresholds. The record stays in the scored
+    # JSONL with the detailed errors intact for postmortem.
     if live_exec_check:
         exec_results = run_live_execution_checks_for_record(
             record,
@@ -1870,11 +2393,8 @@ def score_record(
         )
         scores.update(exec_results)
         exec_fidelity = exec_results.get("execution_fidelity")
-        base_overall = scores.get("overall")
-        if exec_fidelity is not None and base_overall is not None:
-            # Keep existing quality signal dominant while making runtime fidelity
-            # a meaningful factor when live checks are enabled.
-            scores["overall"] = round((0.85 * float(base_overall)) + (0.15 * float(exec_fidelity)), 4)
+        if exec_fidelity is not None and float(exec_fidelity) < 1.0 and scores.get("overall") is not None:
+            scores["overall"] = 0.0
 
     return scores
 
@@ -1890,6 +2410,7 @@ def grade_file(
     live_exec_check: bool = False,
     live_exec_timeout_sec: float = 30.0,
     live_exec_max_calls: int | None = None,
+    audio_grounding_sample_rate: float = 1.0,
 ) -> dict[str, Any]:
     """Grade all records in *input_path*, write scored output to *output_path*.
 
@@ -1968,7 +2489,8 @@ def grade_file(
                             live_exec_timeout_sec=live_exec_timeout_sec,
                             live_exec_max_calls=live_exec_max_calls,
                             other_verdicts=_other_verdicts_for(i),
-                            other_narrations_by_subsystem=_other_narrations_by_subsystem_for(i)): i
+                            other_narrations_by_subsystem=_other_narrations_by_subsystem_for(i),
+                            audio_grounding_sample_rate=audio_grounding_sample_rate): i
                 for i, record in enumerate(rows)
             }
             for fut in as_completed(futs):
@@ -1980,6 +2502,8 @@ def grade_file(
                     scores_by_idx[i] = {}
     else:
         for i, record in enumerate(rows):
+            if live_exec_check:
+                _reset_reaper_project(record)
             scores_by_idx[i] = score_record(
                 record,
                 llm_judge_server=llm_judge_server,
@@ -1989,6 +2513,7 @@ def grade_file(
                 live_exec_max_calls=live_exec_max_calls,
                 other_verdicts=_other_verdicts_for(i),
                 other_narrations_by_subsystem=_other_narrations_by_subsystem_for(i),
+                audio_grounding_sample_rate=audio_grounding_sample_rate,
             )
 
     # Cross-sample narration diversity: Jaccard on trigram-word-sets between
@@ -2134,6 +2659,16 @@ def main() -> None:
         default=0,
         help="Optional cap on executed bash tool calls per record for faster checks (0 = all).",
     )
+    ap.add_argument(
+        "--audio-grounding-sample-rate",
+        type=float,
+        default=1.0,
+        help=(
+            "Fraction of per-candidate audio-grounding checks to run per search/judge "
+            "record (random sample). 1.0 = all (default). E.g. 0.125 ≈ 6/48 for search, "
+            "or 0.33 ≈ 4/12 for judge. Only used when --llm-judge-server is set."
+        ),
+    )
     args = ap.parse_args()
 
     summary = grade_file(
@@ -2147,6 +2682,7 @@ def main() -> None:
         live_exec_check=args.live_exec_check,
         live_exec_timeout_sec=float(args.live_exec_timeout_sec),
         live_exec_max_calls=(None if int(args.live_exec_max_calls) <= 0 else int(args.live_exec_max_calls)),
+        audio_grounding_sample_rate=float(args.audio_grounding_sample_rate),
     )
     print(json.dumps(summary, indent=2))
 

@@ -418,6 +418,32 @@ def omni_stage1_diagnose(
         )
 
 
+def _describe_audio_solo(
+    wav: str,
+    prompt_text: str,
+    omni_server: str,
+    omni_model: str,
+    max_tokens: int = 140,
+    fallback: str = "",
+) -> str:
+    """Single-audio Omni call."""
+    content = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(wav)}"}},
+        {"type": "text", "text": prompt_text},
+    ]
+    try:
+        r = _llm_post(
+            f"{omni_server}/v1/chat/completions",
+            {"model": omni_model,
+             "messages": [{"role": "user", "content": content}],
+             "max_tokens": max_tokens, "temperature": 0.4},
+            timeout=120.0,
+        )
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return fallback
+
+
 def omni_stage1_verdict(
     gt_wav: str,
     final_wav: str,
@@ -425,28 +451,38 @@ def omni_stage1_verdict(
     omni_server: str,
     omni_model: str,
 ) -> str:
-    """Stage 1 for final verdict: compare final recreation vs GT."""
-    content = [
-        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(gt_wav)}"}},
-        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(final_wav)}"}},
-        {"type": "text", "text": (
-            f"You are a music production AI doing a final review.\n"
-            f"The first clip is the target sound.\n"
-            f"The second clip is the final recreation after all subsystem edits.\n\n"
-            "In 2 sentences: what matches well, and what (if anything) still differs. "
-            "Be specific and honest. No snake_case. No kHz numbers."
-        )},
-    ]
+    """Single-audio policy for the final verdict: describe target and final
+    recreation in separate calls, then synthesize the verdict via a text-only
+    call. Avoids the position confusion that the original two-audio comparison
+    prompt could produce."""
+    describe_prompt = (
+        f"Describe this {archetype} sound's TIMBRE in 1-2 sentences: harmonic content, "
+        f"brightness, texture, attack/decay shape, and distinctive effects you hear. "
+        f"Focus on timbral qualities only."
+    )
+    target_desc = _describe_audio_solo(
+        gt_wav, describe_prompt, omni_server, omni_model, max_tokens=160,
+        fallback="The target sound has a clear timbral character.",
+    )
+    final_desc = _describe_audio_solo(
+        final_wav, describe_prompt, omni_server, omni_model, max_tokens=160,
+        fallback="The recreation has a clear timbral character.",
+    )
+
+    synth_prompt = (
+        f"You are a music production AI doing a final review.\n\n"
+        f"Target timbre (described from an isolated listen):\n  {target_desc}\n\n"
+        f"Recreation timbre (described from an isolated listen):\n  {final_desc}\n\n"
+        f"In 2 sentences: what matches well, and what (if anything) still differs. "
+        f"Be specific and honest. No snake_case. No kHz numbers."
+    )
     try:
         r = _llm_post(
             f"{omni_server}/v1/chat/completions",
-            {
-                "model": omni_model,
-                "messages": [{"role": "user", "content": content}],
-                "max_tokens": 180,
-                "temperature": 0.4,
-            },
-            timeout=180.0,
+            {"model": omni_model,
+             "messages": [{"role": "user", "content": synth_prompt}],
+             "max_tokens": 180, "temperature": 0.4},
+            timeout=120.0,
         )
         return r["choices"][0]["message"]["content"].strip()
     except Exception:
@@ -1031,9 +1067,128 @@ def build_record(
         ),
     })
 
+    # --- TRANSCRIPTION BLOCK ---
+    # Before search, create a REAPER track and dispatch the melody_transcription
+    # subagent to populate it with MIDI notes. At inference the harness runs the
+    # reapy code against a live REAPER session. At build time we synthesise the
+    # subagent's output file directly from source_midi_path (oracle) so the main
+    # agent's `cat` turn surfaces the same note list the transcription subagent's
+    # own SFT rollout would produce.
+    source_midi_path = entry.get("source_midi_path")
+    transcription_summary_text = ""
+    if source_midi_path and Path(source_midi_path).exists():
+        from scripts.build_transcription_agent_sft_v3 import (  # type: ignore
+            load_notes_from_midi,
+        )
+        try:
+            _trans_notes = load_notes_from_midi(source_midi_path)
+        except Exception:
+            _trans_notes = []
+        if _trans_notes:
+            _trans_n_notes = len(_trans_notes)
+            _trans_duration_s = round(max(n["end_s"] for n in _trans_notes), 2)
+            _trans_track_idx = 0
+            _trans_track_name = "target_melody"
+            _trans_output_file = f"/tmp/agents/{sample_id}/transcription.json"
+            _trans_agent_id = f"melody_transcription_{sample_id}"
+
+            # Persist the transcription output file on disk so `cat` works at
+            # build time and points to a real artifact.
+            _trans_payload = {
+                "status": "completed",
+                "notes": _trans_notes,
+                "n_notes": _trans_n_notes,
+                "duration_s": _trans_duration_s,
+            }
+            Path(_trans_output_file).parent.mkdir(parents=True, exist_ok=True)
+            with open(_trans_output_file, "w") as _trf:
+                json.dump(_trans_payload, _trf)
+                _trf.write("\n")
+
+            # Step 1: create a REAPER track + load Vital on it
+            _trans_create_cmd = (
+                "python - <<'PY'\n"
+                "import json\n"
+                "import reapy\n"
+                f"track_name = {json.dumps(_trans_track_name)}\n"
+                "with reapy.inside_reaper():\n"
+                "    proj = reapy.Project()\n"
+                "    rpr = reapy.reascript_api\n"
+                "    rpr.InsertTrackAtIndex(0, True)\n"
+                "    track = proj.tracks[0]\n"
+                "    rpr.GetSetMediaTrackInfo_String(track.id, 'P_NAME', track_name, True)\n"
+                "    rpr.TrackFX_AddByName(track.id, 'Vital', False, 1)\n"
+                "print(json.dumps({'status': 'ok', 'track_idx': 0, 'track_name': track_name}))\n"
+                "PY"
+            )
+            messages.append({
+                "role": "assistant",
+                "content": "Creating a REAPER track to hold the transcribed MIDI before I search the wavetable library.",
+            })
+            messages.append(_tool_call("bash", {"command": _trans_create_cmd}))
+            messages.append({
+                "role": "tool_response",
+                "content": json.dumps({
+                    "status": "ok",
+                    "track_idx": _trans_track_idx,
+                    "track_name": _trans_track_name,
+                }, ensure_ascii=False),
+            })
+
+            # Step 2: dispatch the melody_transcription subagent
+            messages.append({
+                "role": "assistant",
+                "content": "Dispatching the transcription subagent to listen to the target and populate the track with MIDI notes.",
+            })
+            messages.append(_tool_call("Agent", {
+                "subagent_type": "melody_transcription",
+                "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
+                "prompt": (
+                    f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
+                    f"(reapy.inside_reaper() → RPR_MIDI_InsertNote at PPQ positions) that "
+                    f"inserts the MIDI notes on that track, then save the final note list "
+                    f"as JSON to {_trans_output_file} with shape "
+                    f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
+                ),
+                "name": f"transcribe-{sample_id}",
+            }))
+            messages.append({
+                "role": "tool_response",
+                "content": json.dumps({
+                    "agentId": _trans_agent_id,
+                    "subagentType": "melody_transcription",
+                    "status": "completed",
+                    "outputFile": _trans_output_file,
+                }, ensure_ascii=False),
+            })
+
+            # Step 3: read the subagent's transcription output
+            messages.append({
+                "role": "assistant",
+                "content": "Reading the transcribed note list.",
+            })
+            messages.append(_tool_call("bash", {"command": f"cat {_trans_output_file}"}))
+            with open(_trans_output_file) as _trf:
+                _trans_file_content = _trf.read().strip()
+            messages.append({
+                "role": "tool_response",
+                "content": _trans_file_content,
+            })
+
+            transcription_summary_text = (
+                f"MIDI ready on track {_trans_track_idx} — {_trans_n_notes} notes, "
+                f"~{_trans_duration_s:.1f}s. "
+            )
+
     # Check library size — the agent needs to discover this at inference time
     # (it's what drives how many search agents to dispatch and how to slice).
-    messages.append({"role": "assistant", "content": "Checking wavetable library size."})
+    # Merge the post-transcription "MIDI ready" summary into this turn's opener
+    # if we emitted a transcription block (keeps validator happy — no adjacent
+    # assistants).
+    messages.append({
+        "role": "assistant",
+        "content": f"{transcription_summary_text}Checking wavetable library size.",
+    })
     messages.append(_tool_call("bash", {"command": "python skills/vital/scripts/list_wavetables.py --total"}))
     messages.append({"role": "tool_response", "content": json.dumps({"total": total_named}, ensure_ascii=False)})
 
@@ -1404,7 +1559,7 @@ def build_record(
         "vc = VitalController()\n"
         "vc.discover()\n"
         f"wt_lib = json.load(open({json.dumps(str(args.wavetable_lib))}))\n"
-        "name_to_wt = {wt['name']: wt for wt in wt_lib}\n"
+        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
         "preset = vc.get_preset()\n"
         f"for osc_idx, wt_name in [{apply_assignments}]:\n"
         "    if wt_name in name_to_wt:\n"

@@ -168,6 +168,35 @@ def _simulate_search_pool(
     return pool
 
 
+def _omni_single_audio_call(
+    audio_path: Path,
+    prompt_text: str,
+    omni_server: str,
+    omni_model: str,
+    max_tokens: int = 160,
+    temperature: float = 0.4,
+    timeout: float = 60.0,
+    fallback: str = "",
+) -> str:
+    """Send ONE audio + ONE text prompt, return the completion. Used in place
+    of multi-audio batch calls to avoid position-confusion hallucinations."""
+    content = [
+        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(audio_path)}"}},
+        {"type": "text", "text": prompt_text},
+    ]
+    try:
+        r = _llm_post(
+            f"{omni_server}/v1/chat/completions",
+            {"model": omni_model,
+             "messages": [{"role": "user", "content": content}],
+             "max_tokens": max_tokens, "temperature": temperature},
+            timeout=timeout,
+        )
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return fallback
+
+
 def omni_judge_audition(
     target_wav: Path,
     pool: list[str],
@@ -177,53 +206,77 @@ def omni_judge_audition(
     omni_model: str,
     timeout: float = 300.0,
 ) -> str:
-    """Omni listens to target + all pool candidates at once, writes per-candidate
-    observations and a final selection recommendation.
-
-    Returns the raw text. Each candidate audio is labelled in the prompt with its
-    wavetable name so the model can associate audio-position with name.
-    """
+    """Single-audio policy: describe target + each pool candidate in isolation,
+    then synthesize per-candidate assessments + a recommendation via a text-only
+    call. Avoids the multi-audio position-confusion that the old batch-audition
+    call was prone to."""
     valid_names = [n for n in pool if n in candidate_audio]
-    content = [
-        {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(target_wav)}"}},
-    ]
-    for name in valid_names:
-        content.append(
-            {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{_b64(candidate_audio[name])}"}}
-        )
-    audio_labels = "\n".join(
-        f"  Audio {i + 2}: \"{name}\"" for i, name in enumerate(valid_names)
-    )
-    content.append({
-        "type": "text",
-        "text": (
-            f"Audio 1 is the TARGET sound we need to match.\n"
-            f"Audios 2-{len(valid_names) + 1} are pool candidates returned by search "
-            f"agents (each labelled with its wavetable name):\n"
-            f"{audio_labels}\n\n"
-            f"Listen to each candidate against the target. Write ONE short sentence per "
-            f"candidate describing its raw character and whether it could serve as a "
-            f"building block for the target once filters, envelopes, and effects are applied.\n\n"
-            f"Then on a final line, recommend which {n_osc_slots} candidate(s) together "
-            f"would best capture the target — format: "
-            f"'RECOMMENDATION: [name1, name2]: <one sentence on why this combination works>'.\n\n"
-            f"Format per line: '<name>': <one-sentence assessment>\n"
-            f"Use the EXACT names listed above, natural language, no snake_case."
+    if not valid_names:
+        return f"RECOMMENDATION: [] : (no candidates)"
+
+    target_desc = _omni_single_audio_call(
+        audio_path=target_wav,
+        prompt_text=(
+            "This is a target sound we're trying to recreate with a Vital synth. "
+            "Describe its TIMBRE in one or two sentences: harmonic content, brightness, "
+            "texture, attack shape, and any distinctive effects. Focus on timbral "
+            "qualities only — do not mention note pattern."
         ),
-    })
+        omni_server=omni_server,
+        omni_model=omni_model,
+        max_tokens=180,
+        fallback="A target sound.",
+    )
+
+    cand_descs: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(valid_names))) as ex:
+        def _describe(name: str) -> tuple[str, str]:
+            desc = _omni_single_audio_call(
+                audio_path=candidate_audio[name],
+                prompt_text=(
+                    "This is a wavetable rendered through a default Vital preset "
+                    "(probe: 4 triads over ~10s; note pattern is fixed across all probes). "
+                    "In ONE sentence, describe only this wavetable's timbral character: "
+                    "harmonic content, brightness, texture, attack shape. Ignore note pattern."
+                ),
+                omni_server=omni_server,
+                omni_model=omni_model,
+                max_tokens=120,
+                fallback="Candidate wavetable.",
+            )
+            return name, desc
+        futures = [ex.submit(_describe, n) for n in valid_names]
+        for fut in as_completed(futures):
+            name, desc = fut.result()
+            cand_descs[name] = desc
+
+    cand_block = "\n".join(
+        f"  '{n}': {cand_descs.get(n, 'Candidate wavetable.')}" for n in valid_names
+    )
+    synth_prompt = (
+        f"You are auditioning wavetable candidates for a Vital recreation.\n\n"
+        f"Target timbre (described from an isolated listen):\n  {target_desc}\n\n"
+        f"Candidates (each described in isolation):\n{cand_block}\n\n"
+        f"Write ONE short sentence per candidate describing how its raw timbre relates to the "
+        f"target and whether it could serve as a building block once filters, envelopes, and "
+        f"effects are applied. Then on a final line, recommend which {n_osc_slots} candidate(s) "
+        f"together would best capture the target.\n\n"
+        f"Format per line: '<name>': <one-sentence assessment>\n"
+        f"Final line: 'RECOMMENDATION: [name1, name2, ...]: <one sentence on why this combination works>'\n"
+        f"Use the EXACT names above. No snake_case. Do not mention note pattern."
+    )
     try:
         r = _llm_post(
             f"{omni_server}/v1/chat/completions",
             {"model": omni_model,
-             "messages": [{"role": "user", "content": content}],
+             "messages": [{"role": "user", "content": synth_prompt}],
              "max_tokens": 900, "temperature": 0.4},
             timeout=timeout,
         )
         return r["choices"][0]["message"]["content"].strip()
     except Exception:
-        # Fallback: trivial per-candidate lines + selection
-        lines = [f'"{n}": Candidate evaluated against target.' for n in valid_names]
-        return "\n".join(lines) + f"\nRECOMMENDATION: [] : (fallback — audio model unavailable)"
+        lines = [f"'{n}': {cand_descs.get(n, 'Candidate wavetable.')}" for n in valid_names]
+        return "\n".join(lines) + "\nRECOMMENDATION: [] : (fallback — synth call failed)"
 
 
 def stage2_format_judge_response(
