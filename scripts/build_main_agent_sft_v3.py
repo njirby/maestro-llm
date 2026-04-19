@@ -1709,16 +1709,26 @@ def build_record(
         needed_gt_names = [n for n in needed_gt_names if n]
         all_gt_in_pool = bool(needed_gt_names) and all(n in pool for n in needed_gt_names)
         judge_verdict = "good" if all_gt_in_pool else "no_match"
-        # Pre-compute a static missing-character hint for the no_match case —
-        # the main builder doesn't call Omni per-sample (would slow builds);
-        # uses the GT wavetable name as a stand-in for the character. The
-        # actual judge subagent SFT does the perceptual derivation via Omni.
+        # Pre-compute the missing-character hint for the no_match case via the
+        # judge builder's Omni-derived helper. CRITICAL: must NOT leak the GT
+        # wavetable name into the main agent's view — the main agent at
+        # inference will only see what the judge tells it, and the judge
+        # speaks in perceptual terms ("metallic FM buzz"), never names of
+        # candidate wavetables. Earlier draft used the GT name directly,
+        # which leaked the answer into the main-agent SFT — regression that
+        # the model would memorise as a free shortcut.
         if judge_verdict == "no_match":
-            missing_character = (
-                f"raw timbre of '{needed_gt_names[0]}'"
-                if needed_gt_names
-                else "timbral character of the target"
-            )
+            try:
+                from scripts.build_judge_agent_sft_v3 import (  # type: ignore
+                    _derive_missing_character,
+                )
+                missing_character = _derive_missing_character(
+                    target_wav=target_audio_path,
+                    omni_server=args.omni_server,
+                    omni_model=args.omni_model,
+                )
+            except Exception:
+                missing_character = "the target's distinctive timbral character"
         else:
             missing_character = ""
 
