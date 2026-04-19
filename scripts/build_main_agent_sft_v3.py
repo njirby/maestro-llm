@@ -246,6 +246,29 @@ def inject_mistake(
     return info
 
 
+def corrupt_transcription_notes(notes: list[dict], rng) -> tuple[list[dict], dict]:
+    """Create a 'wrong' version of a transcribed note list by altering one
+    note's pitch by +-1 or +-2 semitones. Returns (wrong_notes, info).
+
+    Notes are dicts with keys {"pitch", "start_s", "dur_s", "velocity"}.
+    """
+    import copy
+    if not notes:
+        return notes, {}
+    wrong = copy.deepcopy(notes)
+    idx = rng.randrange(len(wrong))
+    delta = rng.choice([-2, -1, 1, 2])
+    original_pitch = int(wrong[idx]["pitch"])
+    wrong[idx]["pitch"] = max(0, min(127, original_pitch + delta))
+    return wrong, {
+        "note_idx": idx,                            # which note was altered (0-based)
+        "start_s": float(wrong[idx]["start_s"]),
+        "wrong_pitch": int(wrong[idx]["pitch"]),
+        "correct_pitch": int(original_pitch),
+        "delta_semitones": int(delta),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Vita rendering — fresh per-batch audio (no iter_wav dependency)
 # ---------------------------------------------------------------------------
@@ -1097,6 +1120,7 @@ def build_record(
     # so there is no `cat` of the transcription file.
     source_midi_path = entry.get("source_midi_path")
     transcription_summary_text = ""
+    _trans_mistake_info: dict | None = None
     if source_midi_path and Path(source_midi_path).exists():
         from scripts.build_transcription_agent_sft_v3 import (  # type: ignore
             load_notes_from_midi,
@@ -1115,8 +1139,30 @@ def build_record(
             _trans_output_file = f"/tmp/agents/{sample_id}/transcription.json"
             _trans_agent_id = f"melody_transcription_{sample_id}"
 
+            # Transcription-mistake decision: deterministic per sample_id hash
+            # so the same sample always gets the same mistake behavior across
+            # re-runs. When injected, the first Agent dispatch returns a
+            # corrupted note list; the main agent's verify-listen detects the
+            # mismatch and re-dispatches; the second attempt is correct.
+            import random as _trans_random
+            _trans_mistake_rate = float(getattr(args, "transcription_mistake_rate", 0.0) or 0.0)
+            _sid_int = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
+            _trans_mistake_rng = _trans_random.Random(int(args.seed) + _sid_int + 7919)
+            _trans_inject_mistake = (
+                _trans_mistake_rate > 0.0
+                and _trans_mistake_rng.random() < _trans_mistake_rate
+                and _trans_n_notes >= 3
+            )
+            _trans_wrong_notes: list[dict] | None = None
+            if _trans_inject_mistake:
+                _trans_wrong_notes, _trans_mistake_info = corrupt_transcription_notes(
+                    _trans_notes, _trans_mistake_rng,
+                )
+
             # Persist the transcription output file on disk so the path is real
             # at build time (live-exec grading and downstream tools can read it).
+            # In mistake samples we also persist the wrong-first-attempt file
+            # at a sibling path so its contents are inspectable.
             _trans_payload = {
                 "status": "completed",
                 "notes": _trans_notes,
@@ -1127,6 +1173,16 @@ def build_record(
             with open(_trans_output_file, "w") as _trf:
                 json.dump(_trans_payload, _trf)
                 _trf.write("\n")
+            if _trans_wrong_notes is not None:
+                _trans_wrong_file = f"/tmp/agents/{sample_id}/transcription_attempt_1.json"
+                with open(_trans_wrong_file, "w") as _trf:
+                    json.dump({
+                        "status": "completed",
+                        "notes": _trans_wrong_notes,
+                        "n_notes": len(_trans_wrong_notes),
+                        "duration_s": _trans_duration_s,
+                    }, _trf)
+                    _trf.write("\n")
 
             # Step 1: create a REAPER track + load Vital on it
             _trans_create_cmd = (
@@ -1158,12 +1214,134 @@ def build_record(
                 }, ensure_ascii=False),
             })
 
-            # Step 2: dispatch the melody_transcription subagent. The Agent
-            # tool_response reports completion + outputFile; we trust it and
-            # skip any per-note inspection on the main-agent side.
+            # Step 2a (mistake samples only): emit the WRONG first attempt —
+            # dispatch, verify-listen of the corrupted notes, detection, and
+            # the re-dispatch intro. This teaches the model to catch+recover
+            # from transcription errors instead of proceeding with bad notes.
+            if _trans_wrong_notes is not None and _trans_mistake_info is not None:
+                _n_wrong = len(_trans_wrong_notes)
+                _wrong_agent_id = _trans_agent_id + "_attempt1"
+                _wrong_file = f"/tmp/agents/{sample_id}/transcription_attempt_1.json"
+                _wrong_verify_wav = f"/tmp/agents/{sample_id}/transcription_verify_attempt_1.wav"
+
+                messages.append({
+                    "role": "assistant",
+                    "content": "Dispatching the transcription subagent to listen to the target and populate the track with MIDI notes.",
+                })
+                messages.append(_tool_call("Agent", {
+                    "subagent_type": "melody_transcription",
+                    "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
+                    "prompt": (
+                        f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
+                        f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the MIDI "
+                        f"notes on that track, and save the final note list as JSON to "
+                        f"{_wrong_file} with shape "
+                        f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
+                    ),
+                    "name": f"transcribe-{sample_id}-1",
+                }))
+                messages.append({
+                    "role": "tool_response",
+                    "content": json.dumps({
+                        "agentId": _wrong_agent_id,
+                        "subagentType": "melody_transcription",
+                        "status": "completed",
+                        "outputFile": _wrong_file,
+                        "n_notes": _n_wrong,
+                        "duration_s": _trans_duration_s,
+                    }, ensure_ascii=False),
+                })
+
+                # Render the WRONG verify probe and expose it so the agent can
+                # "hear" the mismatch. At build time we know which note is off
+                # and embed that in the detection narration for grounded text.
+                try:
+                    with serial_lock:
+                        synth.load_json(json.dumps(init_preset))
+                        _wrong_notes_pm = [
+                            __import__("pretty_midi").Note(
+                                velocity=int(n["velocity"]),
+                                pitch=int(n["pitch"]),
+                                start=float(n["start_s"]),
+                                end=float(n["start_s"] + n["dur_s"]),
+                            )
+                            for n in _trans_wrong_notes
+                        ]
+                        audio = _render_note_list(synth, _wrong_notes_pm, SAMPLE_RATE, tail_s=1.0)
+                    audio = trim_silence(audio, SAMPLE_RATE, min_duration_s=0.5)
+                    import soundfile as _sf
+                    Path(_wrong_verify_wav).parent.mkdir(parents=True, exist_ok=True)
+                    _sf.write(_wrong_verify_wav, audio.T, SAMPLE_RATE)
+                    audio_assets.append(_wrong_verify_wav)
+                    wrong_verify_ok = True
+                except Exception:
+                    wrong_verify_ok = False
+
+                messages.append({
+                    "role": "assistant",
+                    "content": (
+                        "Verifying the first transcription attempt — rendering the returned "
+                        "notes through the default Vital preset so I can compare the melody "
+                        "to the target."
+                    ),
+                })
+                _wrong_verify_cmd = (
+                    "python - <<'PY'\n"
+                    "import json\n"
+                    "from pathlib import Path\n"
+                    "import reapy\n"
+                    f"notes = {json.dumps(_trans_wrong_notes)}\n"
+                    "bpm = 120; ppb = 960\n"
+                    f"out = {json.dumps(_wrong_verify_wav)}\n"
+                    "with reapy.inside_reaper():\n"
+                    "    proj = reapy.Project()\n"
+                    "    rpr = reapy.reascript_api\n"
+                    "    Path(out).parent.mkdir(parents=True, exist_ok=True)\n"
+                    "    print(json.dumps({'status': 'ok', 'wav': out, 'notes': len(notes)}))\n"
+                    "PY"
+                )
+                messages.append(_tool_call("bash", {"command": _wrong_verify_cmd}))
+                messages.append({
+                    "role": "tool_response",
+                    "content": json.dumps({
+                        "status": "ok",
+                        "wav": "<audio>" if wrong_verify_ok else _wrong_verify_wav,
+                        "path": _wrong_verify_wav,
+                        "notes": _n_wrong,
+                    }, ensure_ascii=False),
+                })
+
+            # Step 2 (primary dispatch): when no mistake was injected this is
+            # the one-and-only transcription call. When a mistake was injected
+            # this becomes the RETRY after detection; we merge the detection
+            # narration + re-dispatch intro into a single assistant turn to
+            # satisfy the no-adjacent-assistants validator.
+            _retry_note = ""
+            if _trans_wrong_notes is not None and _trans_mistake_info is not None:
+                _m = _trans_mistake_info
+                _direction = "high" if _m["delta_semitones"] > 0 else "low"
+                _abs_delta = abs(_m["delta_semitones"])
+                _retry_note = (
+                    f" Previous attempt had a pitch error on note "
+                    f"{_m['note_idx'] + 1} at ~{_m['start_s']:.2f}s (off by "
+                    f"{_m['delta_semitones']:+d} semitones). Please re-listen "
+                    f"and correct that note."
+                )
+                _dispatch_prose = (
+                    f"The verify render doesn't match — note {_m['note_idx'] + 1} at "
+                    f"~{_m['start_s']:.2f}s sounds {_abs_delta} semitone"
+                    f"{'s' if _abs_delta != 1 else ''} too {_direction}. "
+                    f"Re-dispatching the transcription subagent with a correction hint "
+                    f"so it can fix the off-pitch note."
+                )
+            else:
+                _dispatch_prose = (
+                    "Dispatching the transcription subagent to listen to the target "
+                    "and populate the track with MIDI notes."
+                )
             messages.append({
                 "role": "assistant",
-                "content": "Dispatching the transcription subagent to listen to the target and populate the track with MIDI notes.",
+                "content": _dispatch_prose,
             })
             messages.append(_tool_call("Agent", {
                 "subagent_type": "melody_transcription",
@@ -1173,9 +1351,9 @@ def build_record(
                     f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the MIDI "
                     f"notes on that track, and save the final note list as JSON to "
                     f"{_trans_output_file} with shape "
-                    f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
+                    f'{{"notes": [...], "n_notes": N, "duration_s": X}}.' + _retry_note
                 ),
-                "name": f"transcribe-{sample_id}",
+                "name": f"transcribe-{sample_id}-2" if _retry_note else f"transcribe-{sample_id}",
             }))
             messages.append({
                 "role": "tool_response",
@@ -1257,8 +1435,12 @@ def build_record(
                     }, ensure_ascii=False),
                 })
 
+            _verify_prefix = (
+                "Transcription verified on retry"
+                if _trans_wrong_notes is not None else "Transcription verified"
+            )
             transcription_summary_text = (
-                f"Transcription verified — {_trans_n_notes} notes match the target "
+                f"{_verify_prefix} — {_trans_n_notes} notes match the target "
                 f"melody. MIDI ready on track {_trans_track_idx}. "
             )
 
@@ -1936,6 +2118,8 @@ def build_record(
             "diagnosis_subsystems_truth": subsystems_truth,
             "injected_mistake": injected_mistake,
             "mistake_caught": mistake_caught if injected_mistake else None,
+            "transcription_mistake": _trans_mistake_info,
+            "transcription_mistake_caught": bool(_trans_mistake_info),
         },
     }
 
@@ -1977,6 +2161,12 @@ def main() -> None:
 
     ap.add_argument("--mistake-rate", type=float, default=0.20,
         help="Probability of injecting one deliberate overshoot per sample (default 0.20).")
+    ap.add_argument("--transcription-mistake-rate", type=float, default=0.15,
+        help="Probability of injecting a transcription mistake per sample (default 0.15). "
+             "When injected, the first transcription dispatch returns notes with one pitch "
+             "altered by +-1-2 semitones; the main agent's verify-listen detects the "
+             "mismatch and re-dispatches transcription with a hint; the second attempt is "
+             "correct. Teaches the model to catch+recover from transcription errors.")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
     ap.add_argument("--omni-server", default="", help="Omni audio server URL (empty = template fallback).")
