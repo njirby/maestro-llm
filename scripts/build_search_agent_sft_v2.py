@@ -280,36 +280,47 @@ def stage2_batch_notes(
 
     Stage 2 sees the labels (Selected / Not selected) and writes reasoning
     that ALIGNS with the correct decision. It never decides the selection itself.
+
+    GT-grounding is provided as out-of-line context, NOT as an inline marker on
+    the candidate line — Stage-2 must NOT emit the literal "GT" or copy the
+    processing-chain description verbatim. It uses the chain to inform its
+    reasoning about the Selected candidates without naming which are GT.
     """
-    # Build candidate display with pre-determined labels
-    candidate_lines = []
-    for name in candidate_names:
-        is_gt = name in gt_names_in_batch
-        selected = selection_labels.get(name, False)
-        label = "Selected" if selected else "Not selected"
-        if is_gt and gt_transform_description:
-            candidate_lines.append(
-                f"  '{name}': {label} (GT — target preset processes this with: {gt_transform_description})"
-            )
-        else:
-            candidate_lines.append(f"  '{name}': {label}")
+    # Build candidate display with pre-determined labels — NO GT marker.
+    candidate_lines = [
+        f"  '{name}': {('Selected' if selection_labels.get(name, False) else 'Not selected')}"
+        for name in candidate_names
+    ]
     candidates_block = "\n".join(candidate_lines)
 
+    # Out-of-line GT-grounding context — used to inform reasoning but never
+    # to identify which candidate is "right."
+    gt_context_block = ""
+    if gt_transform_description:
+        gt_context_block = (
+            f"\nTarget processing chain (for grounding your reasoning about Selected "
+            f"candidates — DO NOT quote this description verbatim, DO NOT mention "
+            f"'GT' or 'ground truth', and DO NOT identify any candidate as the "
+            f"correct answer):\n  {gt_transform_description}\n"
+        )
+
     prompt = (
-        f"You are a sound design assistant evaluating wavetable candidates for a "
+        f"You are a sound design assistant evaluating wavetable candidates for "
         f"the target sound.\n\n"
-        f"Audio observations from listening:\n{omni_observations}\n\n"
+        f"Audio observations from listening:\n{omni_observations}\n"
+        f"{gt_context_block}\n"
         f"Candidates and their selection status (pre-determined):\n{candidates_block}\n\n"
         f"Write EXACTLY {len(candidate_names)} lines, one per candidate.\n"
         f"Format: '<name>': <one sentence assessment>. Selected / Not selected.\n\n"
         f"Rules:\n"
         f"- Use the EXACT names above (no variants, no abbreviations).\n"
         f"- For Selected candidates: explain what raw quality makes it compatible "
-        f"with the target after synthesis processing (filtering, enveloping, effects).\n"
+        f"with the target after synthesis processing. Reference at least one specific "
+        f"transform from the processing chain (e.g. 'a low-pass filter at moderate "
+        f"cutoff would tame this brightness') without quoting the chain verbatim.\n"
         f"- For Not selected candidates: explain what makes it incompatible.\n"
-        f"- For GT candidates (marked with processing details): reference at least 2 "
-        f"specific transforms from the description and explain how they reshape the "
-        f"raw wavetable toward the target.\n"
+        f"- DO NOT use the words 'GT', 'ground truth', 'oracle', 'correct answer', or "
+        f"any phrasing that identifies a candidate as the known right one.\n"
         f"- Copy the Selected/Not selected label exactly as given above."
     )
     try:
@@ -728,8 +739,12 @@ def main() -> None:
         help="Number of wavetables per search agent slice (default 48).")
     ap.add_argument("--candidates-per-batch", type=int, default=8)
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
-    ap.add_argument("--shortlist-dir", type=Path, default=None,
-        help="Directory to write per-agent shortlist JSON files (used by main agent's cat tool calls).")
+    ap.add_argument("--shortlist-dir", type=Path,
+        default=Path("/tmp/agent_sft/search_shortlists"),
+        help="Directory to write per-agent shortlist JSON files. Each agent's "
+             "rollout ends with a bash tool_call that writes a shortlist file "
+             "to this dir (claw-code-style file-handoff to the main agent at "
+             "inference). Pass an empty string to disable.")
     ap.add_argument("--omni-server", default="")
     ap.add_argument("--omni-model", default="Qwen/Qwen3-Omni-30B-A3B-Instruct")
     ap.add_argument("--stage2-server", default="")

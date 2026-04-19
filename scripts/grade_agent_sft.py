@@ -75,6 +75,30 @@ from scripts.build_main_agent_sft_v2 import _json_key_to_display
 
 _SNAKE_CASE_RE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+){2,}\b")
 _BOLD_HEADER_RE = re.compile(r"\*\*(HEARD|HYPOTHESIS|PLAN):\*\*")
+
+# Markers that indicate the assistant prose is leaking oracle/GT info that
+# the model wouldn't have at inference time. Catches phrases like
+# "(GT — target processes this with: ...)" or "ground truth:" or
+# "this is the correct answer".
+_GT_LEAK_MARKERS = (
+    r"\bgt\b\s*[—\-:]",
+    r"\(gt\b",
+    r"\bground\s+truth\b",
+    r"\boracle\b",
+    r"\bcorrect\s+answer\b",
+    r"\bknown\s+(right|correct)\b",
+    r"\bthis\s+is\s+the\s+(target|gt)\b",
+)
+_GT_LEAK_RE = re.compile("|".join(_GT_LEAK_MARKERS), re.IGNORECASE)
+
+
+def _gt_leak_score(assistant_turns: list[str]) -> float:
+    """Return 1.0 when no oracle/GT-leak markers appear in any assistant turn,
+    else 0.0. Markers include 'GT —', '(GT', 'ground truth', 'oracle',
+    'correct answer', etc. — phrases that identify a candidate or value as
+    the known-right answer at inference, which the model shouldn't be able
+    to do."""
+    return 0.0 if any(_GT_LEAK_RE.search(t or "") for t in assistant_turns) else 1.0
 _NUMERIC_SCORE_RE = re.compile(r"\d\.\d{3}")
 _SECTION_HEADERS = ("HEARD:", "HYPOTHESIS:", "PLAN:")
 
@@ -1826,21 +1850,24 @@ def score_main_v3_record(
             other_narrations_by_subsystem=other_narrations_by_subsystem,
         )
 
+    no_gt_leak = _gt_leak_score(assistant_turns)
+
     # -- Overall weights (structural 50%, LLM-judge 50% when enabled) --
     weights: dict[str, float] = {
         "batch_param_alignment": 0.15,
         "diagnosis_subsystem_coverage": 0.10,
         "clap_net_improvement": 0.15,
         "verdict_grounded": 0.05,
+        "no_gt_leak": 0.05,
         "snake_case_clean": 0.025,
         "format_consistent": 0.025,
         # LLM judge dimensions — enabled when llm_judge_server is set.
-        "llm_narration_plan_ref": 0.08,
-        "llm_narration_param_specific": 0.07,
+        "llm_narration_plan_ref": 0.05,
+        "llm_narration_param_specific": 0.05,
         "llm_narration_templateness": 0.05,
         "llm_narration_no_hallucination": 0.10,
         "llm_observations_audio_grounded": 0.10,
-        "llm_verdict_residual_grounded": 0.07,
+        "llm_verdict_residual_grounded": 0.05,
         "llm_verdict_novelty": 0.05,
     }
     if mistake_recovery is not None:
@@ -1853,6 +1880,7 @@ def score_main_v3_record(
         "snake_case_clean": snake_case_clean,
         "format_consistent": format_consistent,
         "verdict_grounded": verdict_grounded,
+        "no_gt_leak": no_gt_leak,
         "mistake_recovery": mistake_recovery,
         "llm_narration_plan_ref": llm_scores.get("llm_narration_plan_ref"),
         "llm_narration_param_specific": llm_scores.get("llm_narration_param_specific"),
@@ -2051,15 +2079,18 @@ def score_search_v2_record(
         sample_rate=audio_grounding_sample_rate,
     )
 
+    no_gt_leak = _gt_leak_score(assistant_turns)
+
     weights: dict[str, float] = {
-        "gt_recovery": 0.35,
+        "gt_recovery": 0.30,
         "shortlist_file_written": 0.20,
         "llm_candidates_audio_grounded": 0.15,
         "has_render_probes": 0.10,
         "shortlist_nonempty": 0.10,
-        "closing_assistant": 0.05,
-        "snake_case_clean": 0.025,
-        "format_consistent": 0.025,
+        "no_gt_leak": 0.10,
+        "closing_assistant": 0.025,
+        "snake_case_clean": 0.0125,
+        "format_consistent": 0.0125,
     }
     raw: dict[str, Any] = {
         "gt_recovery": gt_recovery,
@@ -2067,6 +2098,7 @@ def score_search_v2_record(
         "llm_candidates_audio_grounded": audio_grounded_mean,
         "has_render_probes": has_render_probes,
         "shortlist_nonempty": shortlist_nonempty,
+        "no_gt_leak": no_gt_leak,
         "closing_assistant": closing_assistant,
         "snake_case_clean": snake_case_clean,
         "format_consistent": format_consistent,
