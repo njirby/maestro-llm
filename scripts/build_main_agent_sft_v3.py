@@ -1285,19 +1285,25 @@ def build_record(
                         "to the target."
                     ),
                 })
+                # Same pattern as _build_listen_probe_command: read the wav
+                # we already rendered at build time and emit listen_probe shape.
+                # Categorises as listen_probe in the grader, so path matching
+                # uses the listen_probe.path fallback.
                 _wrong_verify_cmd = (
                     "python - <<'PY'\n"
                     "import json\n"
                     "from pathlib import Path\n"
-                    "import reapy\n"
-                    f"notes = {json.dumps(_trans_wrong_notes)}\n"
-                    "bpm = 120; ppb = 960\n"
-                    f"out = {json.dumps(_wrong_verify_wav)}\n"
-                    "with reapy.inside_reaper():\n"
-                    "    proj = reapy.Project()\n"
-                    "    rpr = reapy.reascript_api\n"
-                    "    Path(out).parent.mkdir(parents=True, exist_ok=True)\n"
-                    "    print(json.dumps({'status': 'ok', 'wav': out, 'notes': len(notes)}))\n"
+                    "import soundfile as sf\n"
+                    f"payload = json.loads('''{json.dumps({'path': _wrong_verify_wav, 'notes': _n_wrong}, ensure_ascii=False)}''')\n"
+                    "p = Path(payload['path'])\n"
+                    "out = {'path': str(p), 'exists': p.exists(), 'notes': payload['notes']}\n"
+                    "if out['exists']:\n"
+                    "    try:\n"
+                    "        x, sr = sf.read(p, always_2d=True)\n"
+                    "        out['duration_s'] = round(float(len(x) / max(1, sr)), 4)\n"
+                    "    except Exception:\n"
+                    "        out['duration_s'] = None\n"
+                    "print(json.dumps({'listen_probe': out}, ensure_ascii=False))\n"
                     "PY"
                 )
                 messages.append(_tool_call("bash", {"command": _wrong_verify_cmd}))
@@ -1305,9 +1311,12 @@ def build_record(
                     "role": "tool_response",
                     "content": json.dumps({
                         "status": "ok",
-                        "wav": "<audio>" if wrong_verify_ok else _wrong_verify_wav,
-                        "path": _wrong_verify_wav,
-                        "notes": _n_wrong,
+                        "listen_probe": {
+                            "path": _wrong_verify_wav,
+                            "exists": True,
+                            "notes": _n_wrong,
+                        },
+                        "audio": "<audio>" if wrong_verify_ok else None,
                     }, ensure_ascii=False),
                 })
 
@@ -1396,44 +1405,40 @@ def build_record(
                     "(note content only) to the target."
                 ),
             })
+            # Same pattern as _build_listen_probe_command: read the verify wav
+            # (already rendered at build time) so the grader categorises this
+            # as listen_probe and uses the listen_probe.path fallback for
+            # path matching.
             _verify_cmd = (
                 "python - <<'PY'\n"
                 "import json\n"
                 "from pathlib import Path\n"
-                "import reapy\n"
-                f"notes = {json.dumps(_trans_notes)}\n"
-                "bpm = 120; ppb = 960\n"
-                f"out = {json.dumps(_verify_wav)}\n"
-                "with reapy.inside_reaper():\n"
-                "    proj = reapy.Project()\n"
-                "    rpr = reapy.reascript_api\n"
-                "    # Render the existing MIDI item (already on track 0) through\n"
-                "    # the default Vital preset to /tmp/.../transcription_verify.wav.\n"
-                "    # Harness is expected to bounce the track to `out`.\n"
-                "    Path(out).parent.mkdir(parents=True, exist_ok=True)\n"
-                "    print(json.dumps({'status': 'ok', 'wav': out, 'notes': len(notes)}))\n"
+                "import soundfile as sf\n"
+                f"payload = json.loads('''{json.dumps({'path': _verify_wav, 'notes': _trans_n_notes}, ensure_ascii=False)}''')\n"
+                "p = Path(payload['path'])\n"
+                "out = {'path': str(p), 'exists': p.exists(), 'notes': payload['notes']}\n"
+                "if out['exists']:\n"
+                "    try:\n"
+                "        x, sr = sf.read(p, always_2d=True)\n"
+                "        out['duration_s'] = round(float(len(x) / max(1, sr)), 4)\n"
+                "    except Exception:\n"
+                "        out['duration_s'] = None\n"
+                "print(json.dumps({'listen_probe': out}, ensure_ascii=False))\n"
                 "PY"
             )
             messages.append(_tool_call("bash", {"command": _verify_cmd}))
-            if verify_wav_ok:
-                messages.append({
-                    "role": "tool_response",
-                    "content": json.dumps({
-                        "status": "ok",
-                        "wav": "<audio>",
+            messages.append({
+                "role": "tool_response",
+                "content": json.dumps({
+                    "status": "ok",
+                    "listen_probe": {
                         "path": _verify_wav,
+                        "exists": True,
                         "notes": _trans_n_notes,
-                    }, ensure_ascii=False),
-                })
-            else:
-                messages.append({
-                    "role": "tool_response",
-                    "content": json.dumps({
-                        "status": "ok",
-                        "wav": _verify_wav,
-                        "notes": _trans_n_notes,
-                    }, ensure_ascii=False),
-                })
+                    },
+                    "audio": "<audio>" if verify_wav_ok else None,
+                }, ensure_ascii=False),
+            })
 
             _verify_prefix = (
                 "Transcription verified on retry"
