@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import multiprocessing
 import os
@@ -36,11 +37,15 @@ from maestro.render.vital import (
     SAMPLE_RATE,
     _render_note_list,
     apply_preset,
+    load_midi_clip_catalog,
     make_gt_notes,
-    make_probe_notes,
+    pick_midi_clip,
     probe_audibility,
     trim_silence,
 )
+
+# Process-local catalog cache (loaded once per worker via _worker_init).
+_midi_catalog = None
 
 try:
     from tqdm import tqdm
@@ -77,13 +82,15 @@ def _write_notes_to_midi(notes: list, out_path: Path, tempo: float = 120.0) -> N
     pm.write(str(out_path))
 
 
-def _worker_init():
+def _worker_init(midi_catalog_path: str | None = None):
     """Pool initializer: create ONE vita.Synth and suppress SIGINT."""
-    global _vital_instance
+    global _vital_instance, _midi_catalog
     os.setpgrp()
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     from maestro.render.vital import _load_vital
     _vital_instance = _load_vital()
+    if midi_catalog_path:
+        _midi_catalog = load_midi_clip_catalog(midi_catalog_path)
 
 
 def _render_sample(job: dict) -> dict | None:
@@ -165,9 +172,26 @@ def _render_sample(job: dict) -> dict | None:
         # ------------------------------------------------------------------
         # 2. Build source MIDI + render default/init probe clip for baseline
         # ------------------------------------------------------------------
+        # Pick real MIDI from the Lakh catalog when available; fall back to the
+        # synthetic triad pattern otherwise. Probe notes = GT notes (both
+        # target and probe render the same melody so preset-comparisons are
+        # clean — the only variable between them is the preset).
         clip_dur = float(job.get("clip_duration_s", 10.0))
-        probe_notes = make_probe_notes(archetype, clip_duration_s=clip_dur)
-        gt_notes = make_gt_notes(clip_duration_s=clip_dur)
+        midi_clip_meta: dict | None = None
+        gt_notes = None
+        if _midi_catalog:
+            import random as _random
+            # Deterministic per-sample selection
+            seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
+            _rng = _random.Random(seed)
+            picked_notes, midi_clip_meta = pick_midi_clip(archetype, _midi_catalog, _rng)
+            if picked_notes:
+                gt_notes = picked_notes
+                clip_dur = max(n.end for n in gt_notes) + 0.25
+        if gt_notes is None:
+            # Fallback to the legacy fixed 4-triad pattern
+            gt_notes = make_gt_notes(clip_duration_s=clip_dur)
+        probe_notes = gt_notes  # target and probe share the melody
         _probe_tail_s = max(0.1, 1.0 * (clip_dur / 10.0))
         _gt_tail_s = max(0.2, 2.0 * (clip_dur / 10.0))
         midi_dir = audio_dir.parent / "midi"
@@ -294,6 +318,19 @@ def _render_sample(job: dict) -> dict | None:
             "source_midi_path": str(source_midi_path),
             "start_type": start_type,
         }
+        if midi_clip_meta is not None:
+            entry["source_midi_origin"] = {
+                "source": "lakh",
+                "midi_path": midi_clip_meta["midi_path"],
+                "track_idx": midi_clip_meta["track_idx"],
+                "program": midi_clip_meta["program"],
+                "start_s_in_source": midi_clip_meta["start_s"],
+                "duration_s": midi_clip_meta["duration_s"],
+                "n_notes": midi_clip_meta["n_notes"],
+                "pitch_range": [midi_clip_meta["pitch_min"], midi_clip_meta["pitch_max"]],
+                "is_monophonic": midi_clip_meta["is_monophonic"],
+                "bpm": midi_clip_meta["bpm"],
+            }
         if isinstance(compare, dict):
             entry["final_vs_target_summary"] = compare.get("summary")
             entry["final_vs_target_top_noisy"] = compare.get("noisy", [])[:12]
@@ -358,6 +395,15 @@ def parse_args() -> argparse.Namespace:
         "--clip-duration-s", type=float, default=10.0,
         help="Duration of GT and probe audio clips in seconds (default 10.0, recommend 5.0 "
              "to halve audio token budget for training)",
+    )
+    p.add_argument(
+        "--midi-catalog", type=Path, default=None,
+        help="Optional path to a Lakh MIDI clip catalog JSONL (from "
+             "scripts/build_midi_clip_catalog.py). When set, per-sample target "
+             "MIDI is picked from the catalog with archetype-appropriate "
+             "filters; probes share the same melody so preset comparisons "
+             "stay clean. When unset, falls back to the synthetic 4-triad "
+             "pattern (make_gt_notes).",
     )
     p.add_argument(
         "--random-start-prob", type=float, default=0.0,
@@ -479,8 +525,11 @@ def main() -> None:
     max_in_flight = args.jobs * 4
 
     try:
+        catalog_path = str(args.midi_catalog) if getattr(args, "midi_catalog", None) else None
         with ProcessPoolExecutor(
-            max_workers=args.jobs, initializer=_worker_init
+            max_workers=args.jobs,
+            initializer=_worker_init,
+            initargs=(catalog_path,),
         ) as executor:
             active: set = set()
             job_iter = iter(jobs)

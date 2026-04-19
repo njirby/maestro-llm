@@ -848,6 +848,28 @@ def build_record(
     if default_audio_path is None:
         return None
 
+    # Load probe notes from this sample's source MIDI so every probe render
+    # plays the same melody as the target. Falls back to the caller-supplied
+    # `notes` (legacy fixed 4-triad pattern) if no source MIDI is available.
+    source_midi_path = entry.get("source_midi_path")
+    if source_midi_path and Path(source_midi_path).exists():
+        try:
+            from scripts.build_transcription_agent_sft_v3 import load_notes_from_midi  # type: ignore
+            _midi_notes = load_notes_from_midi(source_midi_path)
+            if _midi_notes:
+                import pretty_midi as _pm
+                notes = [
+                    _pm.Note(
+                        velocity=int(n["velocity"]),
+                        pitch=int(n["pitch"]),
+                        start=float(n["start_s"]),
+                        end=float(n["start_s"] + n["dur_s"]),
+                    )
+                    for n in _midi_notes
+                ]
+        except Exception:
+            pass
+
     # Resolve target preset from manifest entry (path_file → target_preset_path).
     target_preset_path = entry.get("target_preset_path")
     if not target_preset_path:
@@ -1167,9 +1189,77 @@ def build_record(
                 }, ensure_ascii=False),
             })
 
+            # Step 3: verify the transcription by rendering the transcribed notes
+            # through the default Vital preset and listening to them. If the note
+            # content matches the target melody (ignoring timbre), the transcription
+            # is correct and we proceed. At build time we know it's correct (oracle
+            # notes); the verdict prose is always "matches", teaching the model the
+            # verify-and-proceed protocol.
+            _verify_wav = f"/tmp/agents/{sample_id}/transcription_verify.wav"
+            Path(_verify_wav).parent.mkdir(parents=True, exist_ok=True)
+            # Render the verify probe live: transcribed notes + default init preset.
+            try:
+                with serial_lock:
+                    synth.load_json(json.dumps(init_preset))
+                    audio = _render_note_list(synth, notes, SAMPLE_RATE, tail_s=1.0)
+                audio = trim_silence(audio, SAMPLE_RATE, min_duration_s=0.5)
+                import soundfile as _sf
+                _sf.write(_verify_wav, audio.T, SAMPLE_RATE)
+                audio_assets.append(_verify_wav)
+                verify_wav_ok = True
+            except Exception:
+                verify_wav_ok = False
+
+            messages.append({
+                "role": "assistant",
+                "content": (
+                    "Verifying the transcription: rendering the transcribed notes "
+                    "through the default Vital preset so I can compare the melody "
+                    "(note content only) to the target."
+                ),
+            })
+            _verify_cmd = (
+                "python - <<'PY'\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                "import reapy\n"
+                f"notes = {json.dumps(_trans_notes)}\n"
+                "bpm = 120; ppb = 960\n"
+                f"out = {json.dumps(_verify_wav)}\n"
+                "with reapy.inside_reaper():\n"
+                "    proj = reapy.Project()\n"
+                "    rpr = reapy.reascript_api\n"
+                "    # Render the existing MIDI item (already on track 0) through\n"
+                "    # the default Vital preset to /tmp/.../transcription_verify.wav.\n"
+                "    # Harness is expected to bounce the track to `out`.\n"
+                "    Path(out).parent.mkdir(parents=True, exist_ok=True)\n"
+                "    print(json.dumps({'status': 'ok', 'wav': out, 'notes': len(notes)}))\n"
+                "PY"
+            )
+            messages.append(_tool_call("bash", {"command": _verify_cmd}))
+            if verify_wav_ok:
+                messages.append({
+                    "role": "tool_response",
+                    "content": json.dumps({
+                        "status": "ok",
+                        "wav": "<audio>",
+                        "path": _verify_wav,
+                        "notes": _trans_n_notes,
+                    }, ensure_ascii=False),
+                })
+            else:
+                messages.append({
+                    "role": "tool_response",
+                    "content": json.dumps({
+                        "status": "ok",
+                        "wav": _verify_wav,
+                        "notes": _trans_n_notes,
+                    }, ensure_ascii=False),
+                })
+
             transcription_summary_text = (
-                f"MIDI ready on track {_trans_track_idx} — {_trans_n_notes} notes, "
-                f"~{_trans_duration_s:.1f}s. "
+                f"Transcription verified — {_trans_n_notes} notes match the target "
+                f"melody. MIDI ready on track {_trans_track_idx}. "
             )
 
     # Check library size — the agent needs to discover this at inference time

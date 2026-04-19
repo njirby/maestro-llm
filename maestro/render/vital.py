@@ -263,6 +263,98 @@ def render_probe_note(
 # Note helpers
 # ---------------------------------------------------------------------------
 
+# Archetype filters for picking MIDI clips from a Lakh-style catalog. Each
+# filter is applied lazily at sample-render time; the catalog is loaded once.
+# Criteria are soft: we filter permissively and random-pick, which gives
+# diverse-enough targets without overfitting to a narrow sub-distribution.
+_ARCHETYPE_FILTERS = {
+    "bass":     dict(pitch_max_max=57, is_monophonic=True,  density_min=0.5, density_max=8.0),
+    "lead":     dict(pitch_min_min=55, pitch_max_min=67,    is_monophonic=True,  density_min=1.0, density_max=10.0),
+    "pad":      dict(pitch_min_min=36, pitch_max_max=96,    avg_note_length_min=1.0, density_max=2.0),
+    "keys":     dict(pitch_min_min=36, pitch_max_max=96,    density_min=0.5, density_max=6.0),
+    "pluck":    dict(pitch_min_min=36, pitch_max_max=84,    density_min=1.5, density_max=8.0),
+    "sequence": dict(pitch_min_min=24, pitch_max_max=84,    is_monophonic=True,  density_min=2.0),
+}
+
+
+def load_midi_clip_catalog(path) -> list[dict]:
+    """Load a JSONL catalog built by scripts/build_midi_clip_catalog.py."""
+    import json
+    entries: list[dict] = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+    return entries
+
+
+def _clip_matches_archetype(clip: dict, archetype: str) -> bool:
+    filt = _ARCHETYPE_FILTERS.get(archetype, {})
+    if "pitch_max_max" in filt and clip["pitch_max"] > filt["pitch_max_max"]:
+        return False
+    if "pitch_min_min" in filt and clip["pitch_min"] < filt["pitch_min_min"]:
+        return False
+    if "pitch_max_min" in filt and clip["pitch_max"] < filt["pitch_max_min"]:
+        return False
+    if "avg_note_length_min" in filt and clip["avg_note_length_s"] < filt["avg_note_length_min"]:
+        return False
+    if "density_min" in filt and clip["note_density"] < filt["density_min"]:
+        return False
+    if "density_max" in filt and clip["note_density"] > filt["density_max"]:
+        return False
+    if filt.get("is_monophonic") is True and not clip["is_monophonic"]:
+        return False
+    return True
+
+
+def _clip_to_notes(clip: dict) -> list:
+    """Load the clip's notes from its source MIDI file, re-offset to t=0."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pm = pretty_midi.PrettyMIDI(clip["midi_path"])
+    inst = pm.instruments[clip["track_idx"]]
+    start = float(clip["start_s"])
+    end = start + float(clip["duration_s"])
+    notes = []
+    for n in inst.notes:
+        if n.start >= start - 1e-6 and n.end <= end + 1e-6:
+            notes.append(pretty_midi.Note(
+                velocity=int(n.velocity),
+                pitch=int(n.pitch),
+                start=round(float(n.start - start), 4),
+                end=round(float(n.end - start), 4),
+            ))
+    return sorted(notes, key=lambda n: (n.start, n.pitch))
+
+
+def pick_midi_clip(
+    archetype: str,
+    catalog: list[dict],
+    rng,
+    max_tries: int = 16,
+) -> tuple[list, dict] | tuple[None, None]:
+    """Random-sample an archetype-matching clip and return (notes, clip_meta).
+
+    Returns (None, None) if no clip matches after max_tries random picks from
+    the archetype-filtered pool. `rng` is a random.Random instance for
+    reproducibility.
+    """
+    pool = [c for c in catalog if _clip_matches_archetype(c, archetype)]
+    if not pool:
+        return None, None
+    for _ in range(max_tries):
+        clip = rng.choice(pool)
+        try:
+            notes = _clip_to_notes(clip)
+        except Exception:
+            continue
+        if len(notes) < 4:
+            continue
+        return notes, clip
+    return None, None
+
+
 def make_gt_notes(clip_duration_s: float = 10.0) -> list:
     """4 major triads spanning C2-C5, scaled to clip_duration_s (default 10s → 2.5s/triad)."""
     roots = [36, 48, 60, 72]  # C2, C3, C4, C5
