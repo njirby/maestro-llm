@@ -788,6 +788,25 @@ All runs below used 4x24GB GPUs with LoRA (`rank=8`, `alpha=32`, `target_modules
   - `outputs/qwen25_omni_lora_megatron_probe/omni7b_single/len32768_localhf/v0-20260408-173018/`
   - `outputs/qwen25_omni_lora_megatron_probe/omni7b_single/len32768_localhf_4steps/v0-20260408-174044/`
 
+##### LoRA Rank Capacity Sweep @ 32k (April 19, 2026)
+
+Viability criterion used here: **must complete 4 training steps** (`train_iters=4`) and write `checkpoint-4`.
+
+- Confirmed passes at:
+  - `rank=256` (`memory(GiB)=13.87`)
+  - `rank=320` (`memory(GiB)=14.62`)
+  - `rank=512` (`memory(GiB)=17.1`)
+  - `rank=768` (`memory(GiB)=21.14`)
+- Confirmed failures at:
+  - `rank=896` OOM after step 1 (`memory(GiB)=20.36` at step 1; later forward matmul OOM)
+  - `rank=1024` OOM before completing step 1 (optimizer state allocation OOM)
+- Current bound on this 4x24GB setup (`tp=4`, `sp=true`, `gbs=4`, packing on):  
+  **max verified viable LoRA rank at 32k is `768`; first verified failing rank is `896`.**
+- Artifacts:
+  - `outputs/qwen25_omni_lora_megatron_probe/omni7b_rank_sweep_32k_4steps_20260419_000007/`
+  - `outputs/qwen25_omni_lora_megatron_probe/omni7b_rank_sweep_32k_4steps_fast_20260419_001943/`
+  - `outputs/qwen25_omni_lora_megatron_probe/omni7b_rank_sweep_32k_4steps_mid_20260419_004211/`
+
 #### Qwen3-Omni-30B-A3B-Instruct (MoE)
 
 - Important: on 4 GPUs, this model required `--expert_model_parallel_size 4` for stable Megatron execution.
@@ -823,6 +842,23 @@ All runs below used 4x24GB GPUs with LoRA (`rank=8`, `alpha=32`, `target_modules
 - A/B artifacts:
   - `outputs/qwen25_omni_lora_megatron_probe/omni30b_lora_vs_qlora_ab/lora_len16000_1step/`
   - `outputs/qwen25_omni_lora_megatron_probe/omni30b_lora_vs_qlora_ab/qlora_len16000_1step/`
+
+##### Repo-local patched path (April 19, 2026)
+
+- This repo now includes an experimental Megatron runtime patch path for `bnb` requests:
+  - launcher: `scripts/train_qwen25_omni_lora_megatron.py`
+  - patch/audit: `tools/swift_megatron_audit/`
+- Current launcher contract for `--quant_method bnb`:
+  - auto-enables experimental TP BNB replacement
+  - enforces strict effective-quantization audit
+  - fails if patch replacement / `Linear4bit` module census / `torch.uint8` params are missing
+  - enforces a minimum effective uint8 parameter ratio (default `0.01`) so low-coverage runs fail fast
+- Artifacts written per run include:
+  - `effective_quantization_rank*.json`
+  - `bnb_tp_patch_rank*.json`
+  - `bnb_effective_summary_rank0.json`
+- The launcher also reaps process groups and performs post-run orphan checks to avoid stale 0%-util workers retaining VRAM.
+- Current 30B status: an experimental grouped MoE replacement path (`TE*GroupedLinear`) has been added, but end-to-end 30B validation of grouped coverage is still pending; until confirmed, expect quantization coverage to potentially remain too small for large VRAM savings.
 
 #### TP/CP Topology Probe (TP=2, CP=2)
 
