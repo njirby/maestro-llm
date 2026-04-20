@@ -498,7 +498,8 @@ def build_judge_record(
 
     pool_str = ", ".join(f'"{n}"' for n in pool)
     names_arg = ",".join(json.dumps(n) for n in pool)
-    judge_agent_id = f"wavetable_judge_{sample_id}"
+    from scripts.agent_sft_common import make_agent_id  # type: ignore
+    judge_agent_id = make_agent_id(sample_id, "wavetable_judge")
     judge_output_file = judge_output_dir / f"{judge_agent_id}.json"
     judge_output_file.parent.mkdir(parents=True, exist_ok=True)
 

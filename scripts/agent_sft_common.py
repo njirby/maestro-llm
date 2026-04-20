@@ -22,6 +22,94 @@ from scripts.build_wavetable_retrieval_baseline import (
 )
 
 
+# --------------------------------------------------------------------------
+# Sub-agent dispatch convention (matches claw-code's runtime harness)
+#
+# claw-code generates `agent-<nanosecond_timestamp>` IDs and writes both an
+# output file and a manifest file per dispatch. The parent's tool_response
+# carries `agentId, status, outputFile, manifestFile, createdAt, ...` —
+# the parent reads `outputFile` via bash cat to consume the result.
+#
+# For SFT data we use deterministic timestamp-shaped IDs derived from
+# (sample_id, kind, salts) so re-runs produce identical records but the
+# format matches what claw-code emits at runtime.
+# --------------------------------------------------------------------------
+
+
+def make_agent_id(sample_id: str, kind: str, *salts: str | int) -> str:
+    """Deterministic timestamp-shaped agent ID. Matches claw-code's
+    `agent-<int>` format. The integer is sha1(sample+kind+salts) → first
+    16 hex chars → ~10^19, indistinguishable from real ns-precision time."""
+    payload = f"{sample_id}:{kind}:" + ":".join(str(s) for s in salts)
+    h = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+    return f"agent-{int(h, 16)}"
+
+
+def make_agent_manifest(
+    *,
+    agent_id: str,
+    subagent_type: str,
+    output_file: str | Path,
+    manifest_file: str | Path,
+    prompt: str = "",
+    created_at: str = "",
+    status: str = "completed",
+    extra: dict | None = None,
+) -> dict:
+    """Build the manifest dict written alongside an agent's output file.
+
+    Mirrors claw-code's AgentOutput shape (agentId, subagentType, status,
+    outputFile, manifestFile, createdAt, startedAt). At SFT-build time
+    the agent has already finished, so `status` is "completed" and
+    createdAt == startedAt.
+    """
+    if not created_at:
+        # Deterministic build-time pseudo-timestamp derived from agent_id.
+        # Real ISO timestamps would break repeatability; we keep a
+        # claw-code-shaped string anchored to the agent's identity.
+        created_at = f"build-time:{agent_id}"
+    payload: dict = {
+        "agentId": agent_id,
+        "subagentType": subagent_type,
+        "status": status,
+        "outputFile": str(output_file),
+        "manifestFile": str(manifest_file),
+        "createdAt": created_at,
+        "startedAt": created_at,
+    }
+    if prompt:
+        payload["prompt"] = prompt[:1000]
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def write_agent_manifest(
+    *,
+    agent_id: str,
+    subagent_type: str,
+    output_file: str | Path,
+    manifest_file: str | Path,
+    prompt: str = "",
+    extra: dict | None = None,
+) -> dict:
+    """Write the manifest JSON to disk alongside the output file. Returns
+    the manifest dict (for inclusion in the dispatch tool_response)."""
+    manifest = make_agent_manifest(
+        agent_id=agent_id,
+        subagent_type=subagent_type,
+        output_file=output_file,
+        manifest_file=manifest_file,
+        prompt=prompt,
+        extra=extra,
+    )
+    Path(manifest_file).parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_file, "w") as f:
+        json.dump(manifest, f)
+        f.write("\n")
+    return manifest
+
+
 def slugify(s: str, max_len: int = 80) -> str:
     out = re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_")
     if not out:

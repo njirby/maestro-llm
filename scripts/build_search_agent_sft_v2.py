@@ -637,11 +637,13 @@ def build_search_record(
     # work, then write the result to the file my dispatcher reads."
     shortlist_path: str | None = None
     if shortlist_dir is not None:
+        from scripts.agent_sft_common import make_agent_id  # type: ignore
         shortlist_dir.mkdir(parents=True, exist_ok=True)
-        shortlist_path = str(shortlist_dir / f"{sample_id}_search_{agent_idx}.json")
+        agent_id = make_agent_id(sample_id, "wavetable_search", agent_idx)
+        shortlist_path = str(shortlist_dir / f"{agent_id}.json")
         payload = {
             "status": "completed",
-            "agentId": f"search_{sample_id}_{agent_idx}",
+            "agentId": agent_id,
             "shardStart": shard_start,
             "shardEnd": shard_end,
             "shortlist": selected_so_far,

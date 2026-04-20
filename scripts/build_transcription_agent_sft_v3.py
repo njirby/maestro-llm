@@ -187,7 +187,12 @@ def build_transcription_record(
         max(n["pitch"] for n in notes),
     ]
 
-    output_file = Path(output_dir) / sample_id / "transcription.json"
+    # Use claw-code-style agent IDs and place the output under the agent's
+    # per-sample directory. The path embeds the deterministic agent ID so
+    # SFT records mirror the runtime harness's outputFile naming.
+    from scripts.agent_sft_common import make_agent_id  # type: ignore
+    agent_id = make_agent_id(sample_id, "melody_transcription")
+    output_file = Path(output_dir) / sample_id / f"{agent_id}.json"
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     messages: list[dict] = []
@@ -260,6 +265,7 @@ def build_transcription_record(
             "duration_s": duration_s,
             "pitch_range": pitch_range,
             "notes": notes,
+            "agent_id": agent_id,
             "output_file": str(output_file),
             "track_idx": track_idx,
         },

@@ -47,7 +47,9 @@ from scripts.agent_sft_common import (
     load_index_rows,
     load_manifest_entries,
     load_wavetable_lib,
+    make_agent_id,
     select_probe_rows_by_name,
+    write_agent_manifest,
 )
 from scripts.build_main_agent_sft_v2 import (
     _build_listen_probe_command,
@@ -1136,8 +1138,10 @@ def build_record(
             )
             _trans_track_idx = 0
             _trans_track_name = "target_melody"
-            _trans_output_file = f"/tmp/agents/{sample_id}/transcription.json"
-            _trans_agent_id = f"melody_transcription_{sample_id}"
+            _trans_agent_id = make_agent_id(sample_id, "melody_transcription")
+            _trans_agent_dir = f"/tmp/agents/{sample_id}"
+            _trans_output_file = f"{_trans_agent_dir}/{_trans_agent_id}.json"
+            _trans_manifest_file = f"{_trans_agent_dir}/{_trans_agent_id}.manifest.json"
 
             # Transcription-mistake decision: deterministic per sample_id hash
             # so the same sample always gets the same mistake behavior across
@@ -1173,9 +1177,13 @@ def build_record(
             with open(_trans_output_file, "w") as _trf:
                 json.dump(_trans_payload, _trf)
                 _trf.write("\n")
+            # Wrong-attempt manifest paths (only used when injecting a mistake)
+            _wrong_agent_id = make_agent_id(sample_id, "melody_transcription", "attempt1")
+            _wrong_file = f"{_trans_agent_dir}/{_wrong_agent_id}.json"
+            _wrong_manifest_file = f"{_trans_agent_dir}/{_wrong_agent_id}.manifest.json"
+            _wrong_verify_wav = f"{_trans_agent_dir}/{_wrong_agent_id}.verify.wav"
             if _trans_wrong_notes is not None:
-                _trans_wrong_file = f"/tmp/agents/{sample_id}/transcription_attempt_1.json"
-                with open(_trans_wrong_file, "w") as _trf:
+                with open(_wrong_file, "w") as _trf:
                     json.dump({
                         "status": "completed",
                         "notes": _trans_wrong_notes,
@@ -1220,9 +1228,22 @@ def build_record(
             # from transcription errors instead of proceeding with bad notes.
             if _trans_wrong_notes is not None and _trans_mistake_info is not None:
                 _n_wrong = len(_trans_wrong_notes)
-                _wrong_agent_id = _trans_agent_id + "_attempt1"
-                _wrong_file = f"/tmp/agents/{sample_id}/transcription_attempt_1.json"
-                _wrong_verify_wav = f"/tmp/agents/{sample_id}/transcription_verify_attempt_1.wav"
+
+                # Write the manifest matching claw-code's runtime convention.
+                _wrong_dispatch_prompt = (
+                    f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
+                    f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the MIDI "
+                    f"notes on that track, and save the final note list as JSON to "
+                    f"{_wrong_file} with shape "
+                    f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
+                )
+                write_agent_manifest(
+                    agent_id=_wrong_agent_id,
+                    subagent_type="melody_transcription",
+                    output_file=_wrong_file,
+                    manifest_file=_wrong_manifest_file,
+                    prompt=_wrong_dispatch_prompt,
+                )
 
                 messages.append({
                     "role": "assistant",
@@ -1231,13 +1252,7 @@ def build_record(
                 messages.append(_tool_call("Agent", {
                     "subagent_type": "melody_transcription",
                     "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
-                    "prompt": (
-                        f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
-                        f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the MIDI "
-                        f"notes on that track, and save the final note list as JSON to "
-                        f"{_wrong_file} with shape "
-                        f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
-                    ),
+                    "prompt": _wrong_dispatch_prompt,
                     "name": f"transcribe-{sample_id}-1",
                 }))
                 messages.append({
@@ -1247,6 +1262,9 @@ def build_record(
                         "subagentType": "melody_transcription",
                         "status": "completed",
                         "outputFile": _wrong_file,
+                        "manifestFile": _wrong_manifest_file,
+                        "createdAt": f"build-time:{_wrong_agent_id}",
+                        "startedAt": f"build-time:{_wrong_agent_id}",
                         "n_notes": _n_wrong,
                         "duration_s": _trans_duration_s,
                     }, ensure_ascii=False),
@@ -1352,16 +1370,24 @@ def build_record(
                 "role": "assistant",
                 "content": _dispatch_prose,
             })
+            _primary_dispatch_prompt = (
+                f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
+                f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the MIDI "
+                f"notes on that track, and save the final note list as JSON to "
+                f"{_trans_output_file} with shape "
+                f'{{"notes": [...], "n_notes": N, "duration_s": X}}.' + _retry_note
+            )
+            write_agent_manifest(
+                agent_id=_trans_agent_id,
+                subagent_type="melody_transcription",
+                output_file=_trans_output_file,
+                manifest_file=_trans_manifest_file,
+                prompt=_primary_dispatch_prompt,
+            )
             messages.append(_tool_call("Agent", {
                 "subagent_type": "melody_transcription",
                 "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
-                "prompt": (
-                    f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
-                    f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the MIDI "
-                    f"notes on that track, and save the final note list as JSON to "
-                    f"{_trans_output_file} with shape "
-                    f'{{"notes": [...], "n_notes": N, "duration_s": X}}.' + _retry_note
-                ),
+                "prompt": _primary_dispatch_prompt,
                 "name": f"transcribe-{sample_id}-2" if _retry_note else f"transcribe-{sample_id}",
             }))
             messages.append({
@@ -1371,6 +1397,9 @@ def build_record(
                     "subagentType": "melody_transcription",
                     "status": "completed",
                     "outputFile": _trans_output_file,
+                    "manifestFile": _trans_manifest_file,
+                    "createdAt": f"build-time:{_trans_agent_id}",
+                    "startedAt": f"build-time:{_trans_agent_id}",
                     "n_notes": _trans_n_notes,
                     "duration_s": _trans_duration_s,
                 }, ensure_ascii=False),
@@ -1507,12 +1536,13 @@ def build_record(
         picks = list(gts_in) + non_gt[: max(1, 3 - len(gts_in))]
         return picks[:4]
 
-    def _write_shortlist_file(agent_id: str, start: int, end: int, shortlist: list[str]) -> str:
-        """Write single-line JSON shortlist file (simulates search agent runtime output)."""
+    def _write_shortlist_file(agent_id: str, start: int, end: int, shortlist: list[str]) -> tuple[str, str]:
+        """Write single-line JSON shortlist file + manifest. Returns (output_file, manifest_file)."""
         out_dir = Path(agent_out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{agent_id}.json"
-        with open(path, "w") as f:
+        out_path = out_dir / f"{agent_id}.json"
+        manifest_path = out_dir / f"{agent_id}.manifest.json"
+        with open(out_path, "w") as f:
             json.dump({
                 "status": "completed",
                 "agentId": agent_id,
@@ -1521,7 +1551,14 @@ def build_record(
                 "shortlist": shortlist,
             }, f)
             f.write("\n")
-        return str(path)
+        write_agent_manifest(
+            agent_id=agent_id,
+            subagent_type="wavetable_search",
+            output_file=str(out_path),
+            manifest_file=str(manifest_path),
+            extra={"shardStart": start, "shardEnd": end},
+        )
+        return str(out_path), str(manifest_path)
 
     def _pool_covers_gt(pool_list: list[str], threshold: float = 0.92) -> float:
         """Fraction of GT wavetables covered by pool (exact or CLAP-similar proxy)."""
@@ -1586,20 +1623,21 @@ def build_record(
         # turn in Anthropic / claw-code protocol). Serial emit would read as sequential.
         round_output_files: list[str] = []
         round_agent_ids: list[str] = []
-        round_agent_meta: list[tuple[int, int, str, str, list[str]]] = []  # (start, end, agent_id, output_file, shortlist)
+        # (start, end, agent_id, output_file, manifest_file, shortlist)
+        round_agent_meta: list[tuple[int, int, str, str, str, list[str]]] = []
         for ai, start in enumerate(slice_starts):
             end = min(start + slice_size, total_named)
             if end <= start:
                 continue
-            agent_id = f"wavetable_search_{sample_id}_r{rounds_used}_a{ai + 1}"
+            agent_id = make_agent_id(sample_id, "wavetable_search", rounds_used, ai)
             round_agent_ids.append(agent_id)
             sl = _simulate_shortlist(start, end)
-            output_file = _write_shortlist_file(agent_id, start, end, sl)
+            output_file, manifest_file = _write_shortlist_file(agent_id, start, end, sl)
             round_output_files.append(output_file)
-            round_agent_meta.append((start, end, agent_id, output_file, sl))
+            round_agent_meta.append((start, end, agent_id, output_file, manifest_file, sl))
 
         # Emit all Agent tool_calls back-to-back (parallel dispatch)
-        for start, end, agent_id, _out, _sl in round_agent_meta:
+        for ai_idx, (start, end, agent_id, _out, _manifest, _sl) in enumerate(round_agent_meta):
             messages.append(_tool_call("Agent", {
                 "subagent_type": "wavetable_search",
                 "description": f"Evaluate wavetables {start}-{end - 1} for target sound",
@@ -1610,11 +1648,11 @@ def build_record(
                     f"and `python skills/vital/scripts/render_probes.py --idxs ... --out-dir ...` "
                     f"to hear each candidate. Return a JSON shortlist of 2-4 wavetable names."
                 ),
-                "name": f"search-{rounds_used}-{agent_id.split('_a')[-1]}",
+                "name": f"search-r{rounds_used}-a{ai_idx + 1}",
             }))
 
         # Then all tool_responses (one per parallel call)
-        for _start, _end, agent_id, output_file, _sl in round_agent_meta:
+        for _start, _end, agent_id, output_file, manifest_file, _sl in round_agent_meta:
             messages.append({
                 "role": "tool_response",
                 "content": json.dumps({
@@ -1622,6 +1660,9 @@ def build_record(
                     "subagentType": "wavetable_search",
                     "status": "completed",
                     "outputFile": output_file,
+                    "manifestFile": manifest_file,
+                    "createdAt": f"build-time:{agent_id}",
+                    "startedAt": f"build-time:{agent_id}",
                 }, ensure_ascii=False),
             })
 
@@ -1736,8 +1777,9 @@ def build_record(
 
         # Write judge output file (simulates runtime judge agent's output) —
         # new schema with verdict + missing_character + nullable tuple.
-        judge_agent_id = f"wavetable_judge_{sample_id}_r{rounds_used}"
+        judge_agent_id = make_agent_id(sample_id, "wavetable_judge", rounds_used)
         judge_output_file = Path(agent_out_dir) / f"{judge_agent_id}.json"
+        judge_manifest_file = Path(agent_out_dir) / f"{judge_agent_id}.manifest.json"
         judge_output_file.parent.mkdir(parents=True, exist_ok=True)
         if judge_verdict == "good":
             judge_reasoning = (
@@ -1785,18 +1827,26 @@ def build_record(
                 f"select the best {n_osc_slots}-oscillator combination."
             ),
         })
+        _judge_dispatch_prompt = (
+            f"Target: {target_audio_path}.\n"
+            f"Pool candidates from search agents: {json.dumps(pool)}.\n"
+            f"Target uses {n_osc_slots} active oscillator(s). Listen to each candidate "
+            f"via `python skills/vital/scripts/render_probes.py --names ... --out-dir ...` "
+            f"alongside the target, then select the {n_osc_slots} candidates that "
+            f"together best capture the target. Write a JSON file with `tuple` (list "
+            f"of names), `n_osc_slots`, and `reasoning`."
+        )
+        write_agent_manifest(
+            agent_id=judge_agent_id,
+            subagent_type="wavetable_judge",
+            output_file=str(judge_output_file),
+            manifest_file=str(judge_manifest_file),
+            prompt=_judge_dispatch_prompt,
+        )
         messages.append(_tool_call("Agent", {
             "subagent_type": "wavetable_judge",
             "description": f"Select best {n_osc_slots}-osc tuple from pool of {len(pool)} candidates",
-            "prompt": (
-                f"Target: {target_audio_path}.\n"
-                f"Pool candidates from search agents: {json.dumps(pool)}.\n"
-                f"Target uses {n_osc_slots} active oscillator(s). Listen to each candidate "
-                f"via `python skills/vital/scripts/render_probes.py --names ... --out-dir ...` "
-                f"alongside the target, then select the {n_osc_slots} candidates that "
-                f"together best capture the target. Write a JSON file with `tuple` (list "
-                f"of names), `n_osc_slots`, and `reasoning`."
-            ),
+            "prompt": _judge_dispatch_prompt,
             "name": f"judge-{rounds_used}",
         }))
         messages.append({
@@ -1806,6 +1856,9 @@ def build_record(
                 "subagentType": "wavetable_judge",
                 "status": "completed",
                 "outputFile": str(judge_output_file),
+                "manifestFile": str(judge_manifest_file),
+                "createdAt": f"build-time:{judge_agent_id}",
+                "startedAt": f"build-time:{judge_agent_id}",
             }, ensure_ascii=False),
         })
 
