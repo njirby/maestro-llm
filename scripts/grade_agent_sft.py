@@ -338,18 +338,97 @@ def _is_tautological_bash_command(command: str) -> bool:
     return False
 
 
-def _check_live_exec_environment() -> None:
-    """Ensure a live REAPER + reapy session is reachable before executing checks."""
+def _try_reapy_handshake() -> bool:
+    """Return True if reapy can talk to a running REAPER session."""
     try:
         import reapy  # noqa: PLC0415
-
         with reapy.inside_reaper():
-            project = reapy.Project()
-            _ = len(project.tracks)
-    except Exception as exc:
+            _ = len(reapy.Project().tracks)
+        return True
+    except Exception:
+        return False
+
+
+def _start_reaper_in_background(reaper_bin: str, log_path: str = "/tmp/reaper_start.log") -> None:
+    """Spawn REAPER detached. Inherits DISPLAY when set; falls back to :0 for
+    headless invocations. Output streams to ``log_path``."""
+    import os as _os
+    import subprocess as _sp
+
+    env = _os.environ.copy()
+    env.setdefault("DISPLAY", ":0")
+    with open(log_path, "ab") as logf:
+        _sp.Popen(
+            [reaper_bin, "-nosplash"],
+            stdout=logf, stderr=logf, stdin=_sp.DEVNULL,
+            preexec_fn=_os.setsid,  # detach so REAPER survives the grader's exit
+            env=env,
+        )
+
+
+def _check_live_exec_environment(auto_start: bool = True) -> None:
+    """Ensure a live REAPER + reapy session is reachable before executing checks.
+
+    If ``auto_start`` is True (default) and the handshake fails, try to spawn
+    REAPER (via $REAPER_BIN or the canonical install path) and wait up to ~25s
+    for its reapy server to come up. Raises RuntimeError if no REAPER is
+    reachable after the wait.
+    """
+    if _try_reapy_handshake():
+        return
+
+    if not auto_start:
         raise RuntimeError(
             "Live execution checks require a running REAPER session with reapy server available."
+        )
+
+    import os as _os
+    import shutil as _sh
+    import time as _time
+
+    reaper_bin = (
+        _os.environ.get("REAPER_BIN")
+        or _sh.which("reaper")
+        or "/home/nate/opt/REAPER/REAPER/reaper"
+    )
+    if not _os.path.exists(reaper_bin):
+        raise RuntimeError(
+            "Live execution checks require REAPER. Tried to auto-start but "
+            f"could not find the binary (looked at $REAPER_BIN, PATH, and "
+            f"{reaper_bin!r}). Start REAPER manually or set REAPER_BIN."
+        )
+
+    print(f"REAPER not reachable — auto-starting from {reaper_bin}", flush=True)
+    try:
+        _start_reaper_in_background(reaper_bin)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to spawn REAPER ({reaper_bin}): {exc}. Start it manually."
         ) from exc
+
+    # Wait for the reapy server to come up. REAPER startup is ~5-10s plus the
+    # defer-loop server takes another few seconds to bind.
+    timeout_s = float(_os.environ.get("REAPER_START_TIMEOUT_S", "60"))
+    deadline = _time.monotonic() + timeout_s
+    delay = 2.0
+    last_print = _time.monotonic()
+    while _time.monotonic() < deadline:
+        _time.sleep(delay)
+        if _try_reapy_handshake():
+            print("REAPER + reapy ready.", flush=True)
+            return
+        # Heartbeat every ~10s so the user sees we're still trying.
+        if _time.monotonic() - last_print > 10.0:
+            print(f"  ...still waiting for reapy server (timeout in {int(deadline - _time.monotonic())}s)", flush=True)
+            last_print = _time.monotonic()
+        delay = min(delay * 1.3, 4.0)
+
+    raise RuntimeError(
+        f"Auto-started REAPER but reapy never connected within {int(timeout_s)}s. "
+        "Check that the reapy server script is configured to autorun "
+        "(python -c 'import reapy; reapy.configure_reaper()' once). "
+        "Override the timeout with REAPER_START_TIMEOUT_S=120."
+    )
 
 
 def _reset_reaper_project(record: dict[str, Any] | None = None) -> None:
