@@ -41,7 +41,9 @@ from scripts.agent_sft_common import (
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_gt_similarity_pool,
+    build_list_wavetables_slice_snippet,
     build_name_embedding_map,
+    build_render_probes_snippet,
     ensure_candidate_probes_for_names,
     extract_gt_wavetable_names,
     is_clap_selected,
@@ -49,6 +51,10 @@ from scripts.agent_sft_common import (
     load_manifest_entries,
     load_wavetable_lib,
     select_probe_rows_by_name,
+    _bash_tool_response,
+    _read_tool_response_audio,
+    _tool_call as _tool_call_common,
+    _wrap_as_bash,
 )
 from scripts.build_main_agent_sft_v2 import (
     _check_server_reachable,
@@ -383,18 +389,32 @@ def stage2_final_summary(
 # ---------------------------------------------------------------------------
 
 
-_TOOL_SPECS = json.dumps([{
-    "type": "function",
-    "function": {
-        "name": "bash",
-        "description": "Execute shell/Python commands to render and evaluate wavetable candidates.",
-        "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+_TOOL_SPECS = json.dumps([
+    {
+        "type": "function",
+        "function": {
+            "name": "Bash",
+            "description": "Execute shell/Python commands to render and evaluate wavetable candidates.",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+        },
     },
-}], ensure_ascii=False)
+    {
+        "type": "function",
+        "function": {
+            "name": "Read",
+            "description": "Read a file. For audio files, returns the audio content for listening.",
+            "parameters": {
+                "type": "object",
+                "properties": {"file_path": {"type": "string", "description": "Absolute path to the file."}},
+                "required": ["file_path"],
+            },
+        },
+    },
+], ensure_ascii=False)
 
 
 def _tool_call(name: str, arguments: dict) -> dict:
-    return {"role": "tool_call", "content": json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)}
+    return _tool_call_common(name, arguments)
 
 
 def build_search_record(
@@ -421,8 +441,7 @@ def build_search_record(
 ) -> dict | None:
     """Build one search agent SFT record with iterative batch listening.
 
-    Uses real bash commands to skills/vital/scripts/list_wavetables.py and
-    skills/vital/scripts/render_probes.py. The search agent's task is defined by
+    Uses inline reapy snippets for wavetable listing and probe rendering. The search agent's task is defined by
     a dense index range [shard_start, shard_end). GT wavetables within the
     range are oracle-forced onto the final shortlist.
     """
@@ -469,15 +488,13 @@ def build_search_record(
             f"<audio>\nEvaluate wavetables at indices "
             f"{shard_start}-{shard_end - 1} from the library and return a shortlist "
             f"of 2-4 names that could serve as building blocks for recreating the target. "
-            f"Use `python skills/vital/scripts/list_wavetables.py --start {shard_start} --end {shard_end}` "
-            f"to see the names in your range, and "
-            f"`python skills/vital/scripts/render_probes.py --idxs A,B,C --out-dir {probe_out_dir}` "
-            f"to render and listen to each candidate."
+            f"Load data/wavetable_lib.json, list names in your range, swap each into "
+            f"the synth via chunk manipulation, render, and listen to each candidate."
         ),
     })
 
     # Step 1: list_wavetables — agent fetches names in its range
-    list_cmd = f"python skills/vital/scripts/list_wavetables.py --start {shard_start} --end {shard_end}"
+    list_cmd = _wrap_as_bash(build_list_wavetables_slice_snippet(shard_start, shard_end))
     shard_entries = [
         {"idx": i, "name": idx_to_name[i]}
         for i in range(shard_start, shard_end) if i in idx_to_name
@@ -486,16 +503,14 @@ def build_search_record(
         "role": "assistant",
         "content": f"Fetching candidate names at indices {shard_start}-{shard_end - 1}.",
     })
-    messages.append(_tool_call("bash", {"command": list_cmd}))
-    messages.append({
-        "role": "tool_response",
-        "content": json.dumps({
-            "wavetables": shard_entries,
-            "start": shard_start,
-            "end": shard_end,
-            "count": len(shard_entries),
-        }, ensure_ascii=False),
-    })
+    messages.append(_tool_call("Bash", {"command": list_cmd}))
+    _list_stdout = json.dumps({
+        "wavetables": shard_entries,
+        "start": shard_start,
+        "end": shard_end,
+        "count": len(shard_entries),
+    }) + "\n"
+    messages.append(_bash_tool_response(_list_stdout))
 
     selected_so_far: list[str] = []  # CLAP-selected candidates, accumulated across batches
     pending_notes: str | None = None
@@ -520,23 +535,22 @@ def build_search_record(
 
         # Real bash command: render batch candidates
         batch_idxs = [name_to_idx[n] for n in batch if n in name_to_idx]
-        idxs_csv = ",".join(str(i) for i in batch_idxs)
-        render_cmd = (
-            f"python skills/vital/scripts/render_probes.py "
-            f"--idxs {idxs_csv} --out-dir {probe_out_dir}"
-        )
+        render_cmd = _wrap_as_bash(build_render_probes_snippet(
+            idxs=batch_idxs, out_dir=probe_out_dir,
+        ))
 
         import re as _re
         def _slugify(s: str) -> str:
             return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
 
         rendered_entries = []
+        audio_read_paths: list[str] = []
         for name, idx in zip(batch, batch_idxs):
             out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify(name)}.wav"
             entry = {"idx": idx, "name": name, "out": out_path}
             if name in candidate_audio:
                 audio_assets.append(str(candidate_audio[name]))
-                entry["audio"] = "<audio>"
+                audio_read_paths.append(str(candidate_audio[name]))
             rendered_entries.append(entry)
 
         intro = f"Rendering batch {batch_num} (indices {', '.join(str(i) for i in batch_idxs)})."
@@ -545,11 +559,16 @@ def build_search_record(
             pending_notes = None
 
         messages.append({"role": "assistant", "content": intro})
-        messages.append(_tool_call("bash", {"command": render_cmd}))
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({"status": "ok", "rendered": rendered_entries}, ensure_ascii=False),
-        })
+        messages.append(_tool_call("Bash", {"command": render_cmd}))
+        _render_stdout = json.dumps({"status": "ok", "rendered": rendered_entries}) + "\n"
+        messages.append(_bash_tool_response(_render_stdout))
+
+        # Read each rendered audio file — sequential read calls
+        if audio_read_paths:
+            messages.append({"role": "assistant", "content": "Listening to the rendered candidates."})
+            for rp in audio_read_paths:
+                messages.append(_tool_call("Read", {"file_path": rp}))
+                messages.append(_read_tool_response_audio())
 
         # CLAP-based selection: determine Selected/Not selected for each candidate
         selection_labels: dict[str, bool] = {}
@@ -677,11 +696,9 @@ def build_search_record(
             f"print(json.dumps({{'status': 'ok', 'file': str(p)}}))\n"
             f"PY"
         )
-        messages.append(_tool_call("bash", {"command": write_cmd}))
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({"status": "ok", "file": shortlist_path}, ensure_ascii=False),
-        })
+        messages.append(_tool_call("Bash", {"command": write_cmd}))
+        _write_stdout = json.dumps({"status": "ok", "file": shortlist_path}) + "\n"
+        messages.append(_bash_tool_response(_write_stdout))
         # Closing assistant turn — keeps the validator's last-message-is-assistant
         # invariant, and signals task completion explicitly.
         messages.append({

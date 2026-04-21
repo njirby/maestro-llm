@@ -64,7 +64,7 @@ def _make_main_record(
     messages = [{"role": "user", "content": "<audio>\nRecreate this sound."}]
     for c in commentaries:
         messages.append({"role": "assistant", "content": c})
-        messages.append({"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"python - <<\'PY\'\\nprint(1)\\nPY"}}'})
+        messages.append({"role": "tool_call", "content": '{"name":"Bash","arguments":{"command":"python - <<\'PY\'\\nprint(1)\\nPY"}}'})
         messages.append({"role": "tool_response", "content": '{"status":"ok"}'})
     for a in (extra_assistant or []):
         messages.append({"role": "assistant", "content": a})
@@ -287,10 +287,10 @@ def _make_search_record(has_cosine: bool, proposals: list[dict] | None = None, g
         "messages": [
             {"role": "user", "content": "<audio>\nSearch task."},
             {"role": "assistant", "content": gt_text},
-            {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"search"}}'},
+            {"role": "tool_call", "content": '{"name":"Bash","arguments":{"command":"search"}}'},
             {"role": "tool_response", "content": '{"stdout":"C1\\twt\\t0.80\\t/tmp/c1.wav"}'},
             {"role": "assistant", "content": "Auditioning."},
-            {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"audition"}}'},
+            {"role": "tool_call", "content": '{"name":"Bash","arguments":{"command":"audition"}}'},
             {"role": "tool_response", "content": tool_response_content},
             {"role": "assistant", "content": proposal_content},
         ],
@@ -367,7 +367,7 @@ def _make_judge_record(has_scores: bool, has_cosine: bool, gt_in_selected: bool 
         "messages": [
             {"role": "user", "content": "<audio>\nJudge task."},
             {"role": "assistant", "content": "Auditioning."},
-            {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"audition"}}'},
+            {"role": "tool_call", "content": '{"name":"Bash","arguments":{"command":"audition"}}'},
             {"role": "tool_response", "content": tool_response_content},
             {"role": "assistant", "content": final_content},
         ],
@@ -418,7 +418,7 @@ def _make_live_exec_record(command: str, tool_response_payload: dict) -> dict:
         "messages": [
             {"role": "user", "content": "<audio>\nRecreate this sound."},
             {"role": "assistant", "content": "Running update."},
-            {"role": "tool_call", "content": json.dumps({"name": "bash", "arguments": {"command": command}})},
+            {"role": "tool_call", "content": json.dumps({"name": "Bash", "arguments": {"command": command}})},
             {"role": "tool_response", "content": json.dumps(tool_response_payload)},
             {"role": "assistant", "content": "Done."},
         ],
@@ -459,13 +459,38 @@ def test_run_live_execution_checks_for_record_success():
     assert result["execution_checks"][0]["ok"] is True
 
 
+def test_run_live_execution_checks_for_record_skips_cat_tautology():
+    command = "cat /tmp/agents/sid_123/transcription.json"
+    record = _make_live_exec_record(command, {"status": "ok"})
+    # subprocess.run should NOT be called for a tautological cat
+    with patch("scripts.grade_agent_sft.subprocess.run") as run_mock:
+        result = run_live_execution_checks_for_record(record, timeout_sec=1.0)
+    assert run_mock.call_count == 0
+    assert result["execution_calls_assessed"] == 0
+    assert result["execution_fidelity"] is None
+    assert result["execution_calls_skipped_tautology"] == 1
+
+
+def test_run_live_execution_checks_for_record_skips_bare_echo():
+    command = "echo hello"
+    record = _make_live_exec_record(command, {"status": "ok"})
+    with patch("scripts.grade_agent_sft.subprocess.run") as run_mock:
+        result = run_live_execution_checks_for_record(record, timeout_sec=1.0)
+    assert run_mock.call_count == 0
+    assert result["execution_calls_skipped_tautology"] == 1
+
+
 def test_run_live_execution_checks_for_record_timeout_marks_failure():
     command = "python - <<'PY'\nprint('slow')\nPY"
     record = _make_live_exec_record(command, {"status": "ok"})
-    with patch(
-        "scripts.grade_agent_sft.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="bash -lc slow", timeout=0.1),
-    ):
+    mock_proc = MagicMock()
+    mock_proc.pid = 99999
+    mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
+        cmd="bash -lc slow", timeout=0.1
+    )
+    mock_proc.wait.return_value = -9
+    with patch("scripts.grade_agent_sft.subprocess.Popen", return_value=mock_proc), \
+         patch("os.killpg"):
         result = run_live_execution_checks_for_record(record, timeout_sec=0.1)
     assert result["execution_calls_assessed"] == 1
     assert result["execution_calls_passed"] == 0
@@ -474,7 +499,7 @@ def test_run_live_execution_checks_for_record_timeout_marks_failure():
     assert any("timeout" in e for e in result["execution_checks"][0]["errors"])
 
 
-def test_score_record_blends_execution_fidelity_when_enabled():
+def test_score_record_hard_fails_when_any_bash_call_fails():
     record = _make_main_record([_make_commentary("x", "y", "z")], step_labels=[])
     with patch("scripts.grade_agent_sft.score_main_record", return_value={"overall": 0.8}), patch(
         "scripts.grade_agent_sft.run_live_execution_checks_for_record",
@@ -487,7 +512,39 @@ def test_score_record_blends_execution_fidelity_when_enabled():
     ):
         scores = score_record(record, live_exec_check=True)
     assert scores["execution_fidelity"] == 0.2
-    assert scores["overall"] == pytest.approx(round((0.85 * 0.8) + (0.15 * 0.2), 4))
+    assert scores["overall"] == 0.0
+
+
+def test_score_record_preserves_overall_when_all_bash_calls_pass():
+    record = _make_main_record([_make_commentary("x", "y", "z")], step_labels=[])
+    with patch("scripts.grade_agent_sft.score_main_record", return_value={"overall": 0.8}), patch(
+        "scripts.grade_agent_sft.run_live_execution_checks_for_record",
+        return_value={
+            "execution_fidelity": 1.0,
+            "execution_checks": [],
+            "execution_calls_assessed": 3,
+            "execution_calls_passed": 3,
+        },
+    ):
+        scores = score_record(record, live_exec_check=True)
+    assert scores["execution_fidelity"] == 1.0
+    assert scores["overall"] == 0.8
+
+
+def test_score_record_no_bash_calls_assessed_leaves_overall_unchanged():
+    record = _make_main_record([_make_commentary("x", "y", "z")], step_labels=[])
+    with patch("scripts.grade_agent_sft.score_main_record", return_value={"overall": 0.8}), patch(
+        "scripts.grade_agent_sft.run_live_execution_checks_for_record",
+        return_value={
+            "execution_fidelity": None,
+            "execution_checks": [],
+            "execution_calls_assessed": 0,
+            "execution_calls_passed": 0,
+        },
+    ):
+        scores = score_record(record, live_exec_check=True)
+    assert scores["execution_fidelity"] is None
+    assert scores["overall"] == 0.8
 
 
 # ---------------------------------------------------------------------------

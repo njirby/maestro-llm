@@ -290,14 +290,15 @@ def _validate_bash_execution_against_expected(
                         f"listen_probe_path_mismatch:expected={expected_path}:got={got_path}"
                     )
 
-    if "set_params(" in command:
+    if "set_params(" in command or "TrackFX_SetParam" in command:
         if not isinstance(runtime_payload, dict):
             errors.append("set_params_missing_runtime_json")
         else:
             if isinstance(runtime_payload.get("not_found"), list) and runtime_payload["not_found"]:
                 errors.append(f"set_params_not_found:{len(runtime_payload['not_found'])}")
-            if "applied" in runtime_payload and isinstance(runtime_payload.get("applied"), list):
-                if len(runtime_payload["applied"]) == 0:
+            if "applied" in runtime_payload and isinstance(runtime_payload.get("applied"), (list, int)):
+                applied = runtime_payload["applied"]
+                if (isinstance(applied, list) and len(applied) == 0) or applied == 0:
                     errors.append("set_params_applied_empty")
             elif "status" not in runtime_payload:
                 errors.append("set_params_missing_status_or_applied")
@@ -308,9 +309,9 @@ def _validate_bash_execution_against_expected(
 def _classify_bash_command(command: str) -> str:
     if "listen_probe" in command:
         return "listen_probe"
-    if "set_params(" in command:
+    if "set_params(" in command or "TrackFX_SetParam" in command:
         return "set_params"
-    if "applied_wavetable" in command or "vc.set_preset(" in command:
+    if "applied_wavetable" in command or "vc.set_preset(" in command or "TrackFX_SetNamedConfigParm" in command:
         return "apply_wavetable"
     if "applied_tuple_id" in command:
         return "apply_tuple"
@@ -338,25 +339,52 @@ def _is_tautological_bash_command(command: str) -> bool:
     return False
 
 
-def _try_reapy_handshake() -> bool:
-    """Return True if reapy can talk to a running REAPER session."""
+def _try_reapy_handshake(timeout_sec: float = 10.0) -> bool:
+    """Return True if reapy can talk to a running REAPER session.
+
+    Uses a lightweight TCP+reapy probe in a subprocess so a hung server
+    can't block the caller (the subprocess gets killed on timeout).
+    """
+    import subprocess as _sp
+
     try:
-        import reapy  # noqa: PLC0415
-        with reapy.inside_reaper():
-            _ = len(reapy.Project().tracks)
-        return True
+        r = _sp.run(
+            [
+                "python", "-c",
+                "import reapy\n"
+                "with reapy.inside_reaper():\n"
+                "    print(len(reapy.Project().tracks))\n",
+            ],
+            capture_output=True, text=True, timeout=timeout_sec,
+        )
+        return r.returncode == 0
     except Exception:
         return False
 
 
 def _start_reaper_in_background(reaper_bin: str, log_path: str = "/tmp/reaper_start.log") -> None:
-    """Spawn REAPER detached. Inherits DISPLAY when set; falls back to :0 for
-    headless invocations. Output streams to ``log_path``."""
+    """Spawn REAPER detached. Inherits DISPLAY when set; auto-detects the
+    active X11 session otherwise. Output streams to ``log_path``."""
     import os as _os
     import subprocess as _sp
 
     env = _os.environ.copy()
-    env.setdefault("DISPLAY", ":0")
+    if "DISPLAY" not in env:
+        for candidate in (":1", ":0"):
+            xauth = f"/run/user/{_os.getuid()}/gdm/Xauthority"
+            if _os.path.exists(xauth):
+                env["XAUTHORITY"] = xauth
+            try:
+                _sp.run(
+                    ["xdpyinfo", "-display", candidate],
+                    capture_output=True, timeout=3, env=env,
+                )
+                env["DISPLAY"] = candidate
+                break
+            except Exception:
+                continue
+        else:
+            env.setdefault("DISPLAY", ":0")
     with open(log_path, "ab") as logf:
         _sp.Popen(
             [reaper_bin, "-nosplash"],
@@ -434,42 +462,38 @@ def _check_live_exec_environment(auto_start: bool = True) -> None:
 def _reset_reaper_project(record: dict[str, Any] | None = None) -> None:
     """Reset tracks/items in REAPER so each record starts from a clean slate.
 
-    Avoids File→Close/New because those commands pop a modal "save changes?"
-    dialog on a dirty project and hang the reapy RPC. Instead we delete all
-    tracks in the current project.
-
-    For ``melody_transcription`` records, which are dispatched by a parent
-    agent that already created the target track, we pre-insert tracks up to
-    ``meta.track_idx`` so the rollout's reapy code lands in a valid index.
-    For ``main`` records we leave the project empty — the rollout's first
-    reapy turn creates the track and loads Vital itself.
+    Runs in a subprocess so the reapy connection is fully closed when done,
+    avoiding stale HOLD connections that block the single-threaded reapy server.
     """
+    required_tracks = 0
+    if record is not None:
+        task_type = record.get("task_type", "")
+        if task_type == "melody_transcription":
+            meta = record.get("meta") or {}
+            tidx = meta.get("track_idx")
+            if isinstance(tidx, int) and tidx >= 0:
+                required_tracks = tidx + 1
+
+    script = (
+        "import reapy\n"
+        "with reapy.inside_reaper():\n"
+        "    rpr = reapy.reascript_api\n"
+        "    project = reapy.Project()\n"
+        "    for track in reversed(list(project.tracks)):\n"
+        "        try:\n"
+        "            track.delete()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        f"    for i in range({required_tracks}):\n"
+        "        rpr.InsertTrackAtIndex(i, False)\n"
+    )
     try:
-        import reapy  # noqa: PLC0415
-
-        required_tracks = 0
-        if record is not None:
-            task_type = record.get("task_type", "")
-            if task_type == "melody_transcription":
-                meta = record.get("meta") or {}
-                tidx = meta.get("track_idx")
-                if isinstance(tidx, int) and tidx >= 0:
-                    required_tracks = tidx + 1
-
-        with reapy.inside_reaper():
-            rpr = reapy.reascript_api  # type: ignore[attr-defined]
-            project = reapy.Project()
-            for track in reversed(list(project.tracks)):
-                try:
-                    track.delete()
-                except Exception:
-                    pass
-            for i in range(required_tracks):
-                rpr.InsertTrackAtIndex(i, False)
+        subprocess.run(
+            ["python", "-c", script],
+            capture_output=True, text=True, timeout=15,
+            start_new_session=True,
+        )
     except Exception:
-        # Non-fatal — the per-record exec will still run and fail loudly if
-        # REAPER state leaks. Avoid aborting a whole grade run on a transient
-        # reapy hiccup.
         pass
 
 
@@ -492,7 +516,7 @@ def run_live_execution_checks_for_record(
         if msg.get("role") != "tool_call":
             continue
         tc = _parse_json_object(msg.get("content", ""))
-        if not isinstance(tc, dict) or tc.get("name") != "bash":
+        if not isinstance(tc, dict) or tc.get("name") not in ("bash", "Bash"):
             continue
 
         command = tc.get("arguments", {}).get("command", "")
@@ -510,13 +534,35 @@ def run_live_execution_checks_for_record(
         assessed += 1
         category = _classify_bash_command(command)
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 ["bash", "-lc", command],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_sec,
+                start_new_session=True,
             )
-            runtime_payload = _parse_json_object(proc.stdout)
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                import os as _os
+                import signal as _sig
+                try:
+                    _os.killpg(proc.pid, _sig.SIGKILL)
+                except OSError:
+                    proc.kill()
+                proc.wait()
+                checks.append(
+                    {
+                        "tool_call_index": i,
+                        "category": category,
+                        "ok": False,
+                        "exit_code": None,
+                        "errors": [f"timeout:{timeout_sec}s"],
+                        "stderr_snippet": "",
+                    }
+                )
+                continue
+            runtime_payload = _parse_json_object(stdout)
             errors = _validate_bash_execution_against_expected(
                 command=command,
                 expected_payload=expected_payload,
@@ -533,17 +579,17 @@ def run_live_execution_checks_for_record(
                     "ok": ok,
                     "exit_code": int(proc.returncode),
                     "errors": errors,
-                    "stderr_snippet": (proc.stderr or "").strip()[:300],
+                    "stderr_snippet": (stderr or "").strip()[:300],
                 }
             )
-        except subprocess.TimeoutExpired:
+        except Exception as exc:
             checks.append(
                 {
                     "tool_call_index": i,
                     "category": category,
                     "ok": False,
                     "exit_code": None,
-                    "errors": [f"timeout:{timeout_sec}s"],
+                    "errors": [f"exec_error:{exc!r}"],
                     "stderr_snippet": "",
                 }
             )
@@ -2078,7 +2124,7 @@ def score_search_v2_record(
       gt_recovery                    (35% conditional) — fraction of GTs in the shard that made it onto the shortlist. Only assessable when gt_in_shard is non-empty.
       shortlist_file_written         (20%)             — last bash tool_call writes the shortlist JSON, tool_response confirms.
       llm_candidates_audio_grounded  (15% conditional) — mean single-audio Omni grounding check across all (candidate, description) pairs. Catches batch-call audio-position confusion. Requires --llm-judge-server.
-      has_render_probes              (10%)             — ≥1 bash tool_call invokes skills/vital/scripts/render_probes.py.
+      has_render_probes              (10%)             — ≥1 bash tool_call renders wavetable probes (inline chunk manipulation or legacy render_probes.py).
       shortlist_nonempty             (10%)             — final shortlist has ≥1 name.
       closing_assistant              (5%)              — last message is assistant.
       snake_case_clean               (2.5%)            — no snake_case param leak.
@@ -2104,7 +2150,7 @@ def score_search_v2_record(
         if m.get("role") == "tool_call":
             try:
                 tc = json.loads(m.get("content", ""))
-                if tc.get("name") == "bash":
+                if tc.get("name") in ("bash", "Bash"):
                     last_bash_idx = i
             except Exception:
                 pass
@@ -2128,14 +2174,15 @@ def score_search_v2_record(
     # Closing assistant
     closing_assistant: float = 1.0 if messages and messages[-1].get("role") == "assistant" else 0.0
 
-    # Has render_probes invocation
+    # Has render_probes invocation (inline chunk manipulation or legacy script)
     has_render_probes: float = 0.0
     for m in messages:
         if m.get("role") != "tool_call":
             continue
         try:
             tc = json.loads(m.get("content", ""))
-            if tc.get("name") == "bash" and "skills/vital/scripts/render_probes.py" in tc.get("arguments", {}).get("command", ""):
+            cmd = tc.get("arguments", {}).get("command", "") if tc.get("name") in ("bash", "Bash") else ""
+            if "skills/vital/scripts/render_probes.py" in cmd or "TrackFX_SetNamedConfigParm" in cmd:
                 has_render_probes = 1.0
                 break
         except Exception:
@@ -2223,7 +2270,7 @@ def score_judge_v3_record(
       no_match_narration_present     (5%  cond:no_match) — assistant text contains no_match/re-search hints.
       llm_candidates_audio_grounded  (10% conditional) — single-audio Omni grounding (requires --llm-judge-server).
       pool_candidates_discussed      (5%)             — fraction of pool names mentioned in deliberation.
-      has_render_probes              (2.5%)           — ≥1 bash tool_call invokes render_probes.py.
+      has_render_probes              (2.5%)           — ≥1 bash tool_call renders wavetable probes (inline chunk manipulation or legacy render_probes.py).
       closing_assistant              (2.5%)           — last message is assistant.
       format_consistent              (2.5%)           — no **BOLD:** headers.
       snake_case_clean               (2.5%)           — no snake_case in assistant text.
@@ -2283,7 +2330,7 @@ def score_judge_v3_record(
         if m.get("role") == "tool_call":
             try:
                 tc = json.loads(m.get("content", ""))
-                if tc.get("name") == "bash":
+                if tc.get("name") in ("bash", "Bash"):
                     last_bash_idx = i
             except Exception:
                 pass
@@ -2337,14 +2384,15 @@ def score_judge_v3_record(
     else:
         pool_candidates_discussed = None
 
-    # Has render_probes call
+    # Has render_probes call (inline chunk manipulation or legacy script)
     has_render_probes: float = 0.0
     for m in messages:
         if m.get("role") != "tool_call":
             continue
         try:
             tc = json.loads(m.get("content", ""))
-            if tc.get("name") == "bash" and "skills/vital/scripts/render_probes.py" in tc.get("arguments", {}).get("command", ""):
+            cmd = tc.get("arguments", {}).get("command", "") if tc.get("name") in ("bash", "Bash") else ""
+            if "skills/vital/scripts/render_probes.py" in cmd or "TrackFX_SetNamedConfigParm" in cmd:
                 has_render_probes = 1.0
                 break
         except Exception:
@@ -2455,7 +2503,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
             continue
         try:
             tc = json.loads(m.get("content", ""))
-            if tc.get("name") != "bash":
+            if tc.get("name") not in ("bash", "Bash"):
                 continue
             cmd = tc.get("arguments", {}).get("command", "") or ""
             if "MIDI_InsertNote" in cmd:
@@ -2474,7 +2522,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
         if m.get("role") == "tool_call":
             try:
                 tc = json.loads(m.get("content", ""))
-                if tc.get("name") == "bash":
+                if tc.get("name") in ("bash", "Bash"):
                     last_bash_idx = i
             except Exception:
                 pass

@@ -45,14 +45,9 @@ import pretty_midi
 from scripts.agent_sft_common import (  # type: ignore
     assert_valid_ms_swift_multiturn_record,
     load_manifest_entries,
+    _bash_tool_response,
+    _tool_call,
 )
-
-
-def _tool_call(name: str, arguments: dict) -> dict:
-    return {
-        "role": "tool_call",
-        "content": json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False),
-    }
 
 
 # Tools available to the transcription agent at inference
@@ -60,7 +55,7 @@ _TRANSCRIPTION_TOOL_SPECS = [
     {
         "type": "function",
         "function": {
-            "name": "bash",
+            "name": "Bash",
             "description": (
                 "Execute shell/Python commands. Used here to run reapy code that "
                 "inserts MIDI notes on a REAPER track and writes the transcription "
@@ -219,7 +214,7 @@ def build_transcription_record(
 
     # 3. Single bash call: insert notes + write JSON
     cmd = build_insert_and_write_cmd(notes, output_file, track_idx=track_idx)
-    messages.append(_tool_call("bash", {"command": cmd}))
+    messages.append(_tool_call("Bash", {"command": cmd}))
 
     # 4. Tool response — persist the file to disk for real so it exists at
     # the path the transcript references (live-exec grading reuses this).
@@ -232,15 +227,13 @@ def build_transcription_record(
     with open(output_file, "w") as f:
         json.dump(payload, f)
         f.write("\n")
-    messages.append({
-        "role": "tool_response",
-        "content": json.dumps({
-            "status": "ok",
-            "notes_inserted": n_notes,
-            "file": str(output_file),
-            "duration_s": duration_s,
-        }, ensure_ascii=False),
-    })
+    _insert_stdout = json.dumps({
+        "status": "ok",
+        "notes_inserted": n_notes,
+        "file": str(output_file),
+        "duration_s": duration_s,
+    }) + "\n"
+    messages.append(_bash_tool_response(_insert_stdout))
 
     # 5. Closing assistant — validator requires last message to be assistant.
     messages.append({

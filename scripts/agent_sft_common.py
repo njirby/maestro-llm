@@ -545,3 +545,209 @@ def assert_valid_ms_swift_multiturn_record(record: dict[str, Any]) -> None:
     if errors:
         rid = str(record.get("id", "unknown"))
         raise ValueError(f"{rid}: " + "; ".join(errors))
+
+
+# ---------------------------------------------------------------------------
+# Shared snippet utilities
+# ---------------------------------------------------------------------------
+
+def _wrap_as_bash(python_code: str) -> str:
+    """Wrap bare Python code in a shell-executable heredoc."""
+    stripped = python_code.strip()
+    if stripped.startswith("python"):
+        return stripped
+    return f"python - <<'PY'\n{stripped}\nPY"
+
+
+# ---------------------------------------------------------------------------
+# claw-code tool response helpers
+# ---------------------------------------------------------------------------
+
+
+def _tool_call(name: str, arguments: dict) -> dict:
+    """Build a tool_call message matching claw-code's format."""
+    return {"role": "tool_call", "content": json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)}
+
+
+def _bash_tool_response(stdout: str, stderr: str = "", interrupted: bool = False) -> dict:
+    """Build a tool_response matching claw-code's BashCommandOutput schema."""
+    payload: dict[str, Any] = {"stdout": stdout, "stderr": stderr, "interrupted": interrupted}
+    return {"role": "tool_response", "content": json.dumps(payload, ensure_ascii=False)}
+
+
+def _read_tool_response_audio() -> dict:
+    """Build a tool_response for a read tool call that returns audio content."""
+    return {"role": "tool_response", "content": "<audio>"}
+
+
+def _emit_listen_sequence(
+    messages: list[dict],
+    audio_assets: list[str],
+    audio_path: str | Path,
+    probe_stdout: str | None = None,
+    listen_text: str = "Listening.",
+) -> None:
+    """Append the BashCommandOutput → assistant → read → audio sequence.
+
+    Call AFTER appending the bash probe/render tool_call.
+    ``audio_path`` must already be in ``audio_assets`` before calling this.
+    If ``probe_stdout`` is None, a default listen_probe JSON is synthesized.
+    """
+    path_str = str(audio_path)
+    if probe_stdout is None:
+        probe_out: dict[str, Any] = {"listen_probe": {"path": path_str, "exists": True}}
+        try:
+            info = sf.info(path_str)
+            probe_out["listen_probe"]["duration_s"] = round(info.duration, 4)
+        except Exception:
+            pass
+        probe_stdout = json.dumps(probe_out, ensure_ascii=False) + "\n"
+    messages.append(_bash_tool_response(probe_stdout))
+    messages.append({"role": "assistant", "content": listen_text})
+    messages.append(_tool_call("Read", {"file_path": path_str}))
+    messages.append(_read_tool_response_audio())
+
+
+# ---------------------------------------------------------------------------
+# Inline snippet builders — replace prebuilt skill scripts
+# ---------------------------------------------------------------------------
+
+def build_list_wavetables_total_snippet() -> str:
+    """Inline snippet that prints the total count of unique wavetables."""
+    return (
+        "import json\n"
+        'lib = json.load(open("data/wavetable_lib.json"))\n'
+        "seen, names = set(), []\n"
+        "for wt in lib:\n"
+        '    n = wt.get("name", "")\n'
+        "    if n and n not in seen:\n"
+        "        seen.add(n)\n"
+        "        names.append(n)\n"
+        'print(json.dumps({"total": len(names)}))'
+    )
+
+
+def build_list_wavetables_slice_snippet(start: int, end: int) -> str:
+    """Inline snippet that lists wavetable names in an index range."""
+    return (
+        "import json\n"
+        'lib = json.load(open("data/wavetable_lib.json"))\n'
+        "seen, names = set(), []\n"
+        "for wt in lib:\n"
+        '    n = wt.get("name", "")\n'
+        "    if n and n not in seen:\n"
+        "        seen.add(n)\n"
+        "        names.append(n)\n"
+        f"start, end = {start}, min({end}, len(names))\n"
+        "rows = [{\"idx\": i, \"name\": names[i]} for i in range(start, end)]\n"
+        'print(json.dumps({"wavetables": rows, "start": start, "end": end, '
+        '"count": len(rows), "total": len(names)}))'
+    )
+
+
+def build_render_probes_snippet(
+    idxs: list[int] | None = None,
+    names: list[str] | None = None,
+    out_dir: str = "/tmp/probes",
+    track_idx: int = 0,
+    fx_idx: int = 0,
+) -> str:
+    """Inline snippet that swaps wavetables into Vital and renders probes via REAPER."""
+    if names:
+        selector = (
+            f"wanted = {json.dumps(names)}\n"
+            "idx_list = [name_to_idx[n] for n in wanted if n in name_to_idx]\n"
+        )
+    elif idxs is not None:
+        selector = f"idx_list = {json.dumps(idxs)}\n"
+    else:
+        selector = "idx_list = []\n"
+
+    return (
+        "import reapy, json, base64, gc, soundfile as sf, numpy as np\n"
+        "from pathlib import Path\n"
+        f'out_dir = Path("{out_dir}")\n'
+        "out_dir.mkdir(parents=True, exist_ok=True)\n"
+        'lib = json.load(open("data/wavetable_lib.json"))\n'
+        "seen, named = set(), []\n"
+        "for wt in lib:\n"
+        '    n = wt.get("name", "")\n'
+        "    if n and n not in seen:\n"
+        "        seen.add(n)\n"
+        "        named.append(wt)\n"
+        'name_to_idx = {wt["name"]: i for i, wt in enumerate(named)}\n'
+        f"{selector}"
+        "with reapy.inside_reaper():\n"
+        f"    track = reapy.Project().tracks[{track_idx}]\n"
+        "    rpr = reapy.reascript_api\n"
+        f"    fx = {fx_idx}\n"
+        "    rendered = []\n"
+        "    for idx in idx_list:\n"
+        "        wt = named[idx]\n"
+        '        name = wt["name"]\n'
+        "        r = rpr.TrackFX_GetNamedConfigParm(track.id, fx, 'vst_chunk', '', 524288)\n"
+        "        raw = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
+        "        data = base64.b64decode(raw)\n"
+        "        start = data.index(b'{')\n"
+        "        depth, i = 0, start\n"
+        "        while i < len(data):\n"
+        "            if data[i:i+1] == b'{': depth += 1\n"
+        "            elif data[i:i+1] == b'}': depth -= 1\n"
+        "            if depth == 0: break\n"
+        "            i += 1\n"
+        "        prefix, suffix = data[:start], data[i+1:]\n"
+        "        preset = json.loads(data[start:i+1])\n"
+        "        preset['settings']['wavetables'][0] = wt\n"
+        "        new_json = json.dumps(preset, separators=(',', ':')).encode('utf-8')\n"
+        "        encoded = base64.b64encode(prefix + new_json + suffix).decode('ascii')\n"
+        "        gc.collect()\n"
+        "        rpr.TrackFX_SetNamedConfigParm(track.id, fx, 'vst_chunk', encoded)\n"
+        "        slug = ''.join(c if c.isalnum() else '_' for c in name)[:60]\n"
+        "        out = out_dir / f'wt_{idx:04d}_{slug}.wav'\n"
+        "        rpr.Main_OnCommand(42230, 0)  # render to file\n"
+        "        rendered.append({'idx': idx, 'name': name, 'out': str(out)})\n"
+        "    print(json.dumps({'status': 'ok', 'rendered': rendered}))"
+    )
+
+
+def build_render_tuple_snippet(
+    osc_names: dict[int, str],
+    out_path: str,
+    track_idx: int = 0,
+    fx_idx: int = 0,
+) -> str:
+    """Inline snippet that swaps wavetables onto multiple oscillators and renders."""
+    osc_list = json.dumps([(oi, name) for oi, name in sorted(osc_names.items())])
+    return (
+        "import reapy, json, base64, gc\n"
+        'lib = json.load(open("data/wavetable_lib.json"))\n'
+        'name_to_wt = {wt["name"]: wt for wt in lib if "name" in wt}\n'
+        f"osc_assignments = {osc_list}\n"
+        "with reapy.inside_reaper():\n"
+        f"    track = reapy.Project().tracks[{track_idx}]\n"
+        "    rpr = reapy.reascript_api\n"
+        f"    fx = {fx_idx}\n"
+        "    r = rpr.TrackFX_GetNamedConfigParm(track.id, fx, 'vst_chunk', '', 524288)\n"
+        "    raw = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
+        "    data = base64.b64decode(raw)\n"
+        "    start = data.index(b'{')\n"
+        "    depth, i = 0, start\n"
+        "    while i < len(data):\n"
+        "        if data[i:i+1] == b'{': depth += 1\n"
+        "        elif data[i:i+1] == b'}': depth -= 1\n"
+        "        if depth == 0: break\n"
+        "        i += 1\n"
+        "    prefix, suffix = data[:start], data[i+1:]\n"
+        "    preset = json.loads(data[start:i+1])\n"
+        "    applied = []\n"
+        "    for osc_idx, wt_name in osc_assignments:\n"
+        "        if wt_name in name_to_wt:\n"
+        "            preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
+        "            applied.append({'osc': osc_idx, 'name': wt_name})\n"
+        "    new_json = json.dumps(preset, separators=(',', ':')).encode('utf-8')\n"
+        "    encoded = base64.b64encode(prefix + new_json + suffix).decode('ascii')\n"
+        "    gc.collect()\n"
+        "    rpr.TrackFX_SetNamedConfigParm(track.id, fx, 'vst_chunk', encoded)\n"
+        "    rpr.Main_OnCommand(42230, 0)  # render to file\n"
+        f"    print(json.dumps({{'status': 'ok', 'out': '{out_path}', 'applied': applied}}))"
+    )

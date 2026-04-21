@@ -51,6 +51,7 @@ from scripts.agent_sft_common import (  # type: ignore
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_name_embedding_map,
+    build_render_probes_snippet,
     ensure_candidate_probes_for_names,
     extract_gt_wavetable_names,
     is_clap_selected,
@@ -58,6 +59,10 @@ from scripts.agent_sft_common import (  # type: ignore
     load_manifest_entries,
     load_wavetable_lib,
     select_probe_rows_by_name,
+    _bash_tool_response,
+    _read_tool_response_audio,
+    _tool_call as _tool_call_common,
+    _wrap_as_bash,
 )
 from scripts.build_main_agent_sft_v2 import (  # type: ignore
     _check_server_reachable,
@@ -71,7 +76,7 @@ def _b64(path: str | Path) -> str:
 
 
 def _tool_call(name: str, arguments: dict) -> dict:
-    return {"role": "tool_call", "content": json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)}
+    return _tool_call_common(name, arguments)
 
 
 # Tools available to the judge agent at inference (matches main-agent dispatch prompt)
@@ -79,7 +84,7 @@ _JUDGE_TOOL_SPECS = [
     {
         "type": "function",
         "function": {
-            "name": "bash",
+            "name": "Bash",
             "description": "Run a shell command (used to render probes and write the selection file).",
             "parameters": {
                 "type": "object",
@@ -87,7 +92,19 @@ _JUDGE_TOOL_SPECS = [
                 "required": ["command"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "Read",
+            "description": "Read a file. For audio files, returns the audio content for listening.",
+            "parameters": {
+                "type": "object",
+                "properties": {"file_path": {"type": "string", "description": "Absolute path to the file."}},
+                "required": ["file_path"],
+            },
+        },
+    },
 ]
 
 
@@ -497,7 +514,6 @@ def build_judge_record(
     probe_out_dir = f"/tmp/judge_probes/{sample_id}"
 
     pool_str = ", ".join(f'"{n}"' for n in pool)
-    names_arg = ",".join(json.dumps(n) for n in pool)
     from scripts.agent_sft_common import make_agent_id  # type: ignore
     judge_agent_id = make_agent_id(sample_id, "wavetable_judge")
     judge_output_file = judge_output_dir / f"{judge_agent_id}.json"
@@ -518,29 +534,34 @@ def build_judge_record(
     })
 
     # Render probes for all pool candidates
-    render_cmd = (
-        f"python skills/vital/scripts/render_probes.py --names {names_arg} "
-        f"--out-dir {probe_out_dir}"
-    )
+    render_cmd = _wrap_as_bash(build_render_probes_snippet(
+        names=list(pool), out_dir=probe_out_dir,
+    ))
     messages.append({
         "role": "assistant",
         "content": f"Rendering probes for all {len(pool)} pool candidates in one batch.",
     })
-    messages.append(_tool_call("bash", {"command": render_cmd}))
+    messages.append(_tool_call("Bash", {"command": render_cmd}))
 
     rendered_entries = []
+    audio_read_paths: list[str] = []
     for name in pool:
         if name in candidate_audio:
             audio_assets.append(str(candidate_audio[name]))
+            audio_read_paths.append(str(candidate_audio[name]))
             rendered_entries.append({
                 "name": name,
                 "out": str(candidate_audio[name]),
-                "audio": "<audio>",
             })
-    messages.append({
-        "role": "tool_response",
-        "content": json.dumps({"status": "ok", "rendered": rendered_entries}, ensure_ascii=False),
-    })
+    _render_stdout = json.dumps({"status": "ok", "rendered": rendered_entries}) + "\n"
+    messages.append(_bash_tool_response(_render_stdout))
+
+    # Read each rendered probe — sequential read calls
+    if audio_read_paths:
+        messages.append({"role": "assistant", "content": "Listening to all pool candidates."})
+        for rp in audio_read_paths:
+            messages.append(_tool_call("Read", {"file_path": rp}))
+            messages.append(_read_tool_response_audio())
 
     # Verdict computation: "good" iff every active-osc-slot's GT name is in
     # the pool. When any required GT is absent, the judge emits "no_match" and
@@ -669,11 +690,9 @@ def build_judge_record(
         f"print(json.dumps({{'status': 'ok', 'file': str(p)}}))\n"
         f"PY"
     )
-    messages.append(_tool_call("bash", {"command": write_cmd}))
-    messages.append({
-        "role": "tool_response",
-        "content": json.dumps({"status": "ok", "file": str(judge_output_file)}, ensure_ascii=False),
-    })
+    messages.append(_tool_call("Bash", {"command": write_cmd}))
+    _write_stdout = json.dumps({"status": "ok", "file": str(judge_output_file)}) + "\n"
+    messages.append(_bash_tool_response(_write_stdout))
     # Closing assistant turn — confirms the verdict and signals the main agent
     # what to do next (apply tuple OR re-search).
     if verdict == _VERDICT_GOOD:

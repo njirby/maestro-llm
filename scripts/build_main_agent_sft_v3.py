@@ -41,7 +41,11 @@ from scripts.agent_sft_common import (
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_gt_similarity_pool,
+    build_list_wavetables_slice_snippet,
+    build_list_wavetables_total_snippet,
     build_name_embedding_map,
+    build_render_probes_snippet,
+    build_render_tuple_snippet,
     ensure_candidate_probes_for_names,
     extract_gt_wavetable_names,
     load_index_rows,
@@ -50,16 +54,26 @@ from scripts.agent_sft_common import (
     make_agent_id,
     select_probe_rows_by_name,
     write_agent_manifest,
+    _bash_tool_response,
+    _emit_listen_sequence,
+    _read_tool_response_audio,
+    _tool_call,
+    _wrap_as_bash,
 )
 from scripts.build_main_agent_sft_v2 import (
     _build_listen_probe_command,
     _check_server_reachable,
-    _harden_vital_snippet_for_reapy,
     _llm_post,
     _step_remaining_gap,
-    _tool_call,
-    _wrap_as_bash,
 )
+
+# Build-time only: authoritative json_key → REAPER display name mapping,
+# generated once from a live REAPER+Vital session via TrackFX_GetParamName.
+# Covers 756 of 776 param_ranges keys; the 20 missing are macros and obscure
+# random/LFO keytrack_tune params that never appear in generated presets.
+_VITAL_DISPLAY_NAMES_PATH = ROOT / "maestro" / "synth" / "vital_display_names.json"
+with open(_VITAL_DISPLAY_NAMES_PATH) as _f:
+    _VITAL_DISPLAY_NAMES: dict[str, str] = json.load(_f)
 
 # v3-specific tool specs: claw-code-style Agent tool + bash. Replaces the
 # v2 spawn_search_agents / collect_search_reports / judge_candidates trio.
@@ -68,7 +82,7 @@ _V3_TOOL_SPECS = json.dumps(
         {
             "type": "function",
             "function": {
-                "name": "bash",
+                "name": "Bash",
                 "description": "Execute shell/Python commands for Vital search, edit, and listen passes.",
                 "parameters": {
                     "type": "object",
@@ -95,6 +109,24 @@ _V3_TOOL_SPECS = json.dumps(
                         "name": {"type": "string", "description": "Optional name for the sub-agent."},
                     },
                     "required": ["subagent_type", "description", "prompt"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Read",
+                "description": (
+                    "Read a file from the filesystem. For audio files (.wav, .mp3, .flac), "
+                    "returns the audio content for listening. For text/JSON files, returns "
+                    "the file content as a string."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Absolute path to the file to read."},
+                    },
+                    "required": ["file_path"],
                 },
             },
         },
@@ -159,6 +191,20 @@ def _json_key_to_display(key: str) -> str:
     abbrevs = {"osc": "Oscillator", "env": "Envelope", "lfo": "LFO", "eq": "EQ", "fx": "FX"}
     parts = key.split("_")
     return " ".join(abbrevs.get(p.lower(), p.capitalize()) for p in parts)
+
+
+def _json_key_to_reaper_display(key: str) -> str:
+    """Map a Vital JSON key to the exact REAPER display name.
+
+    Uses the authoritative mapping built from a live REAPER+Vital session.
+    Falls back to heuristic title-case expansion for any key not in the map
+    (shouldn't happen for params in param_ranges.json).
+    Build-time only — the model never sees this function.
+    """
+    exact = _VITAL_DISPLAY_NAMES.get(key)
+    if exact:
+        return exact
+    return _json_key_to_display(key)
 
 
 # ---------------------------------------------------------------------------
@@ -354,28 +400,54 @@ def format_subsystem_diff_summary(truth: dict[str, list[str]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Action snippet — apply a batch of params atomically via VitalController
+# Action snippet — apply a batch of params via generic REAPER TrackFX_SetParam
 # ---------------------------------------------------------------------------
 
 
-def build_batch_action_snippet(params_native: dict[str, float]) -> str:
-    """Emit a Python snippet that calls vc.set_params({...}) with native values.
+def _format_params_dict(params: dict[str, float], indent: str = "    ") -> str:
+    """Format a params dict as a Python literal with proper indentation."""
+    items = sorted(params.items())
+    if len(items) <= 2:
+        inner = ", ".join(f'{json.dumps(k)}: {round(float(v), 6)}' for k, v in items)
+        return "{" + inner + "}"
+    lines = ["{"]
+    for k, v in items:
+        lines.append(f"{indent}    {json.dumps(k)}: {round(float(v), 6)},")
+    lines.append(f"{indent}}}")
+    return ("\n" + indent).join(lines)
 
-    params_native — {name: native_value} (already denormalized).
+
+def build_batch_action_snippet(
+    params_display_norm: dict[str, float],
+    track_idx: int = 0,
+    fx_idx: int = 0,
+) -> str:
+    """Emit a Python snippet that sets plugin params using generic REAPER APIs.
+
+    params_display_norm — {reaper_display_name: normalized_0_to_1_value}.
+    Uses TrackFX_GetParamName + TrackFX_SetParam — works with any plugin.
     """
-    params_repr = ", ".join(
-        f'"{name}": {val!r}' for name, val in sorted(params_native.items())
+    params_literal = _format_params_dict(params_display_norm, indent="    ")
+    return (
+        "import reapy, json\n"
+        "with reapy.inside_reaper():\n"
+        f"    track = reapy.Project().tracks[{track_idx}]\n"
+        "    rpr = reapy.reascript_api\n"
+        f"    fx = {fx_idx}\n"
+        f"    params = {params_literal}\n"
+        "    n = rpr.TrackFX_GetNumParams(track.id, fx)\n"
+        "    if isinstance(n, (list, tuple)): n = n[0]\n"
+        "    idx_of = {}\n"
+        "    for i in range(int(n)):\n"
+        "        r = rpr.TrackFX_GetParamName(track.id, fx, i, '', 256)\n"
+        "        name = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
+        "        if name in params: idx_of[name] = i\n"
+        "    for name, val in params.items():\n"
+        "        if name in idx_of:\n"
+        "            rpr.TrackFX_SetParam(track.id, fx, idx_of[name], val)\n"
+        "    print(json.dumps({'status': 'ok', 'applied': len(idx_of), "
+        "'not_found': [k for k in params if k not in idx_of]}))"
     )
-    snippet = (
-        "import sys, json\n"
-        "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
-        "from vital_tools import VitalController\n"
-        "vc = VitalController()\n"
-        "vc.discover()\n"
-        f"result = vc.set_params({{{params_repr}}})\n"
-        'print(json.dumps({"status": "ok", "applied": result["applied"], "not_found": result["not_found"]}))'
-    )
-    return _harden_vital_snippet_for_reapy(snippet)
 
 
 def denormalize_batch_params(params_norm: dict[str, float]) -> dict[str, float]:
@@ -1080,11 +1152,8 @@ def build_record(
         "role": "assistant",
         "content": "Let me see which skills are available for this plugin.",
     })
-    messages.append(_tool_call("bash", {"command": "ls skills/*/SKILL.md"}))
-    messages.append({
-        "role": "tool_response",
-        "content": "\n".join(_available_skill_paths),
-    })
+    messages.append(_tool_call("Bash", {"command": "ls skills/*/SKILL.md"}))
+    messages.append(_bash_tool_response("\n".join(_available_skill_paths) + "\n"))
 
     # Step 2: load the matching skill via the Skill tool
     messages.append({
@@ -1103,16 +1172,11 @@ def build_record(
         }, ensure_ascii=False),
     })
 
-    # Listen to baseline
-    messages.append({"role": "assistant", "content": "Skill loaded. Listening to current default preset baseline."})
-    messages.append(_tool_call("bash", {"command": _build_listen_probe_command(default_audio_path)}))
-    messages.append({
-        "role": "tool_response",
-        "content": json.dumps(
-            {"status": "ok", "baseline_audio": "<audio>", "path": str(default_audio_path)},
-            ensure_ascii=False,
-        ),
-    })
+    # Listen to baseline: probe → BashCommandOutput, then read → audio
+    messages.append({"role": "assistant", "content": "Skill loaded. Probing default preset baseline."})
+    messages.append(_tool_call("Bash", {"command": _build_listen_probe_command(default_audio_path)}))
+    _emit_listen_sequence(messages, audio_assets, default_audio_path,
+                          listen_text="Listening to the default preset.")
 
     # --- TRANSCRIPTION BLOCK ---
     # Before search, create a REAPER track and dispatch the melody_transcription
@@ -1212,15 +1276,13 @@ def build_record(
                 "role": "assistant",
                 "content": "Creating a REAPER track to hold the transcribed MIDI before I search the wavetable library.",
             })
-            messages.append(_tool_call("bash", {"command": _trans_create_cmd}))
-            messages.append({
-                "role": "tool_response",
-                "content": json.dumps({
-                    "status": "ok",
-                    "track_idx": _trans_track_idx,
-                    "track_name": _trans_track_name,
-                }, ensure_ascii=False),
-            })
+            messages.append(_tool_call("Bash", {"command": _trans_create_cmd}))
+            _track_stdout = json.dumps({
+                "status": "ok",
+                "track_idx": _trans_track_idx,
+                "track_name": _trans_track_name,
+            }) + "\n"
+            messages.append(_bash_tool_response(_track_stdout))
 
             # Step 2a (mistake samples only): emit the WRONG first attempt —
             # dispatch, verify-listen of the corrupted notes, detection, and
@@ -1324,19 +1386,22 @@ def build_record(
                     "print(json.dumps({'listen_probe': out}, ensure_ascii=False))\n"
                     "PY"
                 )
-                messages.append(_tool_call("bash", {"command": _wrong_verify_cmd}))
-                messages.append({
-                    "role": "tool_response",
-                    "content": json.dumps({
-                        "status": "ok",
-                        "listen_probe": {
-                            "path": _wrong_verify_wav,
-                            "exists": True,
-                            "notes": _n_wrong,
-                        },
-                        "audio": "<audio>" if wrong_verify_ok else None,
-                    }, ensure_ascii=False),
-                })
+                messages.append(_tool_call("Bash", {"command": _wrong_verify_cmd}))
+                _wrong_probe_stdout = json.dumps({
+                    "listen_probe": {
+                        "path": _wrong_verify_wav,
+                        "exists": True,
+                        "notes": _n_wrong,
+                    },
+                }) + "\n"
+                if wrong_verify_ok:
+                    _emit_listen_sequence(
+                        messages, audio_assets, _wrong_verify_wav,
+                        probe_stdout=_wrong_probe_stdout,
+                        listen_text="Listening to the first transcription attempt.",
+                    )
+                else:
+                    messages.append(_bash_tool_response(_wrong_probe_stdout))
 
             # Step 2 (primary dispatch): when no mistake was injected this is
             # the one-and-only transcription call. When a mistake was injected
@@ -1455,19 +1520,22 @@ def build_record(
                 "print(json.dumps({'listen_probe': out}, ensure_ascii=False))\n"
                 "PY"
             )
-            messages.append(_tool_call("bash", {"command": _verify_cmd}))
-            messages.append({
-                "role": "tool_response",
-                "content": json.dumps({
-                    "status": "ok",
-                    "listen_probe": {
-                        "path": _verify_wav,
-                        "exists": True,
-                        "notes": _trans_n_notes,
-                    },
-                    "audio": "<audio>" if verify_wav_ok else None,
-                }, ensure_ascii=False),
-            })
+            messages.append(_tool_call("Bash", {"command": _verify_cmd}))
+            _verify_probe_stdout = json.dumps({
+                "listen_probe": {
+                    "path": _verify_wav,
+                    "exists": True,
+                    "notes": _trans_n_notes,
+                },
+            }) + "\n"
+            if verify_wav_ok:
+                _emit_listen_sequence(
+                    messages, audio_assets, _verify_wav,
+                    probe_stdout=_verify_probe_stdout,
+                    listen_text="Listening to the transcription verify render.",
+                )
+            else:
+                messages.append(_bash_tool_response(_verify_probe_stdout))
 
             _verify_prefix = (
                 "Transcription verified on retry"
@@ -1487,8 +1555,8 @@ def build_record(
         "role": "assistant",
         "content": f"{transcription_summary_text}Checking wavetable library size.",
     })
-    messages.append(_tool_call("bash", {"command": "python skills/vital/scripts/list_wavetables.py --total"}))
-    messages.append({"role": "tool_response", "content": json.dumps({"total": total_named}, ensure_ascii=False)})
+    messages.append(_tool_call("Bash", {"command": _wrap_as_bash(build_list_wavetables_total_snippet())}))
+    messages.append(_bash_tool_response(json.dumps({"total": total_named}) + "\n"))
 
     # Agent output directory (real path; runtime executor writes files here at inference)
     agent_out_dir = f"/tmp/agents/{sample_id}"
@@ -1644,9 +1712,9 @@ def build_record(
                 "prompt": (
                     f"Target: {target_audio_path}.\n"
                     f"Evaluate wavetables at indices {start}-{end - 1}. "
-                    f"Use `python skills/vital/scripts/list_wavetables.py --start {start} --end {end}` "
-                    f"and `python skills/vital/scripts/render_probes.py --idxs ... --out-dir ...` "
-                    f"to hear each candidate. Return a JSON shortlist of 2-4 wavetable names."
+                    f"Load data/wavetable_lib.json, list names in your range, "
+                    f"swap each into the synth via chunk manipulation, render, "
+                    f"and listen. Return a JSON shortlist of 2-4 wavetable names."
                 ),
                 "name": f"search-r{rounds_used}-a{ai_idx + 1}",
             }))
@@ -1672,7 +1740,7 @@ def build_record(
             "role": "assistant",
             "content": f"Reading shortlists from {len(round_output_files)} search agents.",
         })
-        messages.append(_tool_call("bash", {"command": cat_cmd}))
+        messages.append(_tool_call("Bash", {"command": cat_cmd}))
         # Concatenate the file contents (single-line JSON per file)
         cat_output_lines = []
         round_shortlists: list[list[str]] = []
@@ -1686,10 +1754,7 @@ def build_record(
             except Exception:
                 cat_output_lines.append("")
                 round_shortlists.append([])
-        messages.append({
-            "role": "tool_response",
-            "content": "\n".join(cat_output_lines),
-        })
+        messages.append(_bash_tool_response("\n".join(cat_output_lines) + "\n"))
 
         # Pool in new shortlists
         for sl in round_shortlists:
@@ -1830,8 +1895,8 @@ def build_record(
         _judge_dispatch_prompt = (
             f"Target: {target_audio_path}.\n"
             f"Pool candidates from search agents: {json.dumps(pool)}.\n"
-            f"Target uses {n_osc_slots} active oscillator(s). Listen to each candidate "
-            f"via `python skills/vital/scripts/render_probes.py --names ... --out-dir ...` "
+            f"Target uses {n_osc_slots} active oscillator(s). Swap each candidate "
+            f"wavetable into the synth via chunk manipulation, render, and listen "
             f"alongside the target, then select the {n_osc_slots} candidates that "
             f"together best capture the target. Write a JSON file with `tuple` (list "
             f"of names), `n_osc_slots`, and `reasoning`."
@@ -1868,10 +1933,10 @@ def build_record(
             "role": "assistant",
             "content": "Reading judge's verdict and selection.",
         })
-        messages.append(_tool_call("bash", {"command": f"cat {judge_output_file}"}))
+        messages.append(_tool_call("Bash", {"command": f"cat {judge_output_file}"}))
         with open(judge_output_file) as jf:
             judge_content = jf.read().strip()
-        messages.append({"role": "tool_response", "content": judge_content})
+        messages.append(_bash_tool_response(judge_content + "\n"))
 
         # Branch on judge verdict.
         if judge_verdict == "no_match":
@@ -1891,14 +1956,11 @@ def build_record(
             continue
 
         # verdict == "good" → render tuple, listen, break out of search loop.
-        osc_args = " ".join(
-            f"--osc{oi + 1} {json.dumps(cur_tuple[oi])}" for oi in active_oscs if cur_tuple[oi]
-        )
         tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}.wav"
-        render_cmd = (
-            f"python skills/vital/scripts/render_tuple.py {osc_args} "
-            f"--out {tuple_wav}"
-        )
+        osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
+        render_cmd = _wrap_as_bash(build_render_tuple_snippet(
+            osc_names=osc_names, out_path=str(tuple_wav),
+        ))
         with serial_lock:
             render_cumulative_audio(synth, _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset), notes, tuple_wav)
 
@@ -1910,15 +1972,16 @@ def build_record(
                 f"Rendering the tuple as a final pre-apply sanity check."
             ),
         })
-        messages.append(_tool_call("bash", {"command": render_cmd}))
+        messages.append(_tool_call("Bash", {"command": render_cmd}))
         audio_assets.append(str(tuple_wav))
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({
-                "status": "ok", "tuple_audio": "<audio>",
-                "out": str(tuple_wav), "wavetables": cur_active_names,
-            }, ensure_ascii=False),
-        })
+        _tuple_stdout = json.dumps({
+            "status": "ok", "out": str(tuple_wav), "wavetables": cur_active_names,
+        }) + "\n"
+        _emit_listen_sequence(
+            messages, audio_assets, tuple_wav,
+            probe_stdout=_tuple_stdout,
+            listen_text="Tuple rendered. Listening.",
+        )
         # Verdict was good → done with search, exit loop.
         break
 
@@ -1928,14 +1991,11 @@ def build_record(
     # not rendered the tuple yet — render it here so the apply step has a
     # tuple_wav to reference and the model gets a final listen.
     if judge_exhausted_fallback:
-        osc_args = " ".join(
-            f"--osc{oi + 1} {json.dumps(cur_tuple[oi])}" for oi in active_oscs if cur_tuple[oi]
-        )
         tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}_fallback.wav"
-        render_cmd = (
-            f"python skills/vital/scripts/render_tuple.py {osc_args} "
-            f"--out {tuple_wav}"
-        )
+        osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
+        render_cmd = _wrap_as_bash(build_render_tuple_snippet(
+            osc_names=osc_names, out_path=str(tuple_wav),
+        ))
         with serial_lock:
             render_cumulative_audio(
                 synth,
@@ -1952,15 +2012,16 @@ def build_record(
                 f"combination [{tuple_names_str}] to make progress before parameter tuning."
             ),
         })
-        messages.append(_tool_call("bash", {"command": render_cmd}))
+        messages.append(_tool_call("Bash", {"command": render_cmd}))
         audio_assets.append(str(tuple_wav))
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({
-                "status": "ok", "tuple_audio": "<audio>",
-                "out": str(tuple_wav), "wavetables": cur_active_names,
-            }, ensure_ascii=False),
-        })
+        _fb_tuple_stdout = json.dumps({
+            "status": "ok", "out": str(tuple_wav), "wavetables": cur_active_names,
+        }) + "\n"
+        _emit_listen_sequence(
+            messages, audio_assets, tuple_wav,
+            probe_stdout=_fb_tuple_stdout,
+            listen_text="Fallback tuple rendered. Listening.",
+        )
 
     gt_tuple = cur_tuple
     apply_names = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
@@ -1979,28 +2040,45 @@ def build_record(
     apply_assignments = ", ".join(
         f'({oi}, {json.dumps(gt_tuple[oi])})' for oi in active_oscs if gt_tuple[oi]
     )
+    wt_lib_path_json = json.dumps(str(args.wavetable_lib))
     apply_snippet = (
-        "import sys, json\n"
-        "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
-        "from vital_tools import VitalController\n"
-        "vc = VitalController()\n"
-        "vc.discover()\n"
-        f"wt_lib = json.load(open({json.dumps(str(args.wavetable_lib))}))\n"
-        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
-        "preset = vc.get_preset()\n"
-        f"for osc_idx, wt_name in [{apply_assignments}]:\n"
-        "    if wt_name in name_to_wt:\n"
-        "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
-        "vc.set_preset(preset)\n"
-        f"print(json.dumps({{'status': 'ok', 'applied': {json.dumps(apply_names)}}}))"
+        "import reapy, base64, json, gc\n"
+        "with reapy.inside_reaper():\n"
+        "    track = reapy.Project().tracks[0]\n"
+        "    rpr = reapy.reascript_api\n"
+        "    fx = 0\n"
+        "    raw, chunk_parm = '', ''\n"
+        "    for parm in ('vst_chunk', 'vst3_chunk'):\n"
+        "        r = rpr.TrackFX_GetNamedConfigParm(track.id, fx, parm, '', 524288)\n"
+        "        raw = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
+        "        if raw:\n"
+        "            chunk_parm = parm\n"
+        "            break\n"
+        "    data = base64.b64decode(raw)\n"
+        "    start = data.index(b'{')\n"
+        "    depth, i = 0, start\n"
+        "    while i < len(data):\n"
+        "        if data[i:i+1] == b'{': depth += 1\n"
+        "        elif data[i:i+1] == b'}': depth -= 1\n"
+        "        if depth == 0: break\n"
+        "        i += 1\n"
+        "    prefix, suffix = data[:start], data[i+1:]\n"
+        "    preset = json.loads(data[start:i+1])\n"
+        f"    wt_lib = json.load(open({wt_lib_path_json}))\n"
+        "    name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
+        f"    for osc_idx, wt_name in [{apply_assignments}]:\n"
+        "        if wt_name in name_to_wt:\n"
+        "            preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
+        "    new_json = json.dumps(preset, separators=(',', ':')).encode('utf-8')\n"
+        "    encoded = base64.b64encode(prefix + new_json + suffix).decode('ascii')\n"
+        "    gc.collect()\n"
+        "    rpr.TrackFX_SetNamedConfigParm(track.id, fx, chunk_parm, encoded)\n"
+        f"    print(json.dumps({{'status': 'ok', 'applied': {json.dumps(apply_names)}}}))"
     )
-    apply_snippet = _harden_vital_snippet_for_reapy(apply_snippet)
     messages.append({"role": "assistant", "content": selection_text})
-    messages.append(_tool_call("bash", {"command": _wrap_as_bash(apply_snippet)}))
-    messages.append({
-        "role": "tool_response",
-        "content": json.dumps({"status": "ok", "applied": apply_names}, ensure_ascii=False),
-    })
+    messages.append(_tool_call("Bash", {"command": _wrap_as_bash(apply_snippet)}))
+    _apply_stdout = json.dumps({"status": "ok", "applied": apply_names}) + "\n"
+    messages.append(_bash_tool_response(_apply_stdout))
 
     # ---- DIAGNOSIS BLOCK (block 1) ----
     subsystem_truth_map = build_diagnosis_subsystem_truth(target_preset, init_preset)
@@ -2070,8 +2148,11 @@ def build_record(
                 clap_after = None
 
         b.audio_wav = batch_wav
-        native_params = {n: _denormalize(n, v) for n, v in b.params_applied.items()}
-        action_snippet = build_batch_action_snippet(native_params)
+        display_norm_params = {
+            _json_key_to_reaper_display(n): float(v)
+            for n, v in b.params_applied.items()
+        }
+        action_snippet = build_batch_action_snippet(display_norm_params)
 
         # Intro message — merge diagnosis (for first batch) or prior check
         intro = f"Applying {b.subsystem} changes."
@@ -2082,20 +2163,18 @@ def build_record(
             intro = f"{pending_check}\n\n{intro}"
             pending_check = None
         messages.append({"role": "assistant", "content": intro})
-        messages.append(_tool_call("bash", {"command": _wrap_as_bash(action_snippet)}))
-        messages.append({"role": "tool_response", "content": json.dumps({"status": "ok"}, ensure_ascii=False)})
+        messages.append(_tool_call("Bash", {"command": _wrap_as_bash(action_snippet)}))
+        _action_stdout = json.dumps({"status": "ok", "applied": len(display_norm_params), "not_found": []}) + "\n"
+        messages.append(_bash_tool_response(_action_stdout))
 
         # Listen
         audio_assets.append(str(batch_wav))
         messages.append({"role": "assistant", "content": f"Listening after {b.subsystem} batch."})
-        messages.append(_tool_call("bash", {"command": _build_listen_probe_command(batch_wav)}))
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps(
-                {"status": "ok", "batch_audio": "<audio>", "path": str(batch_wav)},
-                ensure_ascii=False,
-            ),
-        })
+        messages.append(_tool_call("Bash", {"command": _build_listen_probe_command(batch_wav)}))
+        _emit_listen_sequence(
+            messages, audio_assets, batch_wav,
+            listen_text=f"Reading {b.subsystem} batch audio.",
+        )
         last_batch_audio = batch_wav
 
         # Remaining-gap check
@@ -2163,20 +2242,18 @@ def build_record(
                 corr_intro = f"{corr_prefix}Overshot on {b.subsystem} — backing off {disp} to the planned value."
             messages.append({"role": "assistant", "content": corr_intro})
 
-            corr_native = {b.mistake["param"]: _denormalize(b.mistake["param"], true_norm)}
-            messages.append(_tool_call("bash", {"command": _wrap_as_bash(build_batch_action_snippet(corr_native))}))
-            messages.append({"role": "tool_response", "content": json.dumps({"status": "ok"}, ensure_ascii=False)})
+            corr_display_norm = {_json_key_to_reaper_display(b.mistake["param"]): float(true_norm)}
+            messages.append(_tool_call("Bash", {"command": _wrap_as_bash(build_batch_action_snippet(corr_display_norm))}))
+            _corr_stdout = json.dumps({"status": "ok", "applied": 1, "not_found": []}) + "\n"
+            messages.append(_bash_tool_response(_corr_stdout))
 
             audio_assets.append(str(corr_wav))
             messages.append({"role": "assistant", "content": "Listening to the corrected preset."})
-            messages.append(_tool_call("bash", {"command": _build_listen_probe_command(corr_wav)}))
-            messages.append({
-                "role": "tool_response",
-                "content": json.dumps(
-                    {"status": "ok", "corrected_audio": "<audio>", "path": str(corr_wav)},
-                    ensure_ascii=False,
-                ),
-            })
+            messages.append(_tool_call("Bash", {"command": _build_listen_probe_command(corr_wav)}))
+            _emit_listen_sequence(
+                messages, audio_assets, corr_wav,
+                listen_text="Reading corrected audio.",
+            )
             last_batch_audio = corr_wav
             pending_check = f"The {b.subsystem} region now sits back in line with the plan."
 
