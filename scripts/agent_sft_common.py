@@ -11,7 +11,8 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
-from maestro.render.vital import SAMPLE_RATE, _load_vital, _render_note_list, make_probe_notes, trim_silence
+from maestro.render.vital import SAMPLE_RATE
+from maestro.render.dawdreamer import render_preset_audio
 from scripts.build_wavetable_retrieval_baseline import (
     _build_probe_preset,
     _embed_clap,
@@ -200,8 +201,8 @@ def ensure_candidate_probes_for_names(
 
     init_preset = _load_init_preset()
     if notes is None:
+        from maestro.render.dawdreamer import make_probe_notes
         notes = make_probe_notes(probe_archetype)
-    synth = _load_vital()
 
     for name in missing:
         row = selected_rows[name]
@@ -212,10 +213,7 @@ def ensure_candidate_probes_for_names(
         path = out_dir / fname
         if not path.exists():
             preset = _build_probe_preset(init_preset, wt, frame_idx)
-            synth.load_json(json.dumps(preset))
-            audio = _render_note_list(synth, notes, SAMPLE_RATE, tail_s=probe_tail_s)
-            audio = trim_silence(audio, SAMPLE_RATE, min_duration_s=trim_min_duration_s)
-            sf.write(path, audio.T, SAMPLE_RATE)
+            render_preset_audio(preset, notes, out_path=path, tail_s=probe_tail_s)
         cache[name] = path
 
 

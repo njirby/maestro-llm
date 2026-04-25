@@ -822,16 +822,8 @@ def main() -> None:
             except Exception:
                 _midi_notes_dicts = None
         if _midi_notes_dicts:
-            import pretty_midi as _pm
-            _midi_notes_pm = [
-                _pm.Note(
-                    velocity=int(n["velocity"]),
-                    pitch=int(n["pitch"]),
-                    start=float(n["start_s"]),
-                    end=float(n["start_s"] + n["dur_s"]),
-                )
-                for n in _midi_notes_dicts
-            ]
+            from maestro.render.dawdreamer import notes_from_dicts
+            _midi_notes_pm = notes_from_dicts(_midi_notes_dicts)
             _trans_agent_id = make_agent_id(sample_id, "melody_transcription")
             _trans_dir = Path(f"/tmp/agents/{sample_id}")
             _trans_dir.mkdir(parents=True, exist_ok=True)
@@ -909,15 +901,14 @@ def main() -> None:
                 all_slice_names.append(idx_to_name_full[i])
         all_slice_names = list(dict.fromkeys(all_slice_names))  # dedupe, preserve order
 
-        with serial_lock:
-            ensure_candidate_probes_for_names(
-                names=all_slice_names,
-                wavetable_lib=wavetable_lib,
-                selected_rows=selected_by_name,
-                out_dir=args.probe_dir,
-                cache=candidate_audio,
-                notes=_midi_notes_pm,
-            )
+        ensure_candidate_probes_for_names(
+            names=all_slice_names,
+            wavetable_lib=wavetable_lib,
+            selected_rows=selected_by_name,
+            out_dir=args.probe_dir,
+            cache=candidate_audio,
+            notes=_midi_notes_pm,
+        )
 
         # Build one record per search agent, one per slice.
         # Agents within a sample are independent — parallelize their Omni calls.

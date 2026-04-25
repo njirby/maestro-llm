@@ -325,22 +325,18 @@ def corrupt_transcription_notes(notes: list[dict], rng) -> tuple[list[dict], dic
 
 import numpy as np
 import soundfile as sf
-from maestro.render.vital import SAMPLE_RATE, _load_vital, _render_note_list, make_probe_notes, trim_silence
+from maestro.render.vital import SAMPLE_RATE
+from maestro.render.dawdreamer import render_preset_audio, make_probe_notes, notes_from_dicts
 
 
 def render_cumulative_audio(
-    synth,
     cumulative_preset: dict,
     notes: list,
     out_path: Path,
     tail_s: float = 1.0,
 ) -> Path:
-    """Render audio for a cumulative preset state and write to ``out_path``."""
-    synth.load_json(json.dumps(cumulative_preset))
-    audio = _render_note_list(synth, notes, SAMPLE_RATE, tail_s=tail_s)
-    audio = trim_silence(audio, SAMPLE_RATE, min_duration_s=0.5)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(out_path), audio.T, SAMPLE_RATE)
+    """Render audio for a cumulative preset state via DawDreamer and write to ``out_path``."""
+    render_preset_audio(cumulative_preset, notes, out_path=out_path, tail_s=tail_s)
     return out_path
 
 
@@ -819,10 +815,10 @@ def stage2_correction_intro(
 def stage2_verdict(
     perceptual_obs: str,
     residual_delta_summary: str,
-    path_complete: bool,
-    archetype: str,
-    stage2_server: str,
-    stage2_model: str,
+    path_complete: bool = True,
+    archetype: str = "",
+    stage2_server: str = "",
+    stage2_model: str = "",
 ) -> str:
     """Stage 2: write FINAL ASSESSMENT grounded in a perceptual residual-delta summary.
 
@@ -831,15 +827,13 @@ def stage2_verdict(
     no param names). The prompt forbids generic 'envelope N' pattern-matching
     and requires the model to cite one of the specific residuals.
     """
-    status_tag = "(complete)" if path_complete else "(budget_exhausted)"
     prompt = (
         f"You are a music production AI writing the final assessment of a "
         f"synth recreation.\n\n"
         f"Perceptual review of the recreation:\n{perceptual_obs}\n\n"
         f"Actual residual differences (what still differs between target and final, "
         f"sorted by magnitude):\n{residual_delta_summary}\n\n"
-        f"Path status: {'converged' if path_complete else 'budget exhausted'}.\n\n"
-        f"Write a single line beginning with 'FINAL ASSESSMENT {status_tag}: ' followed "
+        f"Write a single line beginning with 'FINAL ASSESSMENT: ' followed "
         f"by exactly 2 short sentences.\n"
         f"  Sentence 1: what the recreation captures well about the target's character.\n"
         f"  Sentence 2: the most important remaining difference — MUST cite one of the "
@@ -862,18 +856,17 @@ def stage2_verdict(
         )
         text = r["choices"][0]["message"]["content"].strip()
         if not text.startswith("FINAL ASSESSMENT"):
-            text = f"FINAL ASSESSMENT {status_tag}: {text}"
+            text = f"FINAL ASSESSMENT: {text}"
         return text
     except Exception:
         if path_complete:
             return (
-                f"FINAL ASSESSMENT {status_tag}: The recreation captures the target's core "
+                f"FINAL ASSESSMENT: The recreation captures the target's core "
                 f"character. No significant residuals remain."
             )
-        # Use the first residual line if available
         first_residual = residual_delta_summary.split("\n", 1)[0].lstrip("- ").rstrip()
         return (
-            f"FINAL ASSESSMENT {status_tag}: The recreation captures the target's core "
+            f"FINAL ASSESSMENT: The recreation captures the target's core "
             f"timbre. The most notable remaining difference is that {first_residual}."
         )
 
@@ -927,10 +920,15 @@ def build_record(
     stage2_server: str,
     stage2_model: str,
     serial_lock: threading.Lock,
-    synth: Any,
     notes: list,
 ) -> dict | None:
     """Build one v3 SFT record. Returns None to skip."""
+    import time as _time
+    _t0 = _time.monotonic()
+    def _log(msg: str) -> None:
+        elapsed = _time.monotonic() - _t0
+        print(f"  [{sample_id}] {elapsed:6.1f}s  {msg}", flush=True)
+
     sample_id = str(entry["sample_id"])
     archetype = str(entry.get("archetype", "synth"))
     target_audio_path = Path(entry.get("gt_wav") or entry.get("gt_probe_wav"))
@@ -947,16 +945,7 @@ def build_record(
             from scripts.build_transcription_agent_sft_v3 import load_notes_from_midi  # type: ignore
             _midi_notes = load_notes_from_midi(source_midi_path)
             if _midi_notes:
-                import pretty_midi as _pm
-                notes = [
-                    _pm.Note(
-                        velocity=int(n["velocity"]),
-                        pitch=int(n["pitch"]),
-                        start=float(n["start_s"]),
-                        end=float(n["start_s"] + n["dur_s"]),
-                    )
-                    for n in _midi_notes
-                ]
+                notes = notes_from_dicts(_midi_notes)
         except Exception:
             pass
 
@@ -1140,6 +1129,7 @@ def build_record(
                         break
             _skill_description = " ".join(_desc_lines).strip()
 
+    _log("start — skill discovery + transcription")
     # Step 1: discover available skills via filesystem
     messages.append({
         "role": "assistant",
@@ -1326,22 +1316,8 @@ def build_record(
                 # "hear" the mismatch. At build time we know which note is off
                 # and embed that in the detection narration for grounded text.
                 try:
-                    with serial_lock:
-                        synth.load_json(json.dumps(init_preset))
-                        _wrong_notes_pm = [
-                            __import__("pretty_midi").Note(
-                                velocity=int(n["velocity"]),
-                                pitch=int(n["pitch"]),
-                                start=float(n["start_s"]),
-                                end=float(n["start_s"] + n["dur_s"]),
-                            )
-                            for n in _trans_wrong_notes
-                        ]
-                        audio = _render_note_list(synth, _wrong_notes_pm, SAMPLE_RATE, tail_s=1.0)
-                    audio = trim_silence(audio, SAMPLE_RATE, min_duration_s=0.5)
-                    import soundfile as _sf
-                    Path(_wrong_verify_wav).parent.mkdir(parents=True, exist_ok=True)
-                    _sf.write(_wrong_verify_wav, audio.T, SAMPLE_RATE)
+                    _wrong_tuples = notes_from_dicts(_trans_wrong_notes)
+                    render_preset_audio(init_preset, _wrong_tuples, out_path=_wrong_verify_wav, tail_s=1.0)
                     audio_assets.append(_wrong_verify_wav)
                     wrong_verify_ok = True
                 except Exception:
@@ -1470,12 +1446,7 @@ def build_record(
             Path(_verify_wav).parent.mkdir(parents=True, exist_ok=True)
             # Render the verify probe live: transcribed notes + default init preset.
             try:
-                with serial_lock:
-                    synth.load_json(json.dumps(init_preset))
-                    audio = _render_note_list(synth, notes, SAMPLE_RATE, tail_s=1.0)
-                audio = trim_silence(audio, SAMPLE_RATE, min_duration_s=0.5)
-                import soundfile as _sf
-                _sf.write(_verify_wav, audio.T, SAMPLE_RATE)
+                render_preset_audio(init_preset, notes, out_path=_verify_wav, tail_s=1.0)
                 audio_assets.append(_verify_wav)
                 verify_wav_ok = True
             except Exception:
@@ -1573,6 +1544,7 @@ def build_record(
                 preset["settings"][f"osc_{oi + 1}_level"] = 0.0
         return preset
 
+    _log("search loop start")
     # ---- Multi-round search loop ----
     pool: list[str] = []
     rounds_used = 0
@@ -1956,8 +1928,7 @@ def build_record(
             osc_names=osc_names, out_path=str(tuple_wav),
             midi_path=_trans_output_file,
         ))
-        with serial_lock:
-            render_cumulative_audio(synth, _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset), notes, tuple_wav)
+        render_cumulative_audio(_build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset), notes, tuple_wav)
 
         tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
         messages.append({
@@ -1992,12 +1963,10 @@ def build_record(
             osc_names=osc_names, out_path=str(tuple_wav),
             midi_path=_trans_output_file,
         ))
-        with serial_lock:
-            render_cumulative_audio(
-                synth,
-                _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
-                notes, tuple_wav,
-            )
+        render_cumulative_audio(
+            _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
+            notes, tuple_wav,
+        )
         cur_active_names = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
         tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
         messages.append({
@@ -2071,14 +2040,16 @@ def build_record(
         )
     else:
         stage1_obs = "Target differs from default in several subsystems."
+    _dt = _time.monotonic()
     diagnosis_text = stage2_diagnosis(
         stage1_obs, diff_summary, subsystems_truth,
         archetype, stage2_server, stage2_model,
     )
+    _log(f"diagnosis omni {_time.monotonic()-_dt:.1f}s")
 
     _diagnosis_text = diagnosis_text
 
-    # ---- SUBSYSTEM BATCHES (diff-based, vita-rendered) ----
+    # ---- SUBSYSTEM BATCHES (diff-based) ----
     batches = build_batches_from_diff(target_preset, init_preset)
     batches = batches[:int(args.max_batches)]
     path_complete = True  # diff-based always applies everything within max_batches
@@ -2102,6 +2073,7 @@ def build_record(
 
     batch_audio_dir = Path(args.out_jsonl).parent / "batch_audio" / sample_id
     batch_audio_dir.mkdir(parents=True, exist_ok=True)
+    _log(f"batch loop start — {len(batches)} batches")
 
     for bi, b in enumerate(batches):
         # Snapshot BEFORE values for the params in this batch so we can describe
@@ -2114,10 +2086,10 @@ def build_record(
         for name, norm in b.params_applied.items():
             cumulative["settings"][name] = _denormalize(name, norm)
 
-        # Render fresh audio for this cumulative state (under serial lock — one Synth per process)
         batch_wav = batch_audio_dir / f"batch_{bi}_{b.subsystem}.wav"
-        with serial_lock:
-            render_cumulative_audio(synth, cumulative, notes, batch_wav)
+        _bt = _time.monotonic()
+        render_cumulative_audio(cumulative, notes, batch_wav)
+        _log(f"  batch {bi}/{len(batches)-1} ({b.subsystem}) render {_time.monotonic()-_bt:.1f}s")
 
         # CLAP score vs GT
         with serial_lock:
@@ -2167,6 +2139,7 @@ def build_record(
                 (name, batch_before_values.get(name, 0.0), float(cumulative["settings"].get(name, 0.0) or 0.0))
                 for name in sorted(b.params_applied.keys())
             ]
+            _ot = _time.monotonic()
             check_sentence = stage2_batch_check(
                 subsystem=b.subsystem,
                 plan_bullet=plan_bullet,
@@ -2178,6 +2151,7 @@ def build_record(
                 is_final=is_last and not b.mistake,
                 n_params_applied=len(b.params),
             )
+            _log(f"  batch {bi}/{len(batches)-1} ({b.subsystem}) omni {_time.monotonic()-_ot:.1f}s")
         else:
             check_sentence = f"{b.subsystem.capitalize()} edits applied consistent with the plan."
         prior_checks.append(check_sentence)
@@ -2198,8 +2172,8 @@ def build_record(
             cumulative["settings"][b.mistake["param"]] = _denormalize(b.mistake["param"], true_norm)
 
             corr_wav = batch_audio_dir / f"batch_{bi}_correction.wav"
+            render_cumulative_audio(cumulative, notes, corr_wav)
             with serial_lock:
-                render_cumulative_audio(synth, cumulative, notes, corr_wav)
                 try:
                     corr_clap = float(embedder.cosine_paths(corr_wav, target_audio_path))
                 except Exception:
@@ -2277,6 +2251,7 @@ def build_record(
     from scripts.preset_perceptual_summary import summarize_residual_delta_perceptual
     residual_delta_summary = summarize_residual_delta_perceptual(target_preset, cumulative)
 
+    _vt = _time.monotonic()
     verdict_text = stage2_verdict(
         perceptual_obs=verdict_obs,
         residual_delta_summary=residual_delta_summary,
@@ -2285,6 +2260,7 @@ def build_record(
         stage2_server=stage2_server,
         stage2_model=stage2_model,
     )
+    _log(f"verdict omni {_time.monotonic()-_vt:.1f}s")
     if pending_check:
         verdict_text = f"{pending_check}\n\n{verdict_text}"
     messages.append({"role": "assistant", "content": verdict_text})
@@ -2362,7 +2338,7 @@ def main() -> None:
     ap.add_argument("--wavetable-lib", type=Path, default=Path("data/wavetable_lib.json"))
     ap.add_argument("--out-jsonl", required=True)
     ap.add_argument("--max-samples", type=int, default=256)
-    ap.add_argument("--max-batches", type=int, default=6,
+    ap.add_argument("--max-batches", type=int, default=16,
         help="Cap on regular (non-correction) subsystem batches per conversation.")
 
     ap.add_argument("--pool-top-k", type=int, default=48,
@@ -2413,8 +2389,6 @@ def main() -> None:
     embedder = ClapEmbedder.create(args.clap_device)
     shortlist_data = build_clap_shortlist_data(args.index_npy, index_rows)
 
-    # Pre-load vita synth + probe notes (singleton, serialized via lock)
-    _synth = _load_vital()
     _notes = make_probe_notes("lead", clip_duration_s=10.0)
 
     # Pre-populate CLAP embedding cache (same dance as v2 — GPU in main thread).
@@ -2445,7 +2419,7 @@ def main() -> None:
             print(f"WARNING: could not move CLAP to CPU: {exc}")
 
     candidate_audio: dict[str, Path] = {}
-    serial_lock = threading.Lock()
+    serial_lock = threading.Lock()  # guards CLAP model (not thread-safe for concurrent forward())
 
     def _process(entry: dict) -> dict | None:
         return build_record(
@@ -2460,7 +2434,6 @@ def main() -> None:
             stage2_server=stage2_server,
             stage2_model=stage2_model,
             serial_lock=serial_lock,
-            synth=_synth,
             notes=_notes,
         )
 

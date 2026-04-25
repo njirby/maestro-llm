@@ -19,18 +19,24 @@ Domain-specific guidance and tooling for recreating sounds made in Vital.
 
 ## Operations
 
-All operations use generic REAPER APIs invoked through the `bash` tool. Lua ReaScript handles all in-REAPER work (param set/get, chunk write, render); Python handles non-REAPER tasks (JSON manipulation, base64 encode/decode, file I/O). The Python→Lua bridge pattern: Python writes inline Lua to `/tmp/maestro_lua_action.lua`, touches `/tmp/maestro_lua_dispatch.trigger`, and polls `/tmp/maestro_lua_result.json` for results. A Lua `defer()` loop inside REAPER picks up the trigger and `dofile()`s the script.
+All operations are Python, invoked through the `bash` tool as inline heredocs. Two backends:
+
+- **reapy** (`import reapy; from reapy import reascript_api as RPR`) — TCP RPC bridge to REAPER for all live-project interaction: track creation, param set/get, MIDI insert, VST chunk apply.
+- **DawDreamer** (`import dawdreamer`) — in-process JUCE-based VST3 host for all audio rendering. Loads Vital's VST3 directly, renders MIDI to WAV without touching REAPER's transport.
+
+Concrete operations:
 
 - **List wavetables**: Load `data/wavetable_lib.json`, deduplicate by name, print total or a slice. (Pure Python, no REAPER interaction.)
-- **Render probes**: Python reads the VST chunk via `TrackFX_GetNamedConfigParm`, decodes base64, swaps `wavetables[0]` in the preset JSON, re-encodes, and writes to `/tmp/vital_chunk_payload.b64`. Lua applies the chunk via `TrackFX_SetNamedConfigParm` (in-process, no size limit) and renders via `Main_OnCommand(41824, 0)`.
-- **Render tuple**: Same chunk manipulation but assigns wavetables to multiple oscillator slots simultaneously before encoding, then Lua applies and renders.
-- **Set parameters**: Lua scans `reaper.TrackFX_GetParamName` to find indices by REAPER display name, then calls `reaper.TrackFX_SetParam` with normalized 0-1 values.
+- **Render probes**: DawDreamer loads `maestro/synth/init_preset.json`, swaps `wavetables[0]` with each candidate, renders the target's MIDI notes via `add_midi_note()`, writes WAV with `soundfile`.
+- **Render tuple**: Same as probes but assigns wavetables to multiple oscillator slots simultaneously before rendering.
+- **Set parameters**: reapy scans `RPR.TrackFX_GetParamName` to find indices by REAPER display name, then calls `RPR.TrackFX_SetParam` with normalized 0-1 values.
+- **Apply VST chunk**: Python builds the Vital preset JSON, base64-encodes it, and calls `RPR.TrackFX_SetNamedConfigParm` via reapy to apply to the live REAPER track.
 
 ## Sub-agents you coordinate
 
 Before running the recreation loop you dispatch three kinds of sub-agents via the `Agent` tool. Each runs in its own fresh context and writes its result to a JSON file on disk that you then `cat` to consume.
 
-- `melody_transcription` — listens to the target and writes Lua ReaScript that inserts the correct MIDI notes on a REAPER track. Output: `/tmp/agents/<sample>/transcription.json` with `{notes, n_notes, duration_s}`. Runs **once** at the start, after you've created the track.
+- `melody_transcription` — listens to the target and uses reapy to insert the correct MIDI notes on a REAPER track via `RPR.MIDI_InsertNote`. Output: `/tmp/agents/<sample>/transcription.json` with `{notes, n_notes, duration_s}`. Runs **once** at the start, after you've created the track.
 - `wavetable_search` — audits one slice (~48 wavetables) of the library and returns a shortlist of 2–4 names that could be building blocks. Dispatched **4 in parallel** per search round across disjoint library slices.
 - `wavetable_judge` — takes the combined pool from all search agents (~12 unique names) and selects the final tuple (N names = target's active oscillator count). Dispatched **once per search round** after the search shortlists come back.
 
@@ -39,11 +45,11 @@ Before running the recreation loop you dispatch three kinds of sub-agents via th
 High-level process for recreating a target sound in Vital:
 
 1. **Listen** to the target audio and the current default baseline.
-2. **Create a REAPER MIDI track** (dispatch Lua: `reaper.InsertTrackAtIndex` + `reaper.TrackFX_AddByName("Vital", ...)`). This is where the transcribed MIDI will drive playback.
+2. **Create a REAPER MIDI track** (reapy: `RPR.InsertTrackAtIndex` + `RPR.TrackFX_AddByName`). This is where the transcribed MIDI will drive playback.
 3. **Transcribe the melody** — dispatch `melody_transcription` with the target audio + track index. The subagent inserts notes on the track and writes the note list JSON for you to `cat`.
 4. **Search** — dispatch 4 `wavetable_search` sub-agents in parallel, each covering a slice (~48 indices) of the library. Each returns a shortlist of 2-4 wavetable names.
 5. **Judge** — dispatch a `wavetable_judge` sub-agent with the combined pool (~12 unique names). The judge listens to the target + all pool candidates in one audition and selects the N best (N = number of active oscillators in the target preset).
-6. **Audition tuple** — render the judge-selected tuple (chunk manipulation + Lua render), listen, accept or trigger another search round.
+6. **Audition tuple** — render the judge-selected tuple via DawDreamer, listen, accept or trigger another search round.
 7. **Diagnose** — write OBSERVATIONS (preset-grounded perceptual description) + PLAN (one qualitative bullet per subsystem that needs changes).
 8. **Execute** subsystem-batched parameter edits in order: **oscillator → envelope → filter → lfo → fx → modulation → macro**. Render fresh audio after each batch; narration grounded in the plan bullet + actual before/after param deltas.
 9. **Correct inline** if a batch overshoots — a single `set_params` call reverts the offending parameter, followed by a listen-and-confirm turn.

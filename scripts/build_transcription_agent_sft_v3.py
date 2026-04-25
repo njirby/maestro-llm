@@ -127,7 +127,7 @@ def build_insert_and_write_cmd(
         f"notes = {notes_literal}\n"
         f"with reapy.inside_reaper():\n"
         f"    track = RPR.GetTrack(0, {track_idx})\n"
-        f"    item = RPR.CreateNewMIDIItemInProj(track, 0.0, {item_end}, False)\n"
+        f"    item = RPR.CreateNewMIDIItemInProj(track, 0.0, {item_end}, False)[0]\n"
         f"    take = RPR.GetActiveTake(item)\n"
         f"    bpm = 120\n"
         f"    ppb = 960\n"
