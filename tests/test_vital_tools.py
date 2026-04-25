@@ -15,6 +15,17 @@ import pytest
 from maestro.reaper.vital_tools import VitalController, _find_json_start, _find_json_end
 
 
+@pytest.fixture(autouse=True)
+def _clear_param_cache():
+    """Remove the on-disk param cache so tests don't leak state to each other."""
+    path = VitalController._PARAM_CACHE_PATH
+    if os.path.exists(path):
+        os.remove(path)
+    yield
+    if os.path.exists(path):
+        os.remove(path)
+
+
 # ---------------------------------------------------------------------------
 # Helpers — build a minimal mock RPR environment
 # ---------------------------------------------------------------------------

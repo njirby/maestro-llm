@@ -311,7 +311,8 @@ def _classify_bash_command(command: str) -> str:
         return "listen_probe"
     if "set_params(" in command or "TrackFX_SetParam" in command:
         return "set_params"
-    if "applied_wavetable" in command or "vc.set_preset(" in command or "TrackFX_SetNamedConfigParm" in command:
+    if ("applied_wavetable" in command or "vc.set_preset(" in command
+            or "TrackFX_SetNamedConfigParm" in command or "vital_chunk" in command):
         return "apply_wavetable"
     if "applied_tuple_id" in command:
         return "apply_tuple"
@@ -2182,7 +2183,9 @@ def score_search_v2_record(
         try:
             tc = json.loads(m.get("content", ""))
             cmd = tc.get("arguments", {}).get("command", "") if tc.get("name") in ("bash", "Bash") else ""
-            if "skills/vital/scripts/render_probes.py" in cmd or "TrackFX_SetNamedConfigParm" in cmd:
+            if ("skills/vital/scripts/render_probes.py" in cmd
+                    or "TrackFX_SetNamedConfigParm" in cmd or "vital_chunk" in cmd
+                    or "render_vital_preset" in cmd):
                 has_render_probes = 1.0
                 break
         except Exception:
@@ -2392,7 +2395,9 @@ def score_judge_v3_record(
         try:
             tc = json.loads(m.get("content", ""))
             cmd = tc.get("arguments", {}).get("command", "") if tc.get("name") in ("bash", "Bash") else ""
-            if "skills/vital/scripts/render_probes.py" in cmd or "TrackFX_SetNamedConfigParm" in cmd:
+            if ("skills/vital/scripts/render_probes.py" in cmd
+                    or "TrackFX_SetNamedConfigParm" in cmd or "vital_chunk" in cmd
+                    or "render_vital_preset" in cmd):
                 has_render_probes = 1.0
                 break
         except Exception:
@@ -2468,7 +2473,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
     note list as a JSON handoff file.
 
     Dimensions:
-      has_reapy_midi_insert  (20%) — ≥1 bash tool_call contains MIDI_InsertNote
+      has_midi_insert  (20%) — ≥1 bash tool_call contains MIDI_InsertNote
                                     (or RPR_MIDI_InsertNote).
       output_file_written    (25%) — final bash writes transcription.json with
                                     notes/n_notes/duration_s + ok tool_response.
@@ -2495,8 +2500,8 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
         if p is not None:
             oracle_pitches.add(p)
 
-    # has_reapy_midi_insert: walk bash tool_calls for MIDI_InsertNote
-    has_reapy_midi_insert: float = 0.0
+    # has_midi_insert: walk bash tool_calls for MIDI_InsertNote
+    has_midi_insert: float = 0.0
     insert_cmd_text = ""
     for m in messages:
         if m.get("role") != "tool_call":
@@ -2507,7 +2512,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
                 continue
             cmd = tc.get("arguments", {}).get("command", "") or ""
             if "MIDI_InsertNote" in cmd:
-                has_reapy_midi_insert = 1.0
+                has_midi_insert = 1.0
                 insert_cmd_text = cmd
                 break
         except Exception:
@@ -2580,7 +2585,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
     format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
 
     weights: dict[str, float] = {
-        "has_reapy_midi_insert": 0.20,
+        "has_midi_insert": 0.20,
         "output_file_written": 0.25,
         "note_count_match": 0.20,
         "pitch_coverage": 0.10,
@@ -2590,7 +2595,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
         "format_consistent": 0.05,
     }
     raw: dict[str, Any] = {
-        "has_reapy_midi_insert": has_reapy_midi_insert,
+        "has_midi_insert": has_midi_insert,
         "output_file_written": output_file_written,
         "note_count_match": note_count_match,
         "pitch_coverage": pitch_coverage,

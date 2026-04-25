@@ -4481,12 +4481,6 @@
     "default": 0.25,
     "discrete": false
   },
-  "reverb_feedback": {
-    "min": 0.0,
-    "max": 1.0,
-    "default": 0.7,
-    "discrete": false
-  },
   "reverb_high_shelf_cutoff": {
     "min": 0.0,
     "max": 128.0,

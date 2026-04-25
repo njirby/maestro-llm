@@ -191,6 +191,7 @@ def ensure_candidate_probes_for_names(
     probe_archetype: str = "lead",
     probe_tail_s: float = 1.0,
     trim_min_duration_s: float = 0.5,
+    notes: list | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     missing = [n for n in names if n not in cache and n in selected_rows]
@@ -198,7 +199,8 @@ def ensure_candidate_probes_for_names(
         return
 
     init_preset = _load_init_preset()
-    notes = make_probe_notes(probe_archetype)
+    if notes is None:
+        notes = make_probe_notes(probe_archetype)
     synth = _load_vital()
 
     for name in missing:
@@ -559,6 +561,109 @@ def _wrap_as_bash(python_code: str) -> str:
     return f"python - <<'PY'\n{stripped}\nPY"
 
 
+def _wrap_lua_as_bash(
+    lua_code: str,
+    result_path: str = "/tmp/maestro_lua_result.json",
+) -> str:
+    """Wrap Lua code in a bash command that dispatches it to REAPER.
+
+    No Python layer — writes Lua via heredoc, touches the trigger, polls
+    for the result. Use this for operations that don't need Python-side
+    computation (param set, track create, MIDI insert, render).
+    """
+    return (
+        f"rm -f {result_path}\n"
+        "cat > /tmp/maestro_lua_action.lua <<'LUA'\n"
+        f"{lua_code.strip()}\n"
+        "LUA\n"
+        "touch /tmp/maestro_lua_dispatch.trigger\n"
+        f"while [ ! -f {result_path} ]; do sleep 0.1; done\n"
+        f"cat {result_path}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lua dispatch utilities (Python-side, for chunk manipulation)
+# ---------------------------------------------------------------------------
+
+_DISPATCH_HELPER = """\
+import json, os, time
+
+def dispatch_lua(lua_code, timeout_s=30):
+    result_path = '/tmp/maestro_lua_result.json'
+    script_path = '/tmp/maestro_lua_action.lua'
+    trigger_path = '/tmp/maestro_lua_dispatch.trigger'
+    try: os.remove(result_path)
+    except FileNotFoundError: pass
+    with open(script_path, 'w') as f: f.write(lua_code)
+    open(trigger_path, 'w').close()
+    for _ in range(timeout_s * 10):
+        if os.path.exists(result_path): break
+        time.sleep(0.1)
+    else: raise TimeoutError('Lua dispatch timed out')
+    with open(result_path) as f: return json.load(f)
+"""
+
+_BUILD_CHUNK_HELPER = """\
+import struct as _struct
+
+def build_vital_chunk(preset_json):
+    \"\"\"Construct a complete VST chunk from a .vital preset dict.\"\"\"
+    json_bytes = json.dumps(preset_json, separators=(',', ':')).encode('utf-8')
+    json_size = len(json_bytes)
+    suffix = b'\\x00' * 17 + b'JUCEPrivateData' + b'\\x00' * 8
+    total = 184 + json_size + len(suffix)
+    prefix = bytearray(184)
+    _struct.pack_into('<I', prefix, 0, total - 16)
+    _struct.pack_into('<I', prefix, 4, 1)
+    prefix[8:12] = b'VstW'
+    _struct.pack_into('>I', prefix, 12, 8)
+    _struct.pack_into('>I', prefix, 16, 1)
+    prefix[24:28] = b'CcnK'
+    _struct.pack_into('>I', prefix, 28, total - 40)
+    prefix[32:36] = b'FBCh'
+    _struct.pack_into('>I', prefix, 36, 2)
+    prefix[40:44] = b'Vita'
+    _struct.pack_into('>I', prefix, 44, 0x00010600)
+    _struct.pack_into('>I', prefix, 180, json_size + 32)
+    return bytes(prefix) + json_bytes + suffix
+"""
+
+_LUA_WRITE_JSON = """\
+local function write_json(path, tbl)
+  local f = io.open(path, "w")
+  if not f then return end
+  local parts = {}
+  for k, v in pairs(tbl) do
+    if type(v) == "string" then
+      parts[#parts + 1] = string.format('"%s":"%s"', k, v)
+    elseif type(v) == "table" then
+      local items = {}
+      for _, s in ipairs(v) do items[#items + 1] = '"' .. s .. '"' end
+      parts[#parts + 1] = string.format('"%s":[%s]', k, table.concat(items, ","))
+    else
+      parts[#parts + 1] = string.format('"%s":%s', k, tostring(v))
+    end
+  end
+  f:write("{" .. table.concat(parts, ",") .. "}")
+  f:close()
+end
+"""
+
+
+def _format_lua_params_table(params: dict[str, float]) -> str:
+    """Format {display_name: normalized_value} as a Lua table literal."""
+    items = sorted(params.items())
+    if len(items) <= 2:
+        inner = ", ".join(f'["{k}"] = {round(float(v), 6)}' for k, v in items)
+        return "{" + inner + "}"
+    lines = ["{"]
+    for k, v in items:
+        lines.append(f'  ["{k}"] = {round(float(v), 6)},')
+    lines.append("}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # claw-code tool response helpers
 # ---------------------------------------------------------------------------
@@ -645,109 +750,130 @@ def build_list_wavetables_slice_snippet(start: int, end: int) -> str:
     )
 
 
+_DAWDREAMER_RENDER_HELPER = """\
+import json, os, re, tempfile
+import numpy as np
+import soundfile as sf
+import dawdreamer as daw
+
+VITAL_VST3 = os.environ.get("VITAL_VST3", os.path.expanduser("~/.vst3/Vital.vst3"))
+SAMPLE_RATE = 44100
+BLOCK_SIZE = 512
+
+def load_midi_notes(path):
+    with open(path) as f:
+        data = json.load(f)
+    notes = data["notes"]
+    return [(n["pitch"], n["velocity"], n["start_s"], n["dur_s"]) for n in notes]
+
+def render_vital_preset(preset_dict, out_path, midi_notes):
+    engine = daw.RenderEngine(SAMPLE_RATE, BLOCK_SIZE)
+    synth = engine.make_plugin_processor("vital", VITAL_VST3)
+    with tempfile.NamedTemporaryFile(suffix=".vital", mode="w", delete=False) as f:
+        json.dump(preset_dict, f, separators=(",", ":"))
+        tmp = f.name
+    try:
+        synth.load_state(tmp)
+    finally:
+        os.unlink(tmp)
+    for pitch, vel, start, dur in midi_notes:
+        synth.add_midi_note(int(pitch), int(vel), float(start), float(dur))
+    duration = max((start + dur for _, _, start, dur in midi_notes), default=10.0) + 1.0
+    engine.load_graph([(synth, [])])
+    engine.render(duration)
+    audio = synth.get_audio()
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    sf.write(out_path, audio.T, SAMPLE_RATE)
+    return float(np.abs(audio).max())
+"""
+
+
 def build_render_probes_snippet(
     idxs: list[int] | None = None,
     names: list[str] | None = None,
     out_dir: str = "/tmp/probes",
+    midi_path: str | None = None,
     track_idx: int = 0,
     fx_idx: int = 0,
 ) -> str:
-    """Inline snippet that swaps wavetables into Vital and renders probes via REAPER."""
+    """Snippet that swaps a wavetable into osc 0 and renders via DawDreamer.
+
+    Loads the target's transcribed MIDI from ``midi_path`` (falls back to a
+    fixed 4-triad pattern when unavailable). For each probe: Python swaps the
+    wavetable in the init preset and renders directly through DawDreamer — no
+    REAPER, no Lua, no chunk binary.
+    """
     if names:
-        selector = (
-            f"wanted = {json.dumps(names)}\n"
-            "idx_list = [name_to_idx[n] for n in wanted if n in name_to_idx]\n"
-        )
-    elif idxs is not None:
-        selector = f"idx_list = {json.dumps(idxs)}\n"
+        names_literal = repr(names)
+        assignments_code = f"probe_names = {names_literal}\n"
     else:
-        selector = "idx_list = []\n"
+        idxs_literal = repr(idxs or [])
+        assignments_code = (
+            f"all_idxs = {idxs_literal}\n"
+            "probe_names = [all_names[i] for i in all_idxs if i < len(all_names)]\n"
+        )
+
+    midi_path_literal = repr(midi_path)
+    out_dir_json = json.dumps(out_dir)
 
     return (
-        "import reapy, json, base64, gc, soundfile as sf, numpy as np\n"
-        "from pathlib import Path\n"
-        f'out_dir = Path("{out_dir}")\n'
-        "out_dir.mkdir(parents=True, exist_ok=True)\n"
+        _DAWDREAMER_RENDER_HELPER
+        + f"midi_notes = load_midi_notes({midi_path_literal})\n"
+        + f"OUT_DIR = {out_dir_json}\n"
+        "os.makedirs(OUT_DIR, exist_ok=True)\n"
         'lib = json.load(open("data/wavetable_lib.json"))\n'
-        "seen, named = set(), []\n"
+        "seen, all_names = set(), []\n"
         "for wt in lib:\n"
         '    n = wt.get("name", "")\n'
         "    if n and n not in seen:\n"
         "        seen.add(n)\n"
-        "        named.append(wt)\n"
-        'name_to_idx = {wt["name"]: i for i, wt in enumerate(named)}\n'
-        f"{selector}"
-        "with reapy.inside_reaper():\n"
-        f"    track = reapy.Project().tracks[{track_idx}]\n"
-        "    rpr = reapy.reascript_api\n"
-        f"    fx = {fx_idx}\n"
-        "    rendered = []\n"
-        "    for idx in idx_list:\n"
-        "        wt = named[idx]\n"
-        '        name = wt["name"]\n'
-        "        r = rpr.TrackFX_GetNamedConfigParm(track.id, fx, 'vst_chunk', '', 524288)\n"
-        "        raw = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
-        "        data = base64.b64decode(raw)\n"
-        "        start = data.index(b'{')\n"
-        "        depth, i = 0, start\n"
-        "        while i < len(data):\n"
-        "            if data[i:i+1] == b'{': depth += 1\n"
-        "            elif data[i:i+1] == b'}': depth -= 1\n"
-        "            if depth == 0: break\n"
-        "            i += 1\n"
-        "        prefix, suffix = data[:start], data[i+1:]\n"
-        "        preset = json.loads(data[start:i+1])\n"
-        "        preset['settings']['wavetables'][0] = wt\n"
-        "        new_json = json.dumps(preset, separators=(',', ':')).encode('utf-8')\n"
-        "        encoded = base64.b64encode(prefix + new_json + suffix).decode('ascii')\n"
-        "        gc.collect()\n"
-        "        rpr.TrackFX_SetNamedConfigParm(track.id, fx, 'vst_chunk', encoded)\n"
-        "        slug = ''.join(c if c.isalnum() else '_' for c in name)[:60]\n"
-        "        out = out_dir / f'wt_{idx:04d}_{slug}.wav'\n"
-        "        rpr.Main_OnCommand(42230, 0)  # render to file\n"
-        "        rendered.append({'idx': idx, 'name': name, 'out': str(out)})\n"
-        "    print(json.dumps({'status': 'ok', 'rendered': rendered}))"
+        "        all_names.append(n)\n"
+        + assignments_code
+        + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
+        'base_preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        "rendered = []\n"
+        "for idx, wt_name in enumerate(probe_names):\n"
+        "    if wt_name not in name_to_wt: continue\n"
+        "    preset = json.loads(json.dumps(base_preset))\n"
+        "    preset['settings']['wavetables'][0] = name_to_wt[wt_name]\n"
+        "    slug = re.sub(r'[^a-zA-Z0-9]+', '_', wt_name).strip('_')[:80] or 'unnamed'\n"
+        "    out_path = f'{OUT_DIR}/wt_{idx:04d}_{slug}.wav'\n"
+        "    render_vital_preset(preset, out_path, midi_notes)\n"
+        "    rendered.append({'idx': idx, 'name': wt_name, 'out': out_path})\n"
+        "print(json.dumps({'status': 'ok', 'rendered': rendered}))"
     )
 
 
 def build_render_tuple_snippet(
     osc_names: dict[int, str],
     out_path: str,
+    midi_path: str | None = None,
     track_idx: int = 0,
     fx_idx: int = 0,
 ) -> str:
-    """Inline snippet that swaps wavetables onto multiple oscillators and renders."""
-    osc_list = json.dumps([(oi, name) for oi, name in sorted(osc_names.items())])
+    """Snippet that swaps wavetables into multiple oscillators and renders via DawDreamer.
+
+    Loads the target's transcribed MIDI from ``midi_path`` (falls back to a
+    fixed 4-triad pattern). No REAPER, no Lua, no chunk binary.
+    """
+    assignments = [(osc_idx, name) for osc_idx, name in sorted(osc_names.items())]
+    assignments_literal = repr(assignments)
+    apply_names = [name for _, name in assignments]
+    apply_names_literal = repr(apply_names)
+    out_dir = str(Path(out_path).parent)
+    midi_path_literal = repr(midi_path)
+
     return (
-        "import reapy, json, base64, gc\n"
-        'lib = json.load(open("data/wavetable_lib.json"))\n'
-        'name_to_wt = {wt["name"]: wt for wt in lib if "name" in wt}\n'
-        f"osc_assignments = {osc_list}\n"
-        "with reapy.inside_reaper():\n"
-        f"    track = reapy.Project().tracks[{track_idx}]\n"
-        "    rpr = reapy.reascript_api\n"
-        f"    fx = {fx_idx}\n"
-        "    r = rpr.TrackFX_GetNamedConfigParm(track.id, fx, 'vst_chunk', '', 524288)\n"
-        "    raw = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
-        "    data = base64.b64decode(raw)\n"
-        "    start = data.index(b'{')\n"
-        "    depth, i = 0, start\n"
-        "    while i < len(data):\n"
-        "        if data[i:i+1] == b'{': depth += 1\n"
-        "        elif data[i:i+1] == b'}': depth -= 1\n"
-        "        if depth == 0: break\n"
-        "        i += 1\n"
-        "    prefix, suffix = data[:start], data[i+1:]\n"
-        "    preset = json.loads(data[start:i+1])\n"
-        "    applied = []\n"
-        "    for osc_idx, wt_name in osc_assignments:\n"
-        "        if wt_name in name_to_wt:\n"
-        "            preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
-        "            applied.append({'osc': osc_idx, 'name': wt_name})\n"
-        "    new_json = json.dumps(preset, separators=(',', ':')).encode('utf-8')\n"
-        "    encoded = base64.b64encode(prefix + new_json + suffix).decode('ascii')\n"
-        "    gc.collect()\n"
-        "    rpr.TrackFX_SetNamedConfigParm(track.id, fx, 'vst_chunk', encoded)\n"
-        "    rpr.Main_OnCommand(42230, 0)  # render to file\n"
-        f"    print(json.dumps({{'status': 'ok', 'out': '{out_path}', 'applied': applied}}))"
+        _DAWDREAMER_RENDER_HELPER
+        + f"midi_notes = load_midi_notes({midi_path_literal})\n"
+        + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
+        'wt_lib = json.load(open("data/wavetable_lib.json"))\n'
+        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
+        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        f"for osc_idx, wt_name in {assignments_literal}:\n"
+        "    if wt_name in name_to_wt:\n"
+        "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
+        f"render_vital_preset(preset, {json.dumps(out_path)}, midi_notes)\n"
+        f"print(json.dumps({{'status': 'ok', 'out': {json.dumps(out_path)}, "
+        f"'wavetables': {apply_names_literal}}}))"
     )

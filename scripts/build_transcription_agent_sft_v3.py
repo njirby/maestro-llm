@@ -2,15 +2,15 @@
 """Build melody-transcription SFT v3.
 
 The main agent invokes this subagent right after creating a MIDI track in
-REAPER. The subagent's job: listen to the target audio and write Python
-(reapy) code that inserts MIDI notes on the REAPER track and saves the
-final note list as JSON.
+REAPER. The subagent's job: listen to the target audio and dispatch Lua
+that inserts MIDI notes on the REAPER track, then save the final note
+list as JSON.
 
 Flow per record (5 messages):
   user:       <audio> + "transcribe to MIDI on track {N}, save to <file>"
   assistant:  "Transcribing the target melody to track {N}."
   tool_call:  bash python heredoc — single call that:
-                1) inserts MIDI notes via reapy.inside_reaper() + MIDI_InsertNote
+                1) dispatches Lua to insert MIDI notes via MIDI_InsertNote
                 2) writes the note list to transcription.json
   tool_resp:  {"status":"ok","notes_inserted":N,"file":"/tmp/.../transcription.json","duration_s":X}
   assistant:  "Done. N notes on track {N} over ~Xs."
@@ -46,7 +46,9 @@ from scripts.agent_sft_common import (  # type: ignore
     assert_valid_ms_swift_multiturn_record,
     load_manifest_entries,
     _bash_tool_response,
+    _LUA_WRITE_JSON,
     _tool_call,
+    _wrap_lua_as_bash,
 )
 
 
@@ -57,7 +59,7 @@ _TRANSCRIPTION_TOOL_SPECS = [
         "function": {
             "name": "Bash",
             "description": (
-                "Execute shell/Python commands. Used here to run reapy code that "
+                "Execute shell/Python commands. Used here to dispatch Lua that "
                 "inserts MIDI notes on a REAPER track and writes the transcription "
                 "JSON in a single call."
             ),
@@ -101,10 +103,10 @@ def build_insert_and_write_cmd(
     bpm: int = 120,
     ppb: int = 960,
 ) -> str:
-    """Build ONE bash python heredoc that inserts the MIDI notes and writes the
-    transcription JSON file. Replaces the old two-call flow (insert, then write).
+    """Build a bash command that dispatches Lua to insert MIDI notes and
+    writes the transcription JSON file.
 
-    PPQ math matches the legacy Lua convention: bpm=120, ppb=960.
+    Pure bash+Lua — no Python. PPQ math baked in at build time.
     """
     notes_json = json.dumps(notes, ensure_ascii=False)
     n_notes = len(notes)
@@ -112,46 +114,45 @@ def build_insert_and_write_cmd(
         max((n["start_s"] + n["dur_s"] for n in notes), default=0.0),
         2,
     )
-    output_path_s = json.dumps(str(output_path))
+    output_path_s = str(output_path)
+    output_dir_s = str(Path(output_path).parent)
+
+    lua_note_lines = []
+    for n in notes:
+        start_ppq = f'math.floor({n["start_s"]} * (bpm / 60.0) * ppb)'
+        end_ppq = f'math.floor({round(n["start_s"] + n["dur_s"], 4)} * (bpm / 60.0) * ppb)'
+        lua_note_lines.append(
+            f'reaper.MIDI_InsertNote(take, false, false, {start_ppq}, {end_ppq}, '
+            f'0, {n["pitch"]}, {n["velocity"]}, false)'
+        )
+    lua_code = (
+        _LUA_WRITE_JSON
+        + f'local RESULT = "/tmp/maestro_lua_result.json"\n'
+          f'local bpm = {bpm}\n'
+          f'local ppb = {ppb}\n'
+          f'local track = reaper.GetTrack(0, {track_idx})\n'
+          f'local duration = {round(max((n["start_s"] + n["dur_s"] for n in notes), default=1.0) + 0.25, 4)}\n'
+          f'local item = reaper.CreateNewMIDIItemInProj(track, 0.0, duration, false)\n'
+          f'local take = reaper.GetActiveTake(item)\n'
+        + "\n".join(lua_note_lines) + "\n"
+          f'reaper.MIDI_Sort(take)\n'
+          f'write_json(RESULT, {{status="ok", notes_inserted={n_notes}}})\n'
+    )
+
+    # Bash: dispatch Lua for MIDI insert, then write the transcription JSON
+    lua_dispatch = _wrap_lua_as_bash(lua_code)
+    payload_json = json.dumps(
+        {"notes": notes, "n_notes": n_notes, "duration_s": duration_s},
+        ensure_ascii=False,
+    )
     return (
-        "python - <<'PY'\n"
-        "import json\n"
-        "from pathlib import Path\n"
-        "import reapy\n"
-        "\n"
-        f"notes = {notes_json}\n"
-        f"bpm = {bpm}\n"
-        f"ppb = {ppb}\n"
-        f"track_idx = {track_idx}\n"
-        f"output_path = {output_path_s}\n"
-        "\n"
-        "duration = max((n['start_s'] + n['dur_s'] for n in notes), default=1.0) + 0.25\n"
-        "with reapy.inside_reaper():\n"
-        "    proj = reapy.Project()\n"
-        "    track = proj.tracks[track_idx]\n"
-        "    rpr = reapy.reascript_api\n"
-        "    item = rpr.CreateNewMIDIItemInProj(track.id, 0.0, duration, False)\n"
-        "    take = rpr.GetActiveTake(item)\n"
-        "    inserted = 0\n"
-        "    for n in notes:\n"
-        "        start_ppq = int(n['start_s'] * (bpm / 60.0) * ppb)\n"
-        "        end_ppq = int((n['start_s'] + n['dur_s']) * (bpm / 60.0) * ppb)\n"
-        "        rpr.MIDI_InsertNote(take, False, False, start_ppq, end_ppq,\n"
-        "                            0, int(n['pitch']), int(n['velocity']), False)\n"
-        "        inserted += 1\n"
-        "    rpr.MIDI_Sort(take)\n"
-        "\n"
-        "p = Path(output_path)\n"
-        "p.parent.mkdir(parents=True, exist_ok=True)\n"
-        f'payload = {{"notes": notes, "n_notes": {n_notes}, "duration_s": {duration_s!r}}}\n'
-        "with open(p, 'w') as f:\n"
-        "    json.dump(payload, f)\n"
-        "    f.write('\\n')\n"
-        'print(json.dumps({\n'
-        '    "status": "ok", "notes_inserted": inserted,\n'
-        '    "file": str(p), "duration_s": payload["duration_s"],\n'
-        "}))\n"
-        "PY"
+        f"mkdir -p {output_dir_s}\n"
+        f"{lua_dispatch}\n"
+        f"cat > {output_path_s} <<'TRANSCRIPTION_JSON'\n"
+        f"{payload_json}\n"
+        f"TRANSCRIPTION_JSON\n"
+        f'echo \'{{"status":"ok","notes_inserted":{n_notes},'
+        f'"file":"{output_path_s}","duration_s":{duration_s}}}\''
     )
 
 
@@ -200,7 +201,7 @@ def build_transcription_record(
             f"<audio>\n"
             f"Transcribe this melody into MIDI notes on REAPER track {track_idx} "
             f"(the main agent just created the track). Write Python code "
-            f"(reapy.inside_reaper() → RPR_MIDI_InsertNote) that inserts the "
+            f"(dispatch_lua → MIDI_InsertNote) that inserts the "
             f"notes, and write the final note list as JSON to {output_file} "
             f"with shape {{'notes': [...], 'n_notes': N, 'duration_s': X}}."
         ),

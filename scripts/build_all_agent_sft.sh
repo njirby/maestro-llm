@@ -20,17 +20,17 @@
 #
 # Examples:
 #   # Default v20-style run (8 samples, full grading + HTML)
-#   bash scripts/regen_rollouts.sh
+#   bash scripts/build_all_agent_sft.sh
 #
 #   # Build-only, no grading, custom suffix
-#   bash scripts/regen_rollouts.sh --suffix v21 --no-grade --no-html
+#   bash scripts/build_all_agent_sft.sh --suffix v21 --no-grade --no-html
 #
 #   # 64 samples, demo-rate transcription mistakes (50%) for spot-checking
-#   bash scripts/regen_rollouts.sh --max-samples 64 \
+#   bash scripts/build_all_agent_sft.sh --max-samples 64 \
 #       --transcription-mistake-rate 0.5 --suffix demo
 #
 #   # Skip the search and main grades (cheaper smoke pass)
-#   bash scripts/regen_rollouts.sh --no-grade-search --no-grade-main
+#   bash scripts/build_all_agent_sft.sh --no-grade-search --no-grade-main
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

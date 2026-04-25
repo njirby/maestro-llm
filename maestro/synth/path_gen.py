@@ -239,93 +239,38 @@ def _build_search_snippet(keyword: str) -> str:
     )
 
 
-_LEGACY_VITAL_SNIPPET_PREFIX = (
-    "import sys, json\n"
-    "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
-    "from vital_tools import VitalController\n"
-    "vc = VitalController()\n"
-    "vc.discover()\n"
-)
+
+# Build-time only: authoritative json_key → REAPER display name mapping,
+# generated once from a live REAPER+Vital session via TrackFX_GetParamName.
+_VITAL_DISPLAY_NAMES_PATH = Path(__file__).resolve().parent / "vital_display_names.json"
+with open(_VITAL_DISPLAY_NAMES_PATH) as _f:
+    _VITAL_DISPLAY_NAMES: dict[str, str] = json.load(_f)
 
 
-def _vital_reapy_bootstrap() -> str:
-    """Return robust VitalController setup code for both ReaScript and external Python."""
-    return (
-        "import sys, json\n"
-        "import atexit\n"
-        "try:\n"
-        "    from maestro.reaper.vital_tools import VitalController\n"
-        "except Exception:\n"
-        "    sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
-        "    from vital_tools import VitalController\n"
-        "_rpr = None\n"
-        "_vc_ctx = None\n"
-        "if 'RPR_CountTracks' in globals():\n"
-        "    vc = VitalController()\n"
-        "else:\n"
-        "    import reapy\n"
-        "    _vc_ctx = reapy.inside_reaper()\n"
-        "    _vc_ctx.__enter__()\n"
-        "    _api = reapy.reascript_api\n"
-        "    _rpr = {f'RPR_{fn}': getattr(_api, fn) for fn in dir(_api) if not fn.startswith('_')}\n"
-        "    vc = VitalController(_rpr=_rpr)\n"
-        "def _rpr_call(_name, *_args):\n"
-        "    if _rpr is not None and _name in _rpr:\n"
-        "        return _rpr[_name](*_args)\n"
-        "    _fn = globals().get(_name)\n"
-        "    if _fn is None:\n"
-        "        raise RuntimeError(f'RPR function {_name!r} unavailable')\n"
-        "    return _fn(*_args)\n"
-        "def _ensure_vital_loaded():\n"
-        "    try:\n"
-        "        vc.discover()\n"
-        "        return\n"
-        "    except Exception:\n"
-        "        pass\n"
-        "    _proj = 0\n"
-        "    if int(_rpr_call('RPR_CountTracks', _proj)) == 0:\n"
-        "        _rpr_call('RPR_InsertTrackAtIndex', 0, True)\n"
-        "    _track = _rpr_call('RPR_GetTrack', _proj, 0)\n"
-        "    for _fx_name in (\n"
-        "        'Vital',\n"
-        "        'VST3i: Vital',\n"
-        "        'VSTi: Vital',\n"
-        "        'VST3: Vital (Vital Audio)',\n"
-        "        'VST3i: Vital (Vital Audio)',\n"
-        "        'VST3: Vital',\n"
-        "    ):\n"
-        "        _idx = _rpr_call('RPR_TrackFX_AddByName', _track, _fx_name, False, 1)\n"
-        "        if isinstance(_idx, (tuple, list)):\n"
-        "            _idx = _idx[0] if _idx else -1\n"
-        "        if int(_idx) >= 0:\n"
-        "            break\n"
-        "    vc.discover()\n"
-        "_ensure_vital_loaded()\n"
-        "if _vc_ctx is not None:\n"
-        "    atexit.register(lambda: _vc_ctx.__exit__(None, None, None))\n"
-    )
+def _json_key_to_reaper_display(key: str) -> str:
+    """Map a Vital JSON key to the exact REAPER display name.
+
+    Uses the authoritative mapping built from a live REAPER+Vital session.
+    Falls back to heuristic title-case expansion for unmapped keys.
+    Build-time only — the model never sees this function.
+    """
+    exact = _VITAL_DISPLAY_NAMES.get(key)
+    if exact:
+        return exact
+    return _json_key_to_display(key)
 
 
-def _harden_vital_snippet_for_reapy(python_code: str) -> str:
-    """Rewrite legacy VitalController snippets to run via reapy when outside ReaScript."""
-    stripped = python_code.strip()
-    if "from vital_tools import VitalController" not in stripped or "vc.discover()" not in stripped:
-        return stripped
-
-    if stripped.startswith(_LEGACY_VITAL_SNIPPET_PREFIX):
-        body = stripped[len(_LEGACY_VITAL_SNIPPET_PREFIX):]
-        return f"{_vital_reapy_bootstrap()}{body}"
-
-    body = stripped
-    for line in (
-        "import sys, json\n",
-        "sys.path.append('/home/nate/.config/REAPER/Scripts')\n",
-        "from vital_tools import VitalController\n",
-        "vc = VitalController()\n",
-        "vc.discover()\n",
-    ):
-        body = body.replace(line, "", 1)
-    return f"{_vital_reapy_bootstrap()}{body.strip()}"
+def _format_params_dict(params: dict[str, float], indent: str = "    ") -> str:
+    """Format a params dict as a Python literal with proper indentation."""
+    items = sorted(params.items())
+    if len(items) <= 2:
+        inner = ", ".join(f'{json.dumps(k)}: {round(float(v), 6)}' for k, v in items)
+        return "{" + inner + "}"
+    lines = ["{"]
+    for k, v in items:
+        lines.append(f"{indent}    {json.dumps(k)}: {round(float(v), 6)},")
+    lines.append(f"{indent}}}")
+    return ("\n" + indent).join(lines)
 
 
 def _plan_step_groups(
@@ -954,24 +899,34 @@ def generate_preset_path(
                 json.dump(copy.deepcopy(cumulative), f)
             cumulative_preset_path = str(preset_filepath)
 
-        # --- action_snippet: VitalController.set_params, native JSON values ---
-        # Uses vital_tools.VitalController for a single atomic VST chunk round-trip.
-        # Parameter names are Vital's internal JSON keys (snake_case).
-        # Values are native (denormalized) Vital units — same as the preset JSON.
-        params_native = {name: cumulative["settings"][name] for name in params_applied}
-        params_repr = ", ".join(
-            f'"{name}": {val!r}' for name, val in sorted(params_native.items())
-        )
+        # --- action_snippet: generic REAPER TrackFX_SetParam, normalized 0-1 ---
+        # Uses raw reapy calls — works with any plugin, no VitalController.
+        # Parameter names are REAPER display names; values are normalized 0-1.
+        display_norm_params = {
+            _json_key_to_reaper_display(name): round(float(params_applied[name]), 6)
+            for name in params_applied
+        }
+        params_literal = _format_params_dict(display_norm_params, indent="    ")
         action_snippet = (
-            "import sys, json\n"
-            "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
-            "from vital_tools import VitalController\n"
-            "vc = VitalController()\n"
-            "vc.discover()\n"
-            f"result = vc.set_params({{{params_repr}}})\n"
-            'print(json.dumps({"status": "ok", "applied": result["applied"], "not_found": result["not_found"]}))'
+            "import reapy, json\n"
+            "with reapy.inside_reaper():\n"
+            "    track = reapy.Project().tracks[0]\n"
+            "    rpr = reapy.reascript_api\n"
+            "    fx = 0\n"
+            f"    params = {params_literal}\n"
+            "    n = rpr.TrackFX_GetNumParams(track.id, fx)\n"
+            "    if isinstance(n, (list, tuple)): n = n[0]\n"
+            "    idx_of = {}\n"
+            "    for i in range(int(n)):\n"
+            "        r = rpr.TrackFX_GetParamName(track.id, fx, i, '', 256)\n"
+            "        name = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
+            "        if name in params: idx_of[name] = i\n"
+            "    for name, val in params.items():\n"
+            "        if name in idx_of:\n"
+            "            rpr.TrackFX_SetParam(track.id, fx, idx_of[name], val)\n"
+            "    print(json.dumps({'status': 'ok', 'applied': len(idx_of), "
+            "'not_found': [k for k in params if k not in idx_of]}))"
         )
-        action_snippet = _harden_vital_snippet_for_reapy(action_snippet)
 
         # --- search_snippet + search_result: targeted param lookup before setting ---
         keyword = planner.get("search_keyword") or _search_keyword(list(params_applied.keys()))
@@ -1045,20 +1000,31 @@ def generate_preset_path(
             corr_preset_path = str(preset_filepath)
 
         keyword = _search_keyword(list(corr_params_applied.keys()))
-        corr_params_native = {name: cumulative["settings"][name] for name in corr_params_applied}
-        corr_params_repr = ", ".join(
-            f'"{name}": {val!r}' for name, val in sorted(corr_params_native.items())
-        )
+        corr_display_norm = {
+            _json_key_to_reaper_display(name): round(float(corr_params_applied[name]), 6)
+            for name in corr_params_applied
+        }
+        corr_params_literal = _format_params_dict(corr_display_norm, indent="    ")
         corr_snippet = (
-            "import sys, json\n"
-            "sys.path.append('/home/nate/.config/REAPER/Scripts')\n"
-            "from vital_tools import VitalController\n"
-            "vc = VitalController()\n"
-            "vc.discover()\n"
-            f"result = vc.set_params({{{corr_params_repr}}})\n"
-            'print(json.dumps({"status": "ok", "applied": result["applied"], "not_found": result["not_found"]}))'
+            "import reapy, json\n"
+            "with reapy.inside_reaper():\n"
+            "    track = reapy.Project().tracks[0]\n"
+            "    rpr = reapy.reascript_api\n"
+            "    fx = 0\n"
+            f"    params = {corr_params_literal}\n"
+            "    n = rpr.TrackFX_GetNumParams(track.id, fx)\n"
+            "    if isinstance(n, (list, tuple)): n = n[0]\n"
+            "    idx_of = {}\n"
+            "    for i in range(int(n)):\n"
+            "        r = rpr.TrackFX_GetParamName(track.id, fx, i, '', 256)\n"
+            "        name = r[4] if isinstance(r, (list, tuple)) else str(r)\n"
+            "        if name in params: idx_of[name] = i\n"
+            "    for name, val in params.items():\n"
+            "        if name in idx_of:\n"
+            "            rpr.TrackFX_SetParam(track.id, fx, idx_of[name], val)\n"
+            "    print(json.dumps({'status': 'ok', 'applied': len(idx_of), "
+            "'not_found': [k for k in params if k not in idx_of]}))"
         )
-        corr_snippet = _harden_vital_snippet_for_reapy(corr_snippet)
 
         iterations.append({
             "step": step_num,

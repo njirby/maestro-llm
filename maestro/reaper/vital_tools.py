@@ -2,6 +2,15 @@
 vital_tools.py — Python ReaScript standard library for controlling the Vital
 synthesizer inside a live REAPER session.
 
+.. deprecated::
+    VitalController is no longer used in generated SFT training data.
+    Training snippets now use generic REAPER APIs (TrackFX_SetParam,
+    TrackFX_GetNamedConfigParm) via raw reapy calls so the model learns
+    patterns that transfer to any plugin.  This file is retained for
+    build-time debugging and the ``_DISPLAY_NAME_ALIASES`` lookup table
+    used at build time to convert Vital JSON keys to exact REAPER display
+    names.
+
 This file is designed to run via ``reaper -nonewinst script.py``.  All REAPER
 API calls use the RPR_ prefix.  No external packages may be imported; only the
 Python standard library is available.
@@ -376,7 +385,12 @@ class VitalController:
                 self._param_cache = {}
                 self._chunk_prefix = b""
                 self._chunk_suffix = b""
-                self._display_to_idx = self._build_param_idx_map(track, fi)
+                cached = self._load_param_cache(ti, fi)
+                if cached is not None:
+                    self._display_to_idx = cached
+                else:
+                    self._display_to_idx = self._build_param_idx_map(track, fi)
+                    self._save_param_cache(ti, fi, self._display_to_idx)
                 self._display_norm_to_idx = {
                     _canonical_display_name(name): idx
                     for name, idx in self._display_to_idx.items()
@@ -394,11 +408,33 @@ class VitalController:
             "Ensure Vital is loaded on a track and the project is open."
         )
 
+    _PARAM_CACHE_PATH: str = "/tmp/maestro/vital_param_cache.json"
+
     def _require_discovered(self):
         if self._track is None:
             raise RuntimeError(
                 "Call discover() before using VitalController."
             )
+
+    def _load_param_cache(self, track_idx: int, fx_idx: int) -> dict | None:
+        try:
+            with open(self._PARAM_CACHE_PATH) as f:
+                data = json.load(f)
+            if data.get("track_idx") == track_idx and data.get("fx_idx") == fx_idx:
+                return {k: int(v) for k, v in data["display_to_idx"].items()}
+        except Exception:
+            pass
+        return None
+
+    def _save_param_cache(self, track_idx: int, fx_idx: int, mapping: dict) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._PARAM_CACHE_PATH), exist_ok=True)
+            tmp = self._PARAM_CACHE_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"track_idx": track_idx, "fx_idx": fx_idx, "display_to_idx": mapping}, f)
+            os.replace(tmp, self._PARAM_CACHE_PATH)
+        except Exception:
+            pass
 
     def _build_param_idx_map(self, track, fi: int) -> dict:
         """Build display_name → param_index for every parameter on *fi*.

@@ -16,6 +16,7 @@ def _make_search_v2(
     gt_on_shortlist: list[str] | None = None,
     final_shortlist: list[str] | None = None,
     has_render_probes_call: bool = True,
+    render_probes_style: str = "legacy",
     has_final_write: bool = True,
     last_role_assistant: bool = True,
     inject_snake_case: bool = False,
@@ -29,12 +30,16 @@ def _make_search_v2(
         {"role": "user", "content": "<audio>\nEvaluate slice 0-47..."},
     ]
     if has_render_probes_call:
+        if render_probes_style == "dawdreamer":
+            render_cmd = "python -c 'import dawdreamer; render_vital_preset(preset, \"/tmp/x/wt_0000_Init.wav\", midi_notes)'"
+        else:
+            render_cmd = "python skills/vital/scripts/render_probes.py --idxs 0,1,2 --out-dir /tmp/x"
         messages.append({"role": "assistant", "content": "Rendering batch 1."})
         messages.append({
             "role": "tool_call",
             "content": json.dumps({
                 "name": "bash",
-                "arguments": {"command": "python skills/vital/scripts/render_probes.py --idxs 0,1,2 --out-dir /tmp/x"},
+                "arguments": {"command": render_cmd},
             }),
         })
         messages.append({
@@ -132,6 +137,12 @@ def test_search_v2_missing_final_write_is_penalised():
     scores = score_search_v2_record(record)
     assert scores["shortlist_file_written"] == 0.0
     assert scores["overall"] < 0.9
+
+
+def test_search_v2_dawdreamer_render_detected():
+    record = _make_search_v2(render_probes_style="dawdreamer")
+    scores = score_search_v2_record(record)
+    assert scores["has_render_probes"] == 1.0
 
 
 def test_search_v2_missing_render_probes_is_penalised():

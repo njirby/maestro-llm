@@ -1,4 +1,4 @@
-# Agent SFT Architecture (Search v2 → Judge v3 → Main v3)
+# Agent SFT Architecture (Search v2 → Judge v3 → Transcription v3 → Main v3)
 
 This document captures the current training-data architecture for agentic Vital sound recreation in REAPER.
 
@@ -106,7 +106,31 @@ Output:
 - Shortlist → tuple of 1-3 wavetable names (matching `n_osc_slots`).
 - JSON file: `{"tuple": [...], "n_osc_slots": N, "reasoning": "..."}` written via bash Python heredoc during the conversation.
 
-### 3) Main Agent (`task_type=main`, `pipeline_version=v3`)
+### 3) Melody Transcription Agent (`task_type=melody_transcription`, `pipeline_version=v3_transcription`)
+
+**Builder:** `scripts/build_transcription_agent_sft_v3.py`
+
+Scope:
+- Receives the target audio + a REAPER track index (created by the main agent just before dispatch).
+- Listens to the target (Omni Stage 1 — perceptual impression: contour, rhythm feel, rough note count).
+- Formats oracle-grounded per-note narration (Stage 2 gets the note list from the manifest's `source_midi_path` as ground truth and renders it as a readable numbered list).
+- Writes the Python (reapy) code that inserts the notes via `RPR_MIDI_InsertNote` at PPQ positions — same convention as the legacy Lua example (`bpm=120, ppb=960`).
+- Saves the final note list JSON to `/tmp/agents/<sample_id>/transcription.json` via a visible bash tool_call (so the main agent can `cat` it).
+
+Why the transcription agent exists:
+- Closes the "where does the MIDI come from?" gap in the main agent's rollout. Previously the MIDI was pure oracle — the model never saw it get transcribed or populated onto a REAPER track.
+- At inference, the main agent creates a track and dispatches this subagent to actually write notes on it via `reapy.inside_reaper()`. Without this task, the trained model would have no idea how to do that.
+
+Build-time oracle:
+- Notes come from `pretty_midi.PrettyMIDI(source_midi_path)` — the same MIDI that drives `vita` to render the target. Transcription is exactly correct by construction.
+- Stage 1 Omni provides a perceptual impression only (no numbers); Stage 2 then renders the oracle per-note list inside a coherent narration.
+
+Output:
+- JSON file: `{"notes": [{"pitch","start_s","end_s","velocity"}, ...], "n_notes": N, "duration_s": X}`.
+- Scope is **one-shot**: transcription runs once at the start of the main-agent flow. Error-correction reviews (re-invoke transcription after hearing a wrong note) are deferred.
+- Audio cap: target clips must fit in `vita`'s 30 s ceiling. Longer clips would need parallel-slice transcription (future work).
+
+### 4) Main Agent (`task_type=main`, `pipeline_version=v3`)
 
 **Builder:** `scripts/build_main_agent_sft_v3.py`
 
@@ -139,7 +163,21 @@ assistant:   Skill loaded. Listening to current default preset baseline.
 tool_call:   bash listen probe
 tool_resp:   {"baseline_audio": "<audio>", ...}
 
-assistant:   Checking wavetable library size.
+# MIDI TRANSCRIPTION BLOCK
+assistant:   Creating a REAPER track to hold the transcribed MIDI before I search
+             the wavetable library.
+tool_call:   bash python (reapy: InsertTrackAtIndex + TrackFX_AddByName("Vital"))
+tool_resp:   {"status":"ok","track_idx":0,"track_name":"target_melody"}
+assistant:   Dispatching the transcription subagent to listen to the target and
+             populate the track with MIDI notes.
+tool_call:   Agent { subagent_type: "melody_transcription", ... }
+tool_resp:   {agentId, outputFile: "/tmp/agents/<sid>/transcription.json",
+              status: "completed"}
+assistant:   Reading the transcribed note list.
+tool_call:   bash cat /tmp/agents/<sid>/transcription.json
+tool_resp:   {"notes":[...],"n_notes":N,"duration_s":X}
+
+assistant:   MIDI ready on track 0 — N notes, ~Xs. Checking wavetable library size.
 tool_call:   bash python skills/vital/scripts/list_wavetables.py --total
 tool_resp:   {"total": 282}
 
@@ -392,15 +430,29 @@ Search v12 smoke (n=32): overall **0.994**, gt_recovery 1.00 on all 10 gt-in-sha
 
 Judge v12 smoke (n=8): overall **0.992**, judge_correct 1.00 across all samples.
 
+### Melody transcription v3 — structural + oracle correctness (no LLM)
+
+| Axis | Weight | Purpose |
+|---|---|---|
+| `has_midi_insert` | 20% | ≥1 bash tool_call contains `MIDI_InsertNote` (or `RPR_MIDI_InsertNote`) |
+| `output_file_written` | 25% | Final bash writes `transcription.json` with `{notes,n_notes,duration_s}` + ok tool_response |
+| `note_count_match` | 20% | Payload n_notes matches `meta.n_notes` (oracle count) |
+| `pitch_coverage` | 10% | Fraction of oracle MIDI pitches mentioned in deliberation or insert cmd |
+| `has_render_listen` | 10% | First user message carries `<audio>` (subagent actually received target audio) |
+| `closing_assistant` | 5% | Last message is assistant |
+| `snake_case_clean` | 5% | No snake_case in assistant prose |
+| `format_consistent` | 5% | No `**BOLD:**` headers |
+
 ## Validation + Tests
 - Contract validator: `validate_ms_swift_multiturn_record(...)` — allows consecutive tool_call/tool_response for parallel dispatch.
-- Test coverage:
+- Test coverage (169 tests total):
   - `tests/test_search_agent_sft_v2.py` — search agent v2 structural invariants
   - `tests/test_agent_sft_contracts_v3.py` — main agent v3 structural invariants
   - `tests/test_agent_sft_grading.py` — main-agent v2 + v3 grading logic
   - `tests/test_agent_sft_grading_search_judge.py` — search_v2 + judge_v3 grading logic (15 tests)
+  - `tests/test_agent_sft_grading_transcription.py` — transcription grading logic (10 tests)
   - `tests/test_agent_sft_contracts.py` — v2 legacy (regression guard)
-  - *(Missing: contract tests for `build_judge_agent_sft_v3.py` record shape — follow-up work)*
+  - *(Missing: contract tests for `build_judge_agent_sft_v3.py` + `build_transcription_agent_sft_v3.py` record shapes — follow-up work)*
 
 Recommended checks (159 tests):
 ```bash

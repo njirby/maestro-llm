@@ -126,7 +126,7 @@ def _make_transcription_record(
 def test_transcription_happy_path():
     record = _make_transcription_record()
     scores = score_transcription_record(record)
-    assert scores["has_reapy_midi_insert"] == 1.0
+    assert scores["has_midi_insert"] == 1.0
     assert scores["output_file_written"] == 1.0
     assert scores["note_count_match"] == 1.0
     assert scores["pitch_coverage"] == 1.0
@@ -140,7 +140,7 @@ def test_transcription_happy_path():
 def test_transcription_missing_reapy_insert_dings():
     record = _make_transcription_record(has_reapy_insert=False)
     scores = score_transcription_record(record)
-    assert scores["has_reapy_midi_insert"] == 0.0
+    assert scores["has_midi_insert"] == 0.0
     assert scores["overall"] < 1.0
 
 

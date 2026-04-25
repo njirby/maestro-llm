@@ -50,6 +50,7 @@ from scripts.agent_sft_common import (
     load_index_rows,
     load_manifest_entries,
     load_wavetable_lib,
+    make_agent_id,
     select_probe_rows_by_name,
     _bash_tool_response,
     _read_tool_response_audio,
@@ -438,6 +439,7 @@ def build_search_record(
     candidates_per_batch: int = 8,
     shortlist_dir: Path | None = None,
     clap_threshold: float = 0.92,
+    midi_path: str | None = None,
 ) -> dict | None:
     """Build one search agent SFT record with iterative batch listening.
 
@@ -537,6 +539,7 @@ def build_search_record(
         batch_idxs = [name_to_idx[n] for n in batch if n in name_to_idx]
         render_cmd = _wrap_as_bash(build_render_probes_snippet(
             idxs=batch_idxs, out_dir=probe_out_dir,
+            midi_path=midi_path,
         ))
 
         import re as _re
@@ -807,6 +810,45 @@ def main() -> None:
         with open(target_preset_path) as f:
             target_preset = json.load(f)
 
+        # Load target MIDI notes for rendering probes with the actual melody
+        _midi_path: str | None = None
+        _midi_notes_dicts: list[dict] | None = None
+        _midi_notes_pm: list | None = None
+        source_midi_path = entry.get("source_midi_path")
+        if source_midi_path and Path(source_midi_path).exists():
+            try:
+                from scripts.build_transcription_agent_sft_v3 import load_notes_from_midi
+                _midi_notes_dicts = load_notes_from_midi(source_midi_path)
+            except Exception:
+                _midi_notes_dicts = None
+        if _midi_notes_dicts:
+            import pretty_midi as _pm
+            _midi_notes_pm = [
+                _pm.Note(
+                    velocity=int(n["velocity"]),
+                    pitch=int(n["pitch"]),
+                    start=float(n["start_s"]),
+                    end=float(n["start_s"] + n["dur_s"]),
+                )
+                for n in _midi_notes_dicts
+            ]
+            _trans_agent_id = make_agent_id(sample_id, "melody_transcription")
+            _trans_dir = Path(f"/tmp/agents/{sample_id}")
+            _trans_dir.mkdir(parents=True, exist_ok=True)
+            _midi_path = str(_trans_dir / f"{_trans_agent_id}.json")
+            if not Path(_midi_path).exists():
+                _trans_payload = {
+                    "status": "completed",
+                    "notes": _midi_notes_dicts,
+                    "n_notes": len(_midi_notes_dicts),
+                    "duration_s": round(
+                        max(n["start_s"] + n["dur_s"] for n in _midi_notes_dicts), 2,
+                    ),
+                }
+                with open(_midi_path, "w") as _trf:
+                    json.dump(_trans_payload, _trf)
+                    _trf.write("\n")
+
         # Build dense name↔idx mapping — matches list_wavetables.py (dedup by name)
         _seen: set[str] = set()
         _unique_names: list[str] = []
@@ -874,6 +916,7 @@ def main() -> None:
                 selected_rows=selected_by_name,
                 out_dir=args.probe_dir,
                 cache=candidate_audio,
+                notes=_midi_notes_pm,
             )
 
         # Build one record per search agent, one per slice.
@@ -906,6 +949,7 @@ def main() -> None:
                 stage2_model=stage2_model,
                 candidates_per_batch=args.candidates_per_batch,
                 shortlist_dir=args.shortlist_dir,
+                midi_path=_midi_path,
             )
             if rec:
                 rec["id"] = f"{sample_id}_agent{ai + 1}_search"
