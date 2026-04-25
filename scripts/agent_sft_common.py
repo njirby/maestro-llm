@@ -807,3 +807,162 @@ def build_render_tuple_snippet(
         f"print(json.dumps({{'status': 'ok', 'out': {json.dumps(out_path)}, "
         f"'wavetables': {apply_names_literal}}}))"
     )
+
+
+def build_render_verify_snippet(
+    out_path: str,
+    midi_path: str | None = None,
+    notes_override: list[tuple] | None = None,
+) -> str:
+    """Render init preset + transcribed MIDI via DawDreamer for transcription verification.
+
+    If *notes_override* is provided, embeds those tuples directly instead of
+    loading from *midi_path* (used for wrong-transcription verification).
+    """
+    out_path_json = json.dumps(out_path)
+    out_dir = str(Path(out_path).parent)
+    if notes_override is not None:
+        midi_line = f"midi_notes = {repr(notes_override)}\n"
+    else:
+        midi_line = f"midi_notes = load_midi_notes({repr(midi_path)})\n"
+
+    return (
+        _DAWDREAMER_RENDER_HELPER
+        + midi_line
+        + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
+        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        f"render_vital_preset(preset, {out_path_json}, midi_notes)\n"
+        f"print(json.dumps({{'listen_probe': {{'path': {out_path_json}, 'exists': True}}}}))"
+    )
+
+
+def build_render_cumulative_snippet(
+    out_path: str,
+    midi_path: str | None,
+    wt_assignments: list[tuple[int, str]],
+    modulations: list[dict],
+    cumulative_params: dict[str, float],
+) -> str:
+    """Reconstruct the cumulative preset and render via DawDreamer.
+
+    *cumulative_params*: ``{json_key: native_value}`` — all params applied so
+    far (denormalized).  Embedded as a dict literal in the generated code.
+    """
+    out_path_json = json.dumps(out_path)
+    out_dir = str(Path(out_path).parent)
+    midi_line = f"midi_notes = load_midi_notes({repr(midi_path)})\n"
+    assignments_literal = repr(list(wt_assignments))
+    mods_literal = repr(modulations)
+    params_literal = repr(cumulative_params)
+
+    return (
+        _DAWDREAMER_RENDER_HELPER
+        + midi_line
+        + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
+        'wt_lib = json.load(open("data/wavetable_lib.json"))\n'
+        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
+        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        f"for osc_idx, wt_name in {assignments_literal}:\n"
+        "    if wt_name in name_to_wt:\n"
+        "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
+        f"preset['settings']['modulations'] = {mods_literal}\n"
+        f"for k, v in {params_literal}.items():\n"
+        "    preset['settings'][k] = v\n"
+        f"render_vital_preset(preset, {out_path_json}, midi_notes)\n"
+        f"print(json.dumps({{'listen_probe': {{'path': {out_path_json}, 'exists': True}}}}))"
+    )
+
+
+# ---------------------------------------------------------------------------
+# REAPER render snippet (inline reapy — replaces DawDreamer for iterative listening)
+# ---------------------------------------------------------------------------
+
+
+def build_reaper_render_snippet(
+    out_path: str,
+    track_idx: int = 0,
+) -> str:
+    """Build a compact reapy snippet that renders the current REAPER project to WAV.
+
+    Used for iterative listening after param changes — the synth state is
+    already in REAPER (wavetables via chunk, params via SetParam), so no
+    preset reconstruction is needed.  The model learns to write this pattern
+    at inference time.
+    """
+    return (
+        _REAPY_HELPER
+        + "import os\n"
+        f"out_path = {out_path!r}\n"
+        "os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)\n"
+        "with reapy.inside_reaper():\n"
+        f"    proj = RPR.EnumProjects(-1, '', 512)[0]\n"
+        f"    track = RPR.GetTrack(0, {track_idx})\n"
+        "    end = 0.0\n"
+        "    for i in range(RPR.GetTrackNumMediaItems(track)):\n"
+        "        item = RPR.GetTrackMediaItem(track, i)\n"
+        "        end = max(end, RPR.GetMediaItemInfo_Value(item, 'D_POSITION')"
+        " + RPR.GetMediaItemInfo_Value(item, 'D_LENGTH'))\n"
+        "    RPR.GetSet_LoopTimeRange(True, False, 0.0, end + 1.0, False)\n"
+        "    RPR.GetSetProjectInfo_String(proj, 'RENDER_FILE', os.path.dirname(out_path), True)\n"
+        "    RPR.GetSetProjectInfo_String(proj, 'RENDER_PATTERN', "
+        "os.path.splitext(os.path.basename(out_path))[0], True)\n"
+        "    RPR.Main_OnCommand(42, 0)\n"
+        "print(json.dumps({'listen_probe': {'path': out_path, 'exists': True}}))\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Param search snippets (inline reapy code the model learns to write)
+# ---------------------------------------------------------------------------
+
+
+def build_param_search_snippet(
+    query: str,
+    track_idx: int = 0,
+    fx_idx: int = 0,
+) -> str:
+    """Build an inline reapy snippet that searches REAPER params by keyword.
+
+    The model learns to write this pattern at inference time — no premade
+    scripts, just inline Python that queries REAPER's TrackFX API.
+    """
+    return (
+        _REAPY_HELPER
+        + f"query = {query!r}\n"
+        "keywords = query.lower().split()\n"
+        "results = []\n"
+        f"with reapy.inside_reaper():\n"
+        f"    track = RPR.GetTrack(0, {track_idx})\n"
+        f"    n = RPR.TrackFX_GetNumParams(track, {fx_idx})\n"
+        f"    for i in range(n):\n"
+        f"        _, _, _, _, name, _ = RPR.TrackFX_GetParamName(track, {fx_idx}, i, '', 2048)\n"
+        f"        if all(kw in name.strip().lower() for kw in keywords):\n"
+        f"            _, val, _, mn, mx, _ = RPR.TrackFX_GetParam(track, {fx_idx}, i, 0.0, 0.0)\n"
+        f"            _, _, _, _, disp, _ = RPR.TrackFX_GetFormattedParamValue(track, {fx_idx}, i, '', 2048)\n"
+        f"            results.append({{'idx': i, 'name': name.strip(), 'value': round(float(val), 6),\n"
+        f"                           'display': disp.strip(), 'min': round(float(mn), 6), 'max': round(float(mx), 6)}})\n"
+        "print(json.dumps({'query': query, 'count': len(results), 'params': results}, indent=2))\n"
+    )
+
+
+def simulate_param_search(
+    query: str,
+    dump: list[dict],
+    value_overrides: dict[int, float] | None = None,
+    max_results: int = 30,
+) -> list[dict]:
+    """Simulate a keyword search against the static REAPER param dump.
+
+    Build-time only — produces the same JSON the inline reapy snippet would
+    return from a live REAPER session.  *value_overrides* patches in current
+    [0,1] values for params already modified in earlier batches.
+    """
+    keywords = query.lower().split()
+    results: list[dict] = []
+    for p in dump:
+        if all(kw in p["name"].lower() for kw in keywords):
+            entry = dict(p)
+            if value_overrides and p["idx"] in value_overrides:
+                entry["value"] = round(value_overrides[p["idx"]], 6)
+            results.append(entry)
+    return results[:max_results]

@@ -307,8 +307,12 @@ def _validate_bash_execution_against_expected(
 
 
 def _classify_bash_command(command: str) -> str:
+    if "Main_OnCommand" in command and "RENDER_FILE" in command:
+        return "reaper_render"
     if "listen_probe" in command:
         return "listen_probe"
+    if "TrackFX_GetParamName" in command and "TrackFX_SetParam" not in command:
+        return "param_search"
     if "set_params(" in command or "TrackFX_SetParam" in command:
         return "set_params"
     if ("applied_wavetable" in command or "vc.set_preset(" in command
@@ -318,6 +322,128 @@ def _classify_bash_command(command: str) -> str:
     if "applied_tuple_id" in command:
         return "apply_tuple"
     return "bash_generic"
+
+
+# ---------------------------------------------------------------------------
+# File-causality check — flag Read/listen of files never created in conversation
+# ---------------------------------------------------------------------------
+
+_BUNDLED_DATA_PATTERNS = (
+    "maestro/synth/init_preset.json",
+    "data/wavetable_lib.json",
+    "maestro/synth/param_ranges.json",
+)
+
+_WRITE_FUNC_RE = re.compile(
+    r"""(?:sf\.write|render_vital_preset)\s*\([^,]*,\s*"""
+    r"""(?:"([^"]+\.wav)"|'([^']+\.wav)')""",
+)
+_REAPER_RENDER_PATH_RE = re.compile(
+    r"""out_path\s*=\s*(?:"([^"]+\.wav)"|'([^']+\.wav)')""",
+)
+_LISTEN_PROBE_PATH_RE = re.compile(r'"path":\s*"([^"]+)"')
+
+
+def _check_file_causality(
+    messages: list[dict[str, Any]],
+    record: dict[str, Any],
+) -> tuple[float, list[dict[str, Any]]]:
+    """Check that every file read was created by a prior tool call.
+
+    Returns (score, violations) where score is 1.0 if clean, 0.0 if any
+    file is read before being created.  Violations list entries:
+    ``{"path": str, "read_at_msg": int, "kind": "Read"|"listen_probe"}``.
+    """
+    assets = record.get("assets", {})
+    audios = record.get("audios", [])
+
+    preexisting: set[str] = set()
+    # Only the target audio is genuinely pre-existing (user's input clip).
+    # The default/current audio must be rendered by the conversation.
+    v = assets.get("target_audio")
+    if isinstance(v, str) and v:
+        preexisting.add(v)
+    if audios and isinstance(audios[0], str):
+        preexisting.add(audios[0])
+    for pat in _BUNDLED_DATA_PATTERNS:
+        preexisting.add(pat)
+        preexisting.add(str(ROOT / pat))
+
+    created: set[str] = set()
+    violations: list[dict[str, Any]] = []
+
+    def _canon(p: str) -> str:
+        return str(Path(p).expanduser()) if p.startswith(("~", "/")) else p
+
+    for idx, msg in enumerate(messages):
+        role = msg.get("role", "")
+
+        if role == "tool_response":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                try:
+                    payload = json.loads(content)
+                except Exception:
+                    payload = {}
+                if isinstance(payload, dict):
+                    for key in ("outputFile", "manifestFile"):
+                        of = payload.get(key)
+                        if isinstance(of, str) and of:
+                            created.add(_canon(of))
+            continue
+
+        if role != "tool_call":
+            continue
+
+        try:
+            tc = json.loads(msg.get("content", ""))
+        except Exception:
+            continue
+
+        name = tc.get("name", "")
+        args = tc.get("arguments", {})
+
+        if name == "Bash":
+            cmd = args.get("command", "")
+            for m in _WRITE_FUNC_RE.finditer(cmd):
+                path = m.group(1) or m.group(2)
+                if path:
+                    created.add(_canon(path))
+            if "Main_OnCommand" in cmd and "RENDER_FILE" in cmd:
+                for m in _REAPER_RENDER_PATH_RE.finditer(cmd):
+                    path = m.group(1) or m.group(2)
+                    if path:
+                        created.add(_canon(path))
+
+        if name == "Read":
+            fp = args.get("file_path", "")
+            if not fp:
+                continue
+            fp_c = _canon(fp)
+            if fp_c in preexisting or fp_c in created:
+                continue
+            for pat in _BUNDLED_DATA_PATTERNS:
+                if fp_c.endswith(pat):
+                    break
+            else:
+                if fp.endswith((".wav", ".json")):
+                    violations.append({"path": fp, "read_at_msg": idx, "kind": "Read"})
+
+        if name == "Bash":
+            cmd = args.get("command", "")
+            if "listen_probe" in cmd:
+                pm = _LISTEN_PROBE_PATH_RE.search(cmd)
+                if pm:
+                    lp = _canon(pm.group(1))
+                    if lp not in preexisting and lp not in created:
+                        for pat in _BUNDLED_DATA_PATTERNS:
+                            if lp.endswith(pat):
+                                break
+                        else:
+                            violations.append({"path": pm.group(1), "read_at_msg": idx, "kind": "listen_probe"})
+
+    score = 1.0 if not violations else 0.0
+    return score, violations
 
 
 _TAUTOLOGY_READ_RE = re.compile(r"^\s*(cat|head|tail)\b")
@@ -1979,6 +2105,9 @@ def score_main_v3_record(
 
     no_gt_leak = _gt_leak_score(assistant_turns)
 
+    # -- File causality: every file read must be created by a prior tool call --
+    file_causality, file_causality_violations = _check_file_causality(messages, record)
+
     # -- Overall weights (structural 50%, LLM-judge 50% when enabled) --
     weights: dict[str, float] = {
         "batch_param_alignment": 0.15,
@@ -1986,6 +2115,7 @@ def score_main_v3_record(
         "clap_net_improvement": 0.15,
         "verdict_grounded": 0.05,
         "no_gt_leak": 0.05,
+        "file_causality": 0.05,
         "snake_case_clean": 0.025,
         "format_consistent": 0.025,
         # LLM judge dimensions — enabled when llm_judge_server is set.
@@ -2008,6 +2138,7 @@ def score_main_v3_record(
         "format_consistent": format_consistent,
         "verdict_grounded": verdict_grounded,
         "no_gt_leak": no_gt_leak,
+        "file_causality": file_causality,
         "mistake_recovery": mistake_recovery,
         "llm_narration_plan_ref": llm_scores.get("llm_narration_plan_ref"),
         "llm_narration_param_specific": llm_scores.get("llm_narration_param_specific"),
@@ -2027,6 +2158,8 @@ def score_main_v3_record(
     overall = round(weighted_sum / weight_sum, 4) if weight_sum > 0 else 0.0
 
     out = {**raw, "overall": overall}
+    if file_causality_violations:
+        out["file_causality_violations"] = file_causality_violations
     if llm_scores:
         out["llm_per_batch"] = llm_scores.get("llm_per_batch", [])
         out["llm_verdict_reasoning"] = llm_scores.get("llm_verdict_reasoning", "")

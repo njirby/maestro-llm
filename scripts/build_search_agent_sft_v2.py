@@ -484,15 +484,19 @@ def build_search_record(
     # Output directory for rendered probes (real path, reused at inference)
     probe_out_dir = f"/tmp/search_probes/{sample_id}_agent{agent_idx}"
 
+    _user_parts = [f"<audio>"]
+    if midi_path:
+        _user_parts.append(f"Transcription MIDI: {midi_path}.")
+    _user_parts.append(
+        f"Evaluate wavetables at indices {shard_start}-{shard_end - 1}. "
+        f"Load data/wavetable_lib.json, list names in your range, "
+        f"swap each into the synth, render with DawDreamer using the "
+        f"transcription MIDI, and listen. Return a JSON shortlist of "
+        f"2-4 wavetable names."
+    )
     messages.append({
         "role": "user",
-        "content": (
-            f"<audio>\nEvaluate wavetables at indices "
-            f"{shard_start}-{shard_end - 1} from the library and return a shortlist "
-            f"of 2-4 names that could serve as building blocks for recreating the target. "
-            f"Load data/wavetable_lib.json, list names in your range, swap each into "
-            f"the synth via chunk manipulation, render, and listen to each candidate."
-        ),
+        "content": "\n".join(_user_parts),
     })
 
     # Step 1: list_wavetables — agent fetches names in its range

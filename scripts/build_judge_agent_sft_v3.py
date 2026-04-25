@@ -4,8 +4,8 @@
 The judge agent is invoked by the main agent AFTER the search agents have each
 returned a shortlist. Its job is to look at the combined pool in one auditory
 view (each candidate audio labelled with its wavetable name) and select the N
-candidates that together best capture the target — where N = the number of
-active oscillator slots in the target preset.
+candidates (1 to 3) that together best capture the target — the judge decides
+how many oscillators to use based on what it hears.
 
 Why the judge exists:
 - Each search agent only sees its own slice (~48 wavetables). When GTs are
@@ -276,7 +276,7 @@ def omni_judge_audition(
         f"Candidates (each described in isolation):\n{cand_block}\n\n"
         f"Write ONE short sentence per candidate describing how its raw timbre relates to the "
         f"target and whether it could serve as a building block once filters, envelopes, and "
-        f"effects are applied. Then on a final line, recommend which {n_osc_slots} candidate(s) "
+        f"effects are applied. Then on a final line, recommend which candidates (1 to 3) "
         f"together would best capture the target.\n\n"
         f"Format per line: '<name>': <one-sentence assessment>\n"
         f"Final line: 'RECOMMENDATION: [name1, name2, ...]: <one sentence on why this combination works>'\n"
@@ -525,11 +525,11 @@ def build_judge_record(
         "content": (
             f"<audio>\n"
             f"Pool candidates from search agents: [{pool_str}].\n"
-            f"Target uses {n_osc_slots} active oscillator(s). Render probes for each "
-            f"candidate, listen alongside the target, and select the {n_osc_slots} "
-            f"candidate(s) that together best capture the target's character. "
+            f"The target may use up to 3 active oscillators. Render probes for each "
+            f"candidate, listen alongside the target, and select the candidates (1 to 3) "
+            f"that together best capture the target's character. "
             f"Write your selection to {judge_output_file} as JSON: "
-            f'{{"tuple": [...], "n_osc_slots": {n_osc_slots}, "reasoning": "..."}}.'
+            f'{{"tuple": [...], "n_osc_slots": <how many you chose>, "reasoning": "..."}}.'
         ),
     })
 

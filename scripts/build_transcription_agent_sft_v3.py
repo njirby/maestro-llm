@@ -267,9 +267,9 @@ def main() -> None:
     ap.add_argument("--manifest", required=True, type=Path)
     ap.add_argument("--out-jsonl", required=True, type=Path)
     ap.add_argument(
-        "--output-dir", type=Path, default=Path("/tmp/transcription_outputs"),
+        "--output-dir", type=Path, default=Path("/tmp/agents"),
         help="Where transcription.json files land (must match the path the main "
-             "agent's dispatch-prompt references).",
+             "agent's dispatch-prompt references — /tmp/agents/<sample_id>/<agent_id>.json).",
     )
     ap.add_argument("--max-samples", type=int, default=256)
     ap.add_argument(
