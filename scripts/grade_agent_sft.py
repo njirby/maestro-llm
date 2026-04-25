@@ -312,7 +312,8 @@ def _classify_bash_command(command: str) -> str:
     if "set_params(" in command or "TrackFX_SetParam" in command:
         return "set_params"
     if ("applied_wavetable" in command or "vc.set_preset(" in command
-            or "TrackFX_SetNamedConfigParm" in command or "vital_chunk" in command):
+            or "TrackFX_SetNamedConfigParm" in command or "vital_chunk" in command
+            or "build_vital_chunk" in command):
         return "apply_wavetable"
     if "applied_tuple_id" in command:
         return "apply_tuple"

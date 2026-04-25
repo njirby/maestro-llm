@@ -561,54 +561,20 @@ def _wrap_as_bash(python_code: str) -> str:
     return f"python - <<'PY'\n{stripped}\nPY"
 
 
-def _wrap_lua_as_bash(
-    lua_code: str,
-    result_path: str = "/tmp/maestro_lua_result.json",
-) -> str:
-    """Wrap Lua code in a bash command that dispatches it to REAPER.
-
-    No Python layer — writes Lua via heredoc, touches the trigger, polls
-    for the result. Use this for operations that don't need Python-side
-    computation (param set, track create, MIDI insert, render).
-    """
-    return (
-        f"rm -f {result_path}\n"
-        "cat > /tmp/maestro_lua_action.lua <<'LUA'\n"
-        f"{lua_code.strip()}\n"
-        "LUA\n"
-        "touch /tmp/maestro_lua_dispatch.trigger\n"
-        f"while [ ! -f {result_path} ]; do sleep 0.1; done\n"
-        f"cat {result_path}"
-    )
-
-
 # ---------------------------------------------------------------------------
-# Lua dispatch utilities (Python-side, for chunk manipulation)
+# reapy REAPER-interaction helpers (embedded in generated snippets)
 # ---------------------------------------------------------------------------
 
-_DISPATCH_HELPER = """\
-import json, os, time
-
-def dispatch_lua(lua_code, timeout_s=30):
-    result_path = '/tmp/maestro_lua_result.json'
-    script_path = '/tmp/maestro_lua_action.lua'
-    trigger_path = '/tmp/maestro_lua_dispatch.trigger'
-    try: os.remove(result_path)
-    except FileNotFoundError: pass
-    with open(script_path, 'w') as f: f.write(lua_code)
-    open(trigger_path, 'w').close()
-    for _ in range(timeout_s * 10):
-        if os.path.exists(result_path): break
-        time.sleep(0.1)
-    else: raise TimeoutError('Lua dispatch timed out')
-    with open(result_path) as f: return json.load(f)
+_REAPY_HELPER = """\
+import json
+import reapy
+from reapy import reascript_api as RPR
 """
 
 _BUILD_CHUNK_HELPER = """\
 import struct as _struct
 
 def build_vital_chunk(preset_json):
-    \"\"\"Construct a complete VST chunk from a .vital preset dict.\"\"\"
     json_bytes = json.dumps(preset_json, separators=(',', ':')).encode('utf-8')
     json_size = len(json_bytes)
     suffix = b'\\x00' * 17 + b'JUCEPrivateData' + b'\\x00' * 8
@@ -628,40 +594,6 @@ def build_vital_chunk(preset_json):
     _struct.pack_into('>I', prefix, 180, json_size + 32)
     return bytes(prefix) + json_bytes + suffix
 """
-
-_LUA_WRITE_JSON = """\
-local function write_json(path, tbl)
-  local f = io.open(path, "w")
-  if not f then return end
-  local parts = {}
-  for k, v in pairs(tbl) do
-    if type(v) == "string" then
-      parts[#parts + 1] = string.format('"%s":"%s"', k, v)
-    elseif type(v) == "table" then
-      local items = {}
-      for _, s in ipairs(v) do items[#items + 1] = '"' .. s .. '"' end
-      parts[#parts + 1] = string.format('"%s":[%s]', k, table.concat(items, ","))
-    else
-      parts[#parts + 1] = string.format('"%s":%s', k, tostring(v))
-    end
-  end
-  f:write("{" .. table.concat(parts, ",") .. "}")
-  f:close()
-end
-"""
-
-
-def _format_lua_params_table(params: dict[str, float]) -> str:
-    """Format {display_name: normalized_value} as a Lua table literal."""
-    items = sorted(params.items())
-    if len(items) <= 2:
-        inner = ", ".join(f'["{k}"] = {round(float(v), 6)}' for k, v in items)
-        return "{" + inner + "}"
-    lines = ["{"]
-    for k, v in items:
-        lines.append(f'  ["{k}"] = {round(float(v), 6)},')
-    lines.append("}")
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -56,14 +56,11 @@ from scripts.agent_sft_common import (
     write_agent_manifest,
     _bash_tool_response,
     _BUILD_CHUNK_HELPER,
-    _DISPATCH_HELPER,
     _emit_listen_sequence,
-    _format_lua_params_table,
-    _LUA_WRITE_JSON,
     _read_tool_response_audio,
+    _REAPY_HELPER,
     _tool_call,
     _wrap_as_bash,
-    _wrap_lua_as_bash,
 )
 from scripts.build_main_agent_sft_v2 import (
     _build_listen_probe_command,
@@ -414,41 +411,36 @@ def build_batch_action_snippet(
     track_idx: int = 0,
     fx_idx: int = 0,
 ) -> str:
-    """Emit a bash+Lua snippet that sets plugin params via REAPER's native API.
+    """Emit a Python+reapy snippet that sets plugin params via REAPER's native API.
 
     params_display_norm — {reaper_display_name: normalized_0_to_1_value}.
-    Pure bash+Lua — no Python wrapper needed.
     """
-    lua_params = _format_lua_params_table(params_display_norm)
-    lua_code = (
-        _LUA_WRITE_JSON
-        + f'local RESULT = "/tmp/maestro_lua_result.json"\n'
-        f"local track = reaper.GetTrack(0, {track_idx})\n"
-        "if not track then\n"
-        '  write_json(RESULT, {status="error", msg="no track"})\n'
-        "  return\n"
-        "end\n"
-        f"local fx = {fx_idx}\n"
-        f"local params = {lua_params}\n"
-        "local n = reaper.TrackFX_GetNumParams(track, fx)\n"
-        "local idx_of = {}\n"
-        "for i = 0, n - 1 do\n"
-        '  local _, name = reaper.TrackFX_GetParamName(track, fx, i, "")\n'
-        "  if params[name] ~= nil then idx_of[name] = i end\n"
-        "end\n"
-        "local applied = 0\n"
-        "local not_found = {}\n"
-        "for name, val in pairs(params) do\n"
-        "  if idx_of[name] ~= nil then\n"
-        "    reaper.TrackFX_SetParam(track, fx, idx_of[name], val)\n"
-        "    applied = applied + 1\n"
-        "  else\n"
-        "    not_found[#not_found + 1] = name\n"
-        "  end\n"
-        "end\n"
-        'write_json(RESULT, {status="ok", applied=applied, not_found=not_found})\n'
+    params_dict = json.dumps(
+        {k: round(float(v), 6) for k, v in sorted(params_display_norm.items())},
+        ensure_ascii=False,
     )
-    return _wrap_lua_as_bash(lua_code)
+    snippet = (
+        _REAPY_HELPER
+        + f"params = {params_dict}\n"
+        f"with reapy.inside_reaper():\n"
+        f"    track = RPR.GetTrack(0, {track_idx})\n"
+        f"    n = RPR.TrackFX_GetNumParams(track, {fx_idx})\n"
+        f"    idx_of = {{}}\n"
+        f"    for i in range(n):\n"
+        f"        _, _, _, _, name, _ = RPR.TrackFX_GetParamName(track, {fx_idx}, i, '', 2048)\n"
+        f"        if name in params:\n"
+        f"            idx_of[name] = i\n"
+        f"    applied = 0\n"
+        f"    not_found = []\n"
+        f"    for name, val in params.items():\n"
+        f"        if name in idx_of:\n"
+        f"            RPR.TrackFX_SetParam(track, {fx_idx}, idx_of[name], val)\n"
+        f"            applied += 1\n"
+        f"        else:\n"
+        f"            not_found.append(name)\n"
+        f"print(json.dumps({{'status': 'ok', 'applied': applied, 'not_found': not_found}}))\n"
+    )
+    return _wrap_as_bash(snippet)
 
 
 def denormalize_batch_params(params_norm: dict[str, float]) -> dict[str, float]:
@@ -1259,17 +1251,17 @@ def build_record(
                     _trf.write("\n")
 
             # Step 1: create a REAPER track + load Vital on it
-            _trans_create_lua = (
-                _LUA_WRITE_JSON
-                + f'local RESULT = "/tmp/maestro_lua_result.json"\n'
-                  f'local track_name = {json.dumps(_trans_track_name)}\n'
-                  f'reaper.InsertTrackAtIndex(0, true)\n'
-                  f'local track = reaper.GetTrack(0, 0)\n'
-                  f'reaper.GetSetMediaTrackInfo_String(track, "P_NAME", track_name, true)\n'
-                  f'reaper.TrackFX_AddByName(track, "Vital", false, 1)\n'
-                  f'write_json(RESULT, {{status="ok", track_idx=0, track_name=track_name}})\n'
+            _trans_create_snippet = (
+                _REAPY_HELPER
+                + f"track_name = {json.dumps(_trans_track_name)}\n"
+                  f"with reapy.inside_reaper():\n"
+                  f"    RPR.InsertTrackAtIndex(0, True)\n"
+                  f"    track = RPR.GetTrack(0, 0)\n"
+                  f"    RPR.GetSetMediaTrackInfo_String(track, 'P_NAME', track_name, True)\n"
+                  f"    RPR.TrackFX_AddByName(track, 'Vital', False, 1)\n"
+                  f"print(json.dumps({{'status': 'ok', 'track_idx': 0, 'track_name': track_name}}))\n"
             )
-            _trans_create_cmd = _wrap_lua_as_bash(_trans_create_lua)
+            _trans_create_cmd = _wrap_as_bash(_trans_create_snippet)
             messages.append({
                 "role": "assistant",
                 "content": "Creating a REAPER track to hold the transcribed MIDI before I search the wavetable library.",
@@ -1292,7 +1284,7 @@ def build_record(
                 # Write the manifest matching claw-code's runtime convention.
                 _wrong_dispatch_prompt = (
                     f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
-                    f"(dispatch_lua → MIDI_InsertNote) that inserts the MIDI "
+                    f"(reapy → MIDI_InsertNote) that inserts the MIDI "
                     f"notes on that track, and save the final note list as JSON to "
                     f"{_wrong_file} with shape "
                     f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
@@ -1435,7 +1427,7 @@ def build_record(
             })
             _primary_dispatch_prompt = (
                 f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
-                f"(dispatch_lua → MIDI_InsertNote) that inserts the MIDI "
+                f"(reapy → MIDI_InsertNote) that inserts the MIDI "
                 f"notes on that track, and save the final note list as JSON to "
                 f"{_trans_output_file} with shape "
                 f'{{"notes": [...], "n_notes": N, "duration_s": X}}.' + _retry_note
@@ -2044,27 +2036,8 @@ def build_record(
     apply_assignments = repr(
         [(oi, gt_tuple[oi]) for oi in active_oscs if gt_tuple[oi]]
     )
-    lua_set_chunk = repr(
-        _LUA_WRITE_JSON
-        + 'local RESULT = "/tmp/maestro_lua_result.json"\n'
-        "local ok, err = pcall(function()\n"
-        '  local cf = io.open("/tmp/vital_chunk_payload.b64", "rb")\n'
-        '  if not cf then error("cannot read chunk file") end\n'
-        '  local encoded = cf:read("*a"); cf:close()\n'
-        "  local track = reaper.GetTrack(0, 0)\n"
-        '  if not track then error("GetTrack returned nil") end\n'
-        '  if not reaper.TrackFX_SetNamedConfigParm(track, 0, "vst3_chunk", encoded) then\n'
-        '    reaper.TrackFX_SetNamedConfigParm(track, 0, "vst_chunk", encoded)\n'
-        '  end\n'
-        '  os.remove("/tmp/vital_chunk_payload.b64")\n'
-        '  write_json(RESULT, {status="ok", bytes=#encoded})\n'
-        "end)\n"
-        "if not ok then\n"
-        '  write_json(RESULT, {status="error", msg=tostring(err):sub(1, 400)})\n'
-        "end\n"
-    )
     apply_snippet = (
-        _DISPATCH_HELPER
+        _REAPY_HELPER
         + _BUILD_CHUNK_HELPER
         + "import base64\n"
         'wt_lib = json.load(open("data/wavetable_lib.json"))\n'
@@ -2075,8 +2048,10 @@ def build_record(
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
         "chunk = build_vital_chunk(preset)\n"
         "encoded = base64.b64encode(chunk).decode('ascii')\n"
-        "with open('/tmp/vital_chunk_payload.b64', 'w') as f: f.write(encoded)\n"
-        f"r = dispatch_lua({lua_set_chunk})\n"
+        "with reapy.inside_reaper():\n"
+        "    track = RPR.GetTrack(0, 0)\n"
+        "    if not RPR.TrackFX_SetNamedConfigParm(track, 0, 'vst3_chunk', encoded):\n"
+        "        RPR.TrackFX_SetNamedConfigParm(track, 0, 'vst_chunk', encoded)\n"
         f"print(json.dumps({{'status': 'ok', 'applied': {json.dumps(apply_names)}}}))"
     )
     messages.append({"role": "assistant", "content": selection_text})

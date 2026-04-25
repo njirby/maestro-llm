@@ -28,10 +28,10 @@ The agent communicates with a live REAPER session via **reapy** — a Python lib
 
 | Mechanism | Direction | Latency | Full API | Notes |
 |---|---|---|---|---|
-| **reapy** (TCP defer loop) | Bidirectional RPC | ~5–30ms/call | Yes (Python) | **Primary choice** |
-| `reaper -nonewinst script.lua` | → REAPER (one-shot) | ~100–500ms | Yes (Lua) | No return value to shell without a file |
+| **reapy** (TCP defer loop) | Bidirectional RPC | ~5–30ms/call | Yes (Python) | **Primary choice** — all REAPER interaction in generated conversations |
+| **DawDreamer** (in-process VST3) | N/A (offline) | ~0.4s/10s clip | Vital only | Wavetable probe + tuple rendering (no REAPER needed) |
+| `reaper -nonewinst script.lua` | → REAPER (one-shot) | ~100–500ms | Yes (Lua) | Not used in generated code |
 | HTTP web interface | Bidirectional (poll) | ~5–50ms | Actions + fixed cmds only | No arbitrary Lua/Python |
-| File-bridge (MCP pattern) | Bidirectional (poll) | ~50–200ms | Yes (Lua) | Used by total-reaper-mcp |
 
 ### reapy setup (one-time)
 
@@ -86,7 +86,7 @@ The search-before-set pattern keeps context lean: instead of dumping all ~800 pa
 
 ## Training Data Pipeline (Offline)
 
-Generating SFT data does not require REAPER or a GPU. The pipeline uses **vita** — Python bindings for the Vital synthesis engine — to render audio directly.
+Generating SFT data does not require REAPER or a GPU. The pipeline uses **vita** (Python bindings for the Vital synthesis engine) for build-time audio rendering, and **DawDreamer** (in-process VST3 host) for the probe/tuple rendering snippets embedded in generated conversations.
 
 ```
 preset_gen.py       →  target Vital preset (6 archetypes)
@@ -187,7 +187,7 @@ python scripts/build_main_agent_sft_v3.py \
     --clap-device cuda:0
 ```
 
-v3 does **not** use path_gen's per-step iterations for conversation structure. It diffs the target preset vs the init preset directly, buckets changed params by subsystem, and renders fresh per-batch audio using vita. This eliminates cross-subsystem leakage from path_gen's support-family fill mechanism.
+v3 does **not** use path_gen's per-step iterations for conversation structure. It diffs the target preset vs the init preset directly, buckets changed params by subsystem, and renders fresh per-batch audio using vita (build time). This eliminates cross-subsystem leakage from path_gen's support-family fill mechanism.
 
 **Conversation structure:**
 
@@ -208,7 +208,7 @@ tool_resp:  <audio> [default clip]
 
 # MIDI TRANSCRIPTION BLOCK:
 assistant:  Creating a REAPER track to hold the transcribed MIDI before search.
-tool_call:  bash reapy → InsertTrackAtIndex + TrackFX_AddByName("Vital", ...)
+tool_call:  bash python reapy → InsertTrackAtIndex + TrackFX_AddByName("Vital", ...)
 tool_resp:  {"status":"ok","track_idx":0,"track_name":"target_melody"}
 assistant:  Dispatching the transcription subagent to populate the track from the target.
 tool_call:  Agent { subagent_type: "melody_transcription", ... }
@@ -223,7 +223,7 @@ assistant:  Library has 282 wavetables. Dispatching 4 search agents in parallel.
             → dispatch Agent wavetable_judge to audition combined pool
             → bash cat judge output → render tuple → listen
             → accept (or re-search if target not found)
-            → bash apply tuple via VitalController
+            → bash python reapy → apply VST chunk via TrackFX_SetNamedConfigParm
 
 # DIAGNOSIS (one audio turn, one text turn):
 assistant:  OBSERVATIONS: [preset-grounded perceptual description of target, from Omni
@@ -265,7 +265,7 @@ assistant:  FINAL ASSESSMENT (complete): [matches target — 2 sentences grounde
 - **Claw-code-style skill architecture.** Per-plugin knowledge lives in `skills/<plugin>/` bundles (`SKILL.md` + `scripts/` + `references/`). Main agent opens each session with a discovery turn (`bash ls skills/*/SKILL.md`) followed by a `Skill(name)` tool call that injects the SKILL.md contents into the conversation. Files are the API — no `pyproject.toml` entry points, no install step — so agent-authored skills (future plugin-explorer task) will work identically to pre-shipped ones.
 - **Three-tier agent hierarchy.** Main agent orchestrates; dispatches 4 parallel `wavetable_search` sub-agents across library slices; dispatches a `wavetable_judge` sub-agent to audition the combined pool and pick the final tuple. All file-based handoff (`/tmp/agents/<sample>/*.json`). Sub-agents start with fresh context; the main agent extracts what they need into their dispatch prompts (scripts, target audio path, n_osc_slots, etc.) rather than propagating the full SKILL.md.
 - **Subsystem batches, not per-param steps.** One batch per presentation subsystem (oscillator, envelope, filter, lfo, fx, modulation, macro). Params are bucketed by `_param_family()` — guarantees 100% batch-param alignment.
-- **Fresh vita-rendered audio per batch.** Each batch's audio reflects exactly the cumulative preset state after that batch.
+- **Fresh audio per batch.** Each batch's audio reflects exactly the cumulative preset state after that batch (vita at build time; DawDreamer in the generated snippets the model learns to write).
 - **Inline mistake correction.** ~20% of samples get a deliberate overshoot in one param of one batch. The correction fires immediately after the listen.
 - **No-audio edge case (~5%).** User sends "Recreate this sound in Vital." without attaching audio → single-turn refusal asking them to select an audio clip in REAPER. Teaches the model to recognise the missing attachment instead of fabricating a target. Flagged via `meta.variant='no_audio_selected'`.
 - **Preset-grounded Stage 1 observations.** Omni listens to the target WAV with a perceptual-bucket summary of the target preset injected as a grounding prior (`scripts/preset_perceptual_summary.py: summarize_preset_perceptual`). Avoids the multi-audio target/default comparison that was out-of-distribution for Qwen-Omni and produced hallucinated modulation and flipped attack shapes. The summary is no-numbers/no-param-names — just producer vocabulary.
@@ -729,11 +729,9 @@ Total audio in conversation: 2 + N clips (GT + default + N step renders).
 
 ---
 
-## Offline Lua Tuple Pipeline (Prior SFT Stage)
+## Offline Audio-Script Tuple Pipeline (Prior SFT Stage)
 
-An earlier pipeline — still working — builds `(audio, Lua)` pairs for teaching the model to transcribe audio into REAPER Lua scripts that recreate a melody. This is a distinct task from the iterative sound recreation pipeline above.
-
-### Generate tuples
+An earlier pipeline — still working — builds `(audio, script)` pairs for teaching the model to transcribe audio into REAPER scripts that recreate a melody. This is a distinct task from the iterative sound recreation pipeline above.
 
 ```bash
 python scripts/generate_reaper_tuples.py \
@@ -894,6 +892,23 @@ bash scripts/serve_qwen3_omni.sh
 
 Venv: `/home/nate/Documents/maestro-llm/.venv`
 
+### Agent runtime dependencies (inference machine)
+
+The trained model's bash tool calls import these packages at inference time:
+
+| Package | Purpose |
+|---|---|
+| `dawdreamer` | Renders wavetable probe and tuple audio via Vital VST3 (no REAPER needed) |
+| `numpy` | Array ops for DawDreamer audio |
+| `soundfile` | Write/read WAV files |
+| `reapy` | All REAPER interaction: insert tracks, add FX, set VST chunks, set params, insert MIDI |
+
+```bash
+pip install dawdreamer numpy soundfile python-reapy
+```
+
+Everything else in the generated code is stdlib (`json`, `pathlib`, `struct`, `base64`).
+
 ### VST chunk format — constructing Vital presets from scratch
 
 Vital doesn't expose presets through REAPER's VST preset API (`TrackFX_SetPreset` returns false; `TrackFX_GetPresetIndex` reports 0 presets). The only programmatic way to change Vital's state is via `TrackFX_SetNamedConfigParm(track, fx, "vst_chunk", base64_encoded_chunk)`.
@@ -949,7 +964,7 @@ def build_vital_chunk(preset_json: dict) -> bytes:
     return bytes(prefix) + json_bytes + suffix
 ```
 
-This eliminates the old read→decode→parse→modify→re-encode round-trip. For wavetable swaps: take the preset dict, swap `preset["settings"]["wavetables"][osc_idx]`, call `build_vital_chunk()`, base64 encode, write to temp file, Lua applies via `TrackFX_SetNamedConfigParm`. No chunk read step at all.
+This eliminates the old read→decode→parse→modify→re-encode round-trip. For wavetable swaps: take the preset dict, swap `preset["settings"]["wavetables"][osc_idx]`, call `build_vital_chunk()`, base64 encode, and apply via reapy's `RPR.TrackFX_SetNamedConfigParm(track, 0, "vst3_chunk", encoded)`. No chunk read step at all.
 
 **Gotcha**: `synth_version` must be `"1.6.0"` (or whatever version the running Vital reports). The bundled `init_preset.json` had `"99999.9.9"` which causes Vital to silently reject the chunk.
 
@@ -1002,7 +1017,7 @@ Restart REAPER; it will scan and register the bridged plugins under the usual "V
 maestro/
   render/
     vital.py          # vita bindings: render, trim silence, probe audibility
-    reaper.py         # Lua script generation + headless subprocess execution
+    reaper.py         # Headless subprocess execution (legacy)
   reaper/
     vital_tools.py    # VitalController: high-level Vital VST access via reapy (utility, not training data)
   synth/
@@ -1022,10 +1037,12 @@ scripts/
   preset_perceptual_summary.py # Perceptual-bucket preset summaries (grounding prior for Stage 1) + residual-delta summary (grounding for verdict)
   build_audio_grounding_spotcheck.py # Self-contained HTML spot-check (audio embedded, compare mode)
   validate_grounded_observations.py  # A/B runner: current vs preset-grounded Stage 1 observations
-  agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, GT-similarity pool
+  agent_sft_common.py         # Shared helpers: CLAP embedder, candidate pool, GT-similarity pool, DawDreamer render helper, reapy helper
   build_search_agent_sft_v2.py # Search-agent SFT v2: iterative batch-listening (--workers for entry + agent parallelism)
   build_judge_agent_sft_v3.py # Judge-agent SFT v3: audition combined search pool in one Omni call, pick final tuple, write output file
   build_transcription_agent_sft_v3.py # Melody-transcription SFT: listen to target, write reapy code that inserts MIDI notes on a REAPER track, save note list JSON
+  build_all_agent_sft.sh    # Orchestrator: build all 4 agents + grade + HTML spot-check
+  poc_dawdreamer_vital.py   # DawDreamer + Vital PoC: single/parallel rendering, preset swap
   build_search_agent_sft.py   # Search-agent SFT v1 (legacy: template proposals)
   build_judge_agent_sft.py    # Judge-agent SFT (legacy: listwise ranking from CLAP)
   merge_agent_sft.py          # Merge task JSONL files, shuffle
@@ -1063,22 +1080,23 @@ configs/
 - Wavetable library builder and loader (568 unique wavetables)
 - N-step parameter path generator (`path_gen.py`) with noise/mistake injection and final-step convergence
 - `render_iter_presets.py` — batch render of GT, default, and per-step probe clips; writes `manifest.jsonl`
-- `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh vita-rendered per-batch audio, inline mistake correction, producer-style plan-then-execute flow, GT-CLAP-similarity pool + tuple render+listen WT scaffold. **Preset-grounded Stage 1** (target-only audio + perceptual preset summary), **plan + param-delta driven narrations** (no descriptor-lens bank), **residual-delta grounded verdict**. Entry-level `--workers` concurrency (8×4 agents saturates vLLM's 24 slots). Overall 0.781 on n=8 LLM-judge smoke.
+- `build_main_agent_sft_v3.py` — **primary pipeline**: diagnose → subsystem-batched execute with fresh per-batch audio, inline mistake correction, producer-style plan-then-execute flow, GT-CLAP-similarity pool + tuple render+listen WT scaffold. **Preset-grounded Stage 1** (target-only audio + perceptual preset summary), **plan + param-delta driven narrations** (no descriptor-lens bank), **residual-delta grounded verdict**. All generated tool calls use **reapy** for REAPER interaction and **DawDreamer** for audio rendering (no Lua). Entry-level `--workers` concurrency (8×4 agents saturates vLLM's 24 slots). Overall 0.781 on n=8 LLM-judge smoke.
+- `build_all_agent_sft.sh` — orchestrator script: builds all 4 agent types (search → judge → transcription → main), optionally grades them, and generates an HTML spot-check. All params exposed as flags (`--suffix`, `--workers`, `--max-samples`, etc.).
 - `preset_perceptual_summary.py` — perceptual-bucket preset summaries (no numbers, no param names) used as a grounding prior by Stage 1 observations; `summarize_residual_delta_perceptual` feeds the final verdict
 - `build_search_agent_sft_v2.py` — search agent with iterative batch-listening, GT-grounded processing-chain reasoning, dynamic per-sample transform descriptions; entry-level + agent-level concurrency via `--workers`
 - `build_judge_agent_sft_v3.py` — judge agent's own SFT rollouts. Takes combined pool from all search agents (simulated at build time), renders probes, listens to target + all pool candidates in one Omni call (each `<audio>` labelled by wavetable name), picks the best N (=active oscillator slots), writes selection to output file that the main agent consumes via `cat`. Build-time oracle: GT-if-in-pool + CLAP-best-proxy
-- `build_transcription_agent_sft_v3.py` — melody-transcription subagent's SFT rollouts. Loads `source_midi_path` from the manifest as the oracle note list and emits a minimal 5-message record: user (audio + dispatch prompt) → brief acknowledgment → single bash heredoc that both inserts MIDI via `RPR_MIDI_InsertNote` AND writes the transcription JSON → tool_response → closing assistant. Notes are `{"pitch": int, "start_s": float, "dur_s": float, "velocity": int}` — MIDI ints match `RPR_MIDI_InsertNote` natively (no conversion needed); `dur_s` instead of `end_s` avoids a redundant subtraction at insert time. No Omni call at build time (no narration — the main agent never inspects the note list, so per-note prose was dead weight). Output lands at `/tmp/transcription_outputs/<sample_id>/transcription.json`.
+- `build_transcription_agent_sft_v3.py` — melody-transcription subagent's SFT rollouts. Loads `source_midi_path` from the manifest as the oracle note list and emits a minimal 5-message record: user (audio + dispatch prompt) → brief acknowledgment → single bash heredoc that uses reapy to insert MIDI via `RPR.MIDI_InsertNote` and writes the transcription JSON → tool_response → closing assistant. Notes are `{"pitch": int, "start_s": float, "dur_s": float, "velocity": int}` — MIDI ints match REAPER's API natively (no conversion needed); `dur_s` instead of `end_s` avoids a redundant subtraction at insert time.
 - `build_main_agent_sft_v2.py` — legacy per-step pipeline (superseded by v3)
 - `grade_agent_sft.py` — grades all three agent types via one entry point (dispatched on `task_type` + `meta.pipeline_version`). Main-agent v3: structural axes (batch_param_alignment, diagnosis_subsystem_coverage, clap_net_improvement, verdict_grounded, mistake_recovery) + 7-axis LLM judge (narration plan_ref / param_specific / templateness-cross-sample / no-hallucination, observations audio-grounded, verdict residual_grounded / novelty-cross-sample). Search v2: gt_recovery (conditional), shortlist_file_written, has_render_probes, closing_assistant. Judge v3: judge_correct (oracle), tuple_size_correct, tuple_names_in_pool, output_file_written, pool_candidates_discussed. Live-exec-check against REAPER available for main-agent records.
 - `build_audio_grounding_spotcheck.py` — self-contained HTML spot-check with embedded audio + judge-badge breakdown; `--compare-grades` renders two graded files side-by-side
 - Legacy wavetable-retrieval SFT builders (search v1 / judge — superseded by search v2)
-- Lua tuple pipeline for melody transcription SFT data
+- Audio-script tuple pipeline for melody transcription SFT data
 - MS-Swift LoRA training scripts for Qwen2.5-Omni
 
 **Planned / not yet implemented:**
 - **Plugin-explorer agent task** — SFT data for an agent that meets an unfamiliar plugin, systematically probes it (parameter sweeps, structured listens, hypothesis-forming), then writes its own `skills/<plugin>/SKILL.md` + bundled helper scripts. Closes the loop on the agent-writes-its-own-skill vision and unlocks generalisation beyond Vital without per-plugin training curation.
 - Second-plugin proof-of-generalisation — even a simple subtractive synth's SFT data would validate whether the strategy layer (`listen → decompose → search → audition → apply → verify`) actually transfers across plugins or whether we're over-fit to Vital's vocabulary.
-- **Longer-audio melody transcription** — `melody_transcription` currently ships with a ~30 s audio cap (the `vita` render ceiling). Longer clips would need parallel-slice transcription (multiple subagents on overlapping chunks, merged results) or a streaming-chunk backend.
+- **Longer-audio melody transcription** — `melody_transcription` currently ships with a ~30 s audio cap. Longer clips would need parallel-slice transcription (multiple subagents on overlapping chunks, merged results) or a streaming-chunk backend.
 - **Error-correction transcription review** — main agent could re-invoke `melody_transcription` after hearing a wrong note in the recreation, to fix individual notes. Currently transcription is one-shot.
 - Agent inference loop (the trained model running against a live REAPER session; see `/home/nate/Documents/maestro-reaper-plugin/`)
 - REAPER-bench for RLVR
