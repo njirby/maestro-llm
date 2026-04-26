@@ -30,6 +30,7 @@ import json
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -390,6 +391,16 @@ def stage2_final_summary(
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class SearchResult:
+    """Return type for build_search_record(): the SFT record + the shortlist
+    that the main agent would see when it reads this agent's output file."""
+    record: dict | None
+    shortlist: list[str]
+    shard_start: int
+    shard_end: int
+
+
 _TOOL_SPECS = json.dumps([
     {
         "type": "function",
@@ -438,22 +449,23 @@ def build_search_record(
     stage2_model: str,
     candidates_per_batch: int = 8,
     shortlist_dir: Path | None = None,
-    clap_threshold: float = 0.92,
+    clap_threshold: float = 0.97,
     midi_path: str | None = None,
-) -> dict | None:
-    """Build one search agent SFT record with iterative batch listening.
+) -> SearchResult:
+    """Build one search agent SFT record: render all probes upfront, then
+    listen and assess in batches.
 
-    Uses inline reapy snippets for wavetable listing and probe rendering. The search agent's task is defined by
-    a dense index range [shard_start, shard_end). GT wavetables within the
-    range are oracle-forced onto the final shortlist.
+    Renders all candidates in [shard_start, shard_end) in a single DawDreamer
+    bash call, then iterates through batches of Read (listen) + analysis.
     """
+    _empty = SearchResult(record=None, shortlist=[], shard_start=shard_start, shard_end=shard_end)
     if shard_end <= shard_start:
-        return None
+        return _empty
 
     # Names in shard (by dense index)
     shard = [idx_to_name[i] for i in range(shard_start, shard_end) if i in idx_to_name]
     if not shard:
-        return None
+        return _empty
 
     gt_set = set(gt_wavetable_names)
     gt_in_shard = [n for n in shard if n in gt_set]
@@ -490,9 +502,9 @@ def build_search_record(
     _user_parts.append(
         f"Evaluate wavetables at indices {shard_start}-{shard_end - 1}. "
         f"Load data/wavetable_lib.json, list names in your range, "
-        f"swap each into the synth, render with DawDreamer using the "
-        f"transcription MIDI, and listen. Return a JSON shortlist of "
-        f"2-4 wavetable names."
+        f"render all candidates at once with DawDreamer using the "
+        f"transcription MIDI, then listen to each batch and assess. "
+        f"Return a JSON shortlist of 2-4 wavetable names."
     )
     messages.append({
         "role": "user",
@@ -535,45 +547,52 @@ def build_search_record(
         ) if omni_server else f"A {archetype} sound."
     )
 
+    # --- Render ALL probes upfront in one bash call ---
+    import re as _re
+    def _slugify(s: str) -> str:
+        return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
+
+    all_shard_idxs = [name_to_idx[n] for n in shard if n in name_to_idx]
+    render_cmd = _wrap_as_bash(build_render_probes_snippet(
+        idxs=all_shard_idxs, out_dir=probe_out_dir,
+        midi_path=midi_path,
+    ))
+
+    all_rendered_entries = []
+    name_to_audio_read_path: dict[str, str] = {}
+    for name in shard:
+        idx = name_to_idx.get(name)
+        if idx is None:
+            continue
+        out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify(name)}.wav"
+        all_rendered_entries.append({"idx": idx, "name": name, "out": out_path})
+        if name in candidate_audio:
+            audio_assets.append(str(candidate_audio[name]))
+            name_to_audio_read_path[name] = str(candidate_audio[name])
+
+    messages.append({
+        "role": "assistant",
+        "content": f"Rendering all {len(shard)} candidates in my range.",
+    })
+    messages.append(_tool_call("Bash", {"command": render_cmd}))
+    _render_stdout = json.dumps({"status": "ok", "rendered": all_rendered_entries}) + "\n"
+    messages.append(_bash_tool_response(_render_stdout))
+
+    # --- Per-batch: listen (Read) + analyze ---
     for bi, batch in enumerate(all_ordered):
         batch_num = bi + 1
         gt_in_batch = [n for n in batch if n in gt_set]
 
-        # Real bash command: render batch candidates
-        batch_idxs = [name_to_idx[n] for n in batch if n in name_to_idx]
-        render_cmd = _wrap_as_bash(build_render_probes_snippet(
-            idxs=batch_idxs, out_dir=probe_out_dir,
-            midi_path=midi_path,
-        ))
+        batch_audio_paths = [name_to_audio_read_path[n] for n in batch if n in name_to_audio_read_path]
 
-        import re as _re
-        def _slugify(s: str) -> str:
-            return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
-
-        rendered_entries = []
-        audio_read_paths: list[str] = []
-        for name, idx in zip(batch, batch_idxs):
-            out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify(name)}.wav"
-            entry = {"idx": idx, "name": name, "out": out_path}
-            if name in candidate_audio:
-                audio_assets.append(str(candidate_audio[name]))
-                audio_read_paths.append(str(candidate_audio[name]))
-            rendered_entries.append(entry)
-
-        intro = f"Rendering batch {batch_num} (indices {', '.join(str(i) for i in batch_idxs)})."
+        intro = f"Listening to batch {batch_num}."
         if pending_notes:
             intro = f"{pending_notes}\n\n{intro}"
             pending_notes = None
 
-        messages.append({"role": "assistant", "content": intro})
-        messages.append(_tool_call("Bash", {"command": render_cmd}))
-        _render_stdout = json.dumps({"status": "ok", "rendered": rendered_entries}) + "\n"
-        messages.append(_bash_tool_response(_render_stdout))
-
-        # Read each rendered audio file — sequential read calls
-        if audio_read_paths:
-            messages.append({"role": "assistant", "content": "Listening to the rendered candidates."})
-            for rp in audio_read_paths:
+        if batch_audio_paths:
+            messages.append({"role": "assistant", "content": intro})
+            for rp in batch_audio_paths:
                 messages.append(_tool_call("Read", {"file_path": rp}))
                 messages.append(_read_tool_response_audio())
 
@@ -622,10 +641,6 @@ def build_search_record(
             omni_obs = "\n".join(f'"{n}": Candidate evaluated.' for n in batch)
 
         # Stage 2: write reasoning ONLY (labels are pre-determined by CLAP).
-        # No "Candidates so far" echo — the running shortlist is the agent's own
-        # internal state, not something it narrates in-token. The final shortlist
-        # is materialised via an explicit file write at the end of the run
-        # (claw-code-style handoff).
         batch_notes = stage2_batch_notes(
             omni_observations=omni_obs,
             candidate_names=batch,
@@ -742,7 +757,12 @@ def build_search_record(
     }
 
     assert_valid_ms_swift_multiturn_record(record)
-    return record
+    return SearchResult(
+        record=record,
+        shortlist=list(selected_so_far),
+        shard_start=shard_start,
+        shard_end=shard_end,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -925,7 +945,7 @@ def main() -> None:
 
         def _run_agent(job):
             ai, start, end = job
-            rec = build_search_record(
+            result = build_search_record(
                 sample_id=sample_id,
                 agent_idx=ai + 1,
                 archetype=archetype,
@@ -946,6 +966,7 @@ def main() -> None:
                 shortlist_dir=args.shortlist_dir,
                 midi_path=_midi_path,
             )
+            rec = result.record
             if rec:
                 rec["id"] = f"{sample_id}_agent{ai + 1}_search"
             return (ai, rec)

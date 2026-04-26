@@ -374,7 +374,7 @@ def is_clap_selected(
     candidate_name: str,
     gt_wavetable_names: list[str],
     name_to_emb: dict[str, np.ndarray],
-    threshold: float = 0.92,
+    threshold: float = 0.97,
 ) -> bool:
     """CLAP-based selection: is this candidate similar enough to any GT wavetable?
 
@@ -690,6 +690,9 @@ VITAL_VST3 = os.environ.get("VITAL_VST3", os.path.expanduser("~/.vst3/Vital.vst3
 SAMPLE_RATE = 44100
 BLOCK_SIZE = 512
 
+_engine = daw.RenderEngine(SAMPLE_RATE, BLOCK_SIZE)
+_synth = _engine.make_plugin_processor("vital", VITAL_VST3)
+
 def load_midi_notes(path):
     with open(path) as f:
         data = json.load(f)
@@ -697,21 +700,20 @@ def load_midi_notes(path):
     return [(n["pitch"], n["velocity"], n["start_s"], n["dur_s"]) for n in notes]
 
 def render_vital_preset(preset_dict, out_path, midi_notes):
-    engine = daw.RenderEngine(SAMPLE_RATE, BLOCK_SIZE)
-    synth = engine.make_plugin_processor("vital", VITAL_VST3)
     with tempfile.NamedTemporaryFile(suffix=".vital", mode="w", delete=False) as f:
         json.dump(preset_dict, f, separators=(",", ":"))
         tmp = f.name
     try:
-        synth.load_state(tmp)
+        _synth.load_state(tmp)
     finally:
         os.unlink(tmp)
+    _synth.clear_midi()
     for pitch, vel, start, dur in midi_notes:
-        synth.add_midi_note(int(pitch), int(vel), float(start), float(dur))
+        _synth.add_midi_note(int(pitch), int(vel), float(start), float(dur))
     duration = max((start + dur for _, _, start, dur in midi_notes), default=10.0) + 1.0
-    engine.load_graph([(synth, [])])
-    engine.render(duration)
-    audio = synth.get_audio()
+    _engine.load_graph([(_synth, [])])
+    _engine.render(duration)
+    audio = _synth.get_audio()
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     sf.write(out_path, audio.T, SAMPLE_RATE)
     return float(np.abs(audio).max())
@@ -937,7 +939,7 @@ def build_param_search_snippet(
         f"    for i in range(n):\n"
         f"        _, _, _, _, name, _ = RPR.TrackFX_GetParamName(track, {fx_idx}, i, '', 2048)\n"
         f"        if all(kw in name.strip().lower() for kw in keywords):\n"
-        f"            _, val, _, mn, mx, _ = RPR.TrackFX_GetParam(track, {fx_idx}, i, 0.0, 0.0)\n"
+        f"            val, _, _, _, mn, mx = RPR.TrackFX_GetParam(track, {fx_idx}, i, 0.0, 0.0)\n"
         f"            _, _, _, _, disp, _ = RPR.TrackFX_GetFormattedParamValue(track, {fx_idx}, i, '', 2048)\n"
         f"            results.append({{'idx': i, 'name': name.strip(), 'value': round(float(val), 6),\n"
         f"                           'display': disp.strip(), 'min': round(float(mn), 6), 'max': round(float(mx), 6)}})\n"

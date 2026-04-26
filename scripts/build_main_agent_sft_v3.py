@@ -279,7 +279,7 @@ class SubsystemBatch:
 def build_batches_from_diff(
     target_preset: dict,
     init_preset: dict,
-    threshold: float = 0.05,
+    threshold: float = 0.01,
 ) -> list[SubsystemBatch]:
     """Diff target vs init, bucket changed params by subsystem, return ordered batches.
 
@@ -400,7 +400,7 @@ def render_cumulative_audio(
 def build_diagnosis_subsystem_truth(
     target_preset: dict,
     init_preset: dict,
-    threshold: float = 0.05,
+    threshold: float = 0.01,
 ) -> dict[str, list[str]]:
     """Compute {presentation_subsystem → [param_names]} of all params that differ.
 
@@ -1604,7 +1604,7 @@ def build_record(
         )
         return str(out_path), str(manifest_path)
 
-    def _pool_covers_gt(pool_list: list[str], threshold: float = 0.92) -> float:
+    def _pool_covers_gt(pool_list: list[str], threshold: float = 0.97) -> float:
         """Fraction of GT wavetables covered by pool (exact or CLAP-similar proxy)."""
         if not gt_names_list:
             return 1.0
@@ -2177,7 +2177,7 @@ def build_record(
         messages.append(_tool_call("Bash", {"command": _batch_render_cmd}))
         _emit_listen_sequence(
             messages, audio_assets, batch_wav,
-            listen_text=f"Reading {b.subsystem} batch audio.",
+            listen_text=f"Listening to {b.subsystem} batch.",
         )
         last_batch_audio = batch_wav
 
@@ -2271,7 +2271,7 @@ def build_record(
             messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
             _emit_listen_sequence(
                 messages, audio_assets, corr_wav,
-                listen_text="Reading corrected audio.",
+                listen_text="Listening to the corrected preset.",
             )
             last_batch_audio = corr_wav
             pending_check = f"The {b.subsystem} region now sits back in line with the plan."
