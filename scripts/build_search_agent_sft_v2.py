@@ -45,13 +45,16 @@ from scripts.agent_sft_common import (
     build_list_wavetables_slice_snippet,
     build_name_embedding_map,
     build_render_probes_snippet,
+    emit_code_mistake_sequence,
     ensure_candidate_probes_for_names,
+    execute_for_traceback,
     extract_gt_wavetable_names,
     is_clap_selected,
     load_index_rows,
     load_manifest_entries,
     load_wavetable_lib,
     make_agent_id,
+    select_and_apply_mutation,
     select_probe_rows_by_name,
     _bash_tool_response,
     _read_tool_response_audio,
@@ -451,6 +454,8 @@ def build_search_record(
     shortlist_dir: Path | None = None,
     clap_threshold: float = 0.97,
     midi_path: str | None = None,
+    code_mistake_rate: float = 0.0,
+    seed: int = 1337,
 ) -> SearchResult:
     """Build one search agent SFT record: render all probes upfront, then
     listen and assess in batches.
@@ -553,10 +558,11 @@ def build_search_record(
         return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
 
     all_shard_idxs = [name_to_idx[n] for n in shard if n in name_to_idx]
-    render_cmd = _wrap_as_bash(build_render_probes_snippet(
+    render_snippet = build_render_probes_snippet(
         idxs=all_shard_idxs, out_dir=probe_out_dir,
         midi_path=midi_path,
-    ))
+    )
+    render_cmd = _wrap_as_bash(render_snippet)
 
     all_rendered_entries = []
     name_to_audio_read_path: dict[str, str] = {}
@@ -574,6 +580,25 @@ def build_search_record(
         "role": "assistant",
         "content": f"Rendering all {len(shard)} candidates in my range.",
     })
+
+    # Code mistake injection: mutate probes render and capture real traceback.
+    import random as _random
+    _code_mistake_info: dict | None = None
+    _sid_seed = int(hashlib.sha1(f"{sample_id}:{agent_idx}".encode()).hexdigest()[:8], 16)
+    _code_rng = _random.Random(seed + _sid_seed + 9999)
+    if _code_rng.random() < code_mistake_rate:
+        _mut_result = select_and_apply_mutation(
+            "probes", render_snippet, _code_rng, reaper_available=False,
+        )
+        if _mut_result is not None:
+            _mutation, _broken_code = _mut_result
+            _traceback = execute_for_traceback(_broken_code, cwd=str(ROOT))
+            if _traceback:
+                emit_code_mistake_sequence(
+                    messages, _broken_code, render_snippet, _traceback, _mutation,
+                )
+                _code_mistake_info = {"mutation": _mutation.name, "category": _mutation.category, "target": "probes_render"}
+
     messages.append(_tool_call("Bash", {"command": render_cmd}))
     _render_stdout = json.dumps({"status": "ok", "rendered": all_rendered_entries}) + "\n"
     messages.append(_bash_tool_response(_render_stdout))
@@ -753,6 +778,7 @@ def build_search_record(
             "final_shortlist": selected_so_far,
             "gt_on_shortlist": [n for n in selected_so_far if n in gt_set],
             "shortlist_output_file": shortlist_path,
+            "injected_code_mistake": _code_mistake_info,
         },
     }
 
@@ -796,6 +822,9 @@ def main() -> None:
     ap.add_argument("--stage2-server", default="")
     ap.add_argument("--stage2-model", default="")
     ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--code-mistake-rate", type=float, default=0.08,
+        help="Probability of injecting a code mistake (real traceback) per search record (default 0.08).")
+    ap.add_argument("--seed", type=int, default=1337)
     args = ap.parse_args()
 
     stage2_server = args.stage2_server or args.omni_server
@@ -965,6 +994,8 @@ def main() -> None:
                 candidates_per_batch=args.candidates_per_batch,
                 shortlist_dir=args.shortlist_dir,
                 midi_path=_midi_path,
+                code_mistake_rate=args.code_mistake_rate,
+                seed=args.seed,
             )
             rec = result.record
             if rec:

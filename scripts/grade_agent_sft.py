@@ -344,6 +344,35 @@ _REAPER_RENDER_PATH_RE = re.compile(
 _LISTEN_PROBE_PATH_RE = re.compile(r'"path":\s*"([^"]+)"')
 
 
+def _score_code_mistake_recovery(messages: list[dict[str, Any]], meta: dict[str, Any]) -> float | None:
+    """Score code mistake recovery: None if no code mistake was injected, else
+    1.0 if the conversation contains the traceback→diagnosis→retry pattern.
+
+    Checks: (1) a tool_response with a traceback/error in stderr, (2) followed
+    by an assistant message that diagnoses the error, (3) followed by a retry
+    tool_call for the same tool.
+    """
+    if not meta.get("injected_code_mistake"):
+        return None
+    for i, m in enumerate(messages):
+        if m.get("role") != "tool_response":
+            continue
+        try:
+            resp = json.loads(m.get("content", ""))
+        except Exception:
+            continue
+        stderr = resp.get("stderr", "") if isinstance(resp, dict) else ""
+        if not stderr or ("Traceback" not in stderr and "Error" not in stderr):
+            continue
+        if i + 1 < len(messages) and messages[i + 1].get("role") == "assistant":
+            diag = messages[i + 1].get("content", "").lower()
+            error_kw = ("error", "failed", "traceback", "fix", "correct", "wrong", "typo", "missing")
+            if any(kw in diag for kw in error_kw):
+                if i + 2 < len(messages) and messages[i + 2].get("role") == "tool_call":
+                    return 1.0
+    return 0.0
+
+
 def _check_file_causality(
     messages: list[dict[str, Any]],
     record: dict[str, Any],
@@ -2088,10 +2117,13 @@ def score_main_v3_record(
     )
     verdict_grounded: float = 1.0 if verdict_mentions_sub else 0.0
 
-    # -- Mistake recovery (conditional) --
+    # -- Mistake recovery (conditional — param overshoot) --
     mistake_recovery: float | None = None
     if meta.get("injected_mistake") is not None:
         mistake_recovery = 1.0 if meta.get("mistake_caught") else 0.0
+
+    # -- Code mistake recovery (conditional — traceback→diagnosis→retry) --
+    code_mistake_recovery = _score_code_mistake_recovery(messages, meta)
 
     # -- LLM judge (optional): narration grounding + verdict substantiveness +
     #    audio-grounded observations + param-hallucination binary check --
@@ -2129,6 +2161,8 @@ def score_main_v3_record(
     }
     if mistake_recovery is not None:
         weights["mistake_recovery"] = 0.05
+    if code_mistake_recovery is not None:
+        weights["code_mistake_recovery"] = 0.05
 
     raw: dict[str, Any] = {
         "clap_net_improvement": clap_net_improvement,
@@ -2140,6 +2174,7 @@ def score_main_v3_record(
         "no_gt_leak": no_gt_leak,
         "file_causality": file_causality,
         "mistake_recovery": mistake_recovery,
+        "code_mistake_recovery": code_mistake_recovery,
         "llm_narration_plan_ref": llm_scores.get("llm_narration_plan_ref"),
         "llm_narration_param_specific": llm_scores.get("llm_narration_param_specific"),
         "llm_narration_templateness": llm_scores.get("llm_narration_templateness"),
@@ -2293,13 +2328,14 @@ def score_search_v2_record(
         try:
             tc = json.loads(messages[last_bash_idx]["content"])
             cmd = tc.get("arguments", {}).get("command", "")
-            if "_search_" in cmd and ".json" in cmd:
-                # Check next tool_response is ok
+            if "shortlist" in cmd and ".json" in cmd:
                 nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
                 if nxt and nxt.get("role") == "tool_response":
                     try:
                         resp = json.loads(nxt.get("content", ""))
-                        if resp.get("status") == "ok" and resp.get("file"):
+                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
+                        inner = json.loads(stdout) if stdout.strip() else resp
+                        if inner.get("status") == "ok" and inner.get("file"):
                             shortlist_file_written = 1.0
                     except Exception:
                         pass
@@ -2325,9 +2361,13 @@ def score_search_v2_record(
         except Exception:
             pass
 
-    # Shortlist nonempty
+    # Shortlist nonempty — only assessable when GT wavetables are in this shard
+    # (non-GT shards should correctly produce an empty shortlist).
     final_shortlist: list[str] = list(meta.get("final_shortlist") or [])
-    shortlist_nonempty: float = 1.0 if final_shortlist else 0.0
+    if gt_in_shard:
+        shortlist_nonempty: float | None = 1.0 if final_shortlist else 0.0
+    else:
+        shortlist_nonempty = None
 
     # Snake case / format
     snake_hits = sum(bool(_SNAKE_CASE_RE.search(t)) for t in assistant_turns)
@@ -2344,6 +2384,9 @@ def score_search_v2_record(
 
     no_gt_leak = _gt_leak_score(assistant_turns)
 
+    # Code mistake recovery (conditional)
+    code_mistake_recovery = _score_code_mistake_recovery(messages, meta)
+
     weights: dict[str, float] = {
         "gt_recovery": 0.30,
         "shortlist_file_written": 0.20,
@@ -2355,6 +2398,8 @@ def score_search_v2_record(
         "snake_case_clean": 0.0125,
         "format_consistent": 0.0125,
     }
+    if code_mistake_recovery is not None:
+        weights["code_mistake_recovery"] = 0.05
     raw: dict[str, Any] = {
         "gt_recovery": gt_recovery,
         "shortlist_file_written": shortlist_file_written,
@@ -2362,6 +2407,7 @@ def score_search_v2_record(
         "has_render_probes": has_render_probes,
         "shortlist_nonempty": shortlist_nonempty,
         "no_gt_leak": no_gt_leak,
+        "code_mistake_recovery": code_mistake_recovery,
         "closing_assistant": closing_assistant,
         "snake_case_clean": snake_case_clean,
         "format_consistent": format_consistent,
@@ -2391,7 +2437,7 @@ def score_judge_v3_record(
 ) -> dict[str, Any]:
     """Score a v3 judge record.
 
-    Verdict-aware: judge emits verdict ∈ {"good", "no_match"}. Tuple-related
+    Verdict-aware: judge emits verdict ∈ {"good", "partial_match", "no_match"}. Tuple-related
     dimensions only apply when verdict == "good"; missing-character + no_match
     narration dimensions apply only when verdict == "no_match". Records without
     a verdict field default to "good" for back-compat with v18/v19.
@@ -2419,6 +2465,7 @@ def score_judge_v3_record(
     # Verdict resolution: explicit field wins; default to "good" for back-compat.
     verdict = meta.get("verdict") or "good"
     is_good = verdict == "good"
+    is_partial = verdict == "partial_match"
     is_no_match = verdict == "no_match"
 
     selected_tuple: list[str] = list(meta.get("selected_tuple") or [])
@@ -2427,16 +2474,21 @@ def score_judge_v3_record(
     gt_names: list[str] = list(meta.get("gt_wavetable_names") or [])
     missing_character = str(meta.get("missing_character") or "")
 
-    # Verdict correctness: oracle = "good" iff every GT name appears in pool.
-    expected_verdict = "good" if (gt_names and all(g in pool for g in gt_names)) else "no_match"
+    # Verdict correctness: oracle is ternary — good / partial_match / no_match.
     if not gt_names:
-        # No GT info available — can't grade verdict correctness.
         verdict_correct: float | None = None
     else:
+        gt_in_pool = [g for g in gt_names if g in pool]
+        if len(gt_in_pool) == len(gt_names):
+            expected_verdict = "good"
+        elif gt_in_pool:
+            expected_verdict = "partial_match"
+        else:
+            expected_verdict = "no_match"
         verdict_correct = 1.0 if verdict == expected_verdict else 0.0
 
-    # Tuple-related dimensions (good only)
-    if is_good:
+    # Tuple-related dimensions (good or partial_match — both select a tuple)
+    if is_good or is_partial:
         judge_correct: float | None = 1.0 if meta.get("judge_correct") else 0.0
         tuple_size_correct: float | None = 1.0 if len(selected_tuple) == n_osc_slots else 0.0
         tuple_names_in_pool: float | None = (
@@ -2447,12 +2499,13 @@ def score_judge_v3_record(
         tuple_size_correct = None
         tuple_names_in_pool = None
 
-    # No_match-specific dimensions
-    if is_no_match:
+    # No_match / partial_match dimensions (both note missing character)
+    if is_no_match or is_partial:
         missing_character_nonempty: float | None = (
             1.0 if len(missing_character.split()) >= 3 else 0.0
         )
-        _no_match_kw = ("no_match", "no-match", "re-search", "research", "doesn't contain", "does not contain")
+        _no_match_kw = ("no_match", "no-match", "partial_match", "partial-match",
+                        "re-search", "research", "doesn't contain", "does not contain", "missing")
         _hits = any(any(kw in (t or "").lower() for kw in _no_match_kw) for t in assistant_turns)
         no_match_narration_present: float | None = 1.0 if _hits else 0.0
     else:
@@ -2483,7 +2536,9 @@ def score_judge_v3_record(
                 if nxt and nxt.get("role") == "tool_response":
                     try:
                         resp = json.loads(nxt.get("content", ""))
-                        if resp.get("status") == "ok" and resp.get("file"):
+                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
+                        inner = json.loads(stdout) if stdout.strip() else resp
+                        if inner.get("status") == "ok" and inner.get("file"):
                             output_file_written = 1.0
                     except Exception:
                         pass
@@ -2505,7 +2560,7 @@ def score_judge_v3_record(
                             break
                     except Exception:
                         continue
-                target_keys = required_new if (verdict and verdict in ("good", "no_match")) else required_legacy
+                target_keys = required_new if (verdict and verdict in ("good", "partial_match", "no_match")) else required_legacy
                 if target_keys.issubset(_payload_keys):
                     output_schema_valid = 1.0
             except Exception:
@@ -2676,7 +2731,9 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
                 if nxt and nxt.get("role") == "tool_response":
                     try:
                         resp = json.loads(nxt.get("content", ""))
-                        if resp.get("status") == "ok" and resp.get("file"):
+                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
+                        inner = json.loads(stdout) if stdout.strip() else resp
+                        if inner.get("status") == "ok" and inner.get("file"):
                             output_file_written = 1.0
                     except Exception:
                         pass

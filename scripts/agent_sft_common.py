@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 import re
-from dataclasses import dataclass
+import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -968,3 +970,245 @@ def simulate_param_search(
                 entry["value"] = round(value_overrides[p["idx"]], 6)
             results.append(entry)
     return results[:max_results]
+
+
+# ---------------------------------------------------------------------------
+# Code-mistake injection — mutation catalog + traceback execution
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CodeMutation:
+    name: str
+    category: str  # "dawdreamer" | "reapy" | "syntax"
+    target_snippets: list[str]
+    diagnosis: str
+    _old: str = ""
+    _new: str = ""
+
+    def mutate(self, code: str) -> str | None:
+        if self._old not in code:
+            return None
+        return code.replace(self._old, self._new, 1)
+
+
+def _make_syntax_paren_mutation() -> CodeMutation:
+    """SyntaxError: extra paren in json.dumps — uses rfind for last occurrence."""
+    m = CodeMutation(
+        name="syntax_error_paren",
+        category="syntax",
+        target_snippets=["probes", "tuple", "verify", "cumulative", "reaper_render", "param_search"],
+        diagnosis=(
+            "The script failed to parse — `SyntaxError: '(' was never closed`. "
+            "There's an extra parenthesis in the `json.dumps` call. Removing it."
+        ),
+    )
+    _orig_mutate = m.mutate
+
+    def _mutate_last_json_dumps(code: str) -> str | None:
+        target = "json.dumps({"
+        idx = code.rfind(target)
+        if idx < 0:
+            return None
+        return code[:idx] + "json.dumps(({" + code[idx + len(target):]
+
+    m.mutate = _mutate_last_json_dumps  # type: ignore[assignment]
+    return m
+
+
+def _make_indentation_mutation() -> CodeMutation:
+    m = CodeMutation(
+        name="indentation_error",
+        category="syntax",
+        target_snippets=["probes", "tuple", "verify", "cumulative"],
+        diagnosis=(
+            "The script failed to parse — `IndentationError: unexpected indent`. "
+            "The `finally` block has wrong indentation. Fixing it."
+        ),
+        _old="\n    finally:\n",
+        _new="\n      finally:\n",
+    )
+    return m
+
+
+CODE_MUTATIONS: list[CodeMutation] = [
+    # --- DawDreamer ---
+    CodeMutation(
+        name="key_error_settings",
+        category="dawdreamer",
+        target_snippets=["probes", "tuple", "verify", "cumulative"],
+        diagnosis=(
+            "The render failed — `KeyError: 'setting'`. The preset dictionary key "
+            "should be `'settings'` with a trailing 's'. Fixing and re-rendering."
+        ),
+        _old="preset['settings']",
+        _new="preset['setting']",
+    ),
+    CodeMutation(
+        name="file_not_found_lib",
+        category="dawdreamer",
+        target_snippets=["probes", "tuple", "cumulative"],
+        diagnosis=(
+            "The render failed — the wavetable library path is wrong. It should be "
+            "`data/wavetable_lib.json`, not `data/wavetable_library.json`. Correcting."
+        ),
+        _old='"data/wavetable_lib.json"',
+        _new='"data/wavetable_library.json"',
+    ),
+    CodeMutation(
+        name="name_error_midi",
+        category="dawdreamer",
+        target_snippets=["probes", "tuple", "verify"],
+        diagnosis=(
+            "The render failed — `NameError: name 'midi_note' is not defined`. "
+            "The variable is `midi_notes` (plural). Fixing the typo."
+        ),
+        _old=", midi_notes)\n",
+        _new=", midi_note)\n",
+    ),
+    CodeMutation(
+        name="index_error_wt",
+        category="dawdreamer",
+        target_snippets=["probes"],
+        diagnosis=(
+            "The render failed — `IndexError: list index out of range`. The wavetable "
+            "slot index exceeds the number of oscillators. Correcting to index 0."
+        ),
+        _old="wavetables'][0]",
+        _new="wavetables'][3]",
+    ),
+    CodeMutation(
+        name="attr_error_dawdreamer",
+        category="dawdreamer",
+        target_snippets=["probes", "tuple", "verify", "cumulative"],
+        diagnosis=(
+            "The render failed — `AttributeError: 'reset_midi'`. The DawDreamer synth "
+            "method is `clear_midi()`, not `reset_midi()`. Fixing."
+        ),
+        _old="_synth.clear_midi()",
+        _new="_synth.reset_midi()",
+    ),
+    # --- reapy ---
+    CodeMutation(
+        name="attr_error_reapy_func",
+        category="reapy",
+        target_snippets=["param_search"],
+        diagnosis=(
+            "The command failed — `AttributeError: 'TrackFX_GetParamCount'`. The REAPER "
+            "API function is `TrackFX_GetNumParams`, not `TrackFX_GetParamCount`. Fixing."
+        ),
+        _old="RPR.TrackFX_GetNumParams",
+        _new="RPR.TrackFX_GetParamCount",
+    ),
+    CodeMutation(
+        name="type_error_reapy_args",
+        category="reapy",
+        target_snippets=["param_search"],
+        diagnosis=(
+            "The command failed — `TypeError: missing 1 required positional argument`. "
+            "`TrackFX_GetParam` requires 5 arguments (track, fx_idx, param_idx, minval, "
+            "maxval). Adding the missing argument."
+        ),
+        _old=", 0.0, 0.0)",
+        _new=", 0.0)",
+    ),
+    CodeMutation(
+        name="attr_error_reapy_render",
+        category="reapy",
+        target_snippets=["reaper_render"],
+        diagnosis=(
+            "The render command failed — `AttributeError: 'Main_OnCommand_Ex'`. The REAPER "
+            "API function is `Main_OnCommand`, not `Main_OnCommand_Ex`. Fixing."
+        ),
+        _old="RPR.Main_OnCommand(",
+        _new="RPR.Main_OnCommand_Ex(",
+    ),
+    # --- Syntax ---
+    _make_syntax_paren_mutation(),
+    _make_indentation_mutation(),
+]
+
+
+_reaper_available_cache: dict[str, bool] = {}
+
+
+def reaper_is_running(cwd: str) -> bool:
+    """Check whether REAPER is reachable via reapy. Cached per cwd for the build run."""
+    if cwd in _reaper_available_cache:
+        return _reaper_available_cache[cwd]
+    try:
+        proc = subprocess.run(
+            ["python3", "-c", "import reapy; reapy.is_inside_reaper() or reapy.connect()"],
+            capture_output=True, timeout=5.0, cwd=cwd,
+        )
+        available = proc.returncode == 0
+    except Exception:
+        available = False
+    _reaper_available_cache[cwd] = available
+    logger.info("REAPER availability check: %s (cwd=%s)", available, cwd)
+    return available
+
+
+def select_and_apply_mutation(
+    snippet_name: str,
+    code: str,
+    rng: random.Random,
+    reaper_available: bool = False,
+) -> tuple[CodeMutation, str] | None:
+    """Pick a random applicable mutation and apply it.
+
+    Returns (mutation, broken_code) or None if no mutation fits.
+    """
+    candidates = [
+        m for m in CODE_MUTATIONS
+        if snippet_name in m.target_snippets
+        and (m.category != "reapy" or reaper_available)
+    ]
+    rng.shuffle(candidates)
+    for m in candidates:
+        broken = m.mutate(code)
+        if broken is not None and broken != code:
+            return m, broken
+    return None
+
+
+def execute_for_traceback(broken_code: str, cwd: str, timeout: float = 15.0) -> str | None:
+    """Run broken Python in subprocess, return stderr if it failed."""
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", f"python3 - <<'PY'\n{broken_code}\nPY"],
+            capture_output=True, text=True, timeout=timeout, cwd=cwd,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("execute_for_traceback timed out after %.0fs", timeout)
+        return None
+    except Exception as exc:
+        logger.warning("execute_for_traceback failed: %s", exc)
+        return None
+    if proc.returncode != 0 and proc.stderr.strip():
+        return proc.stderr.strip()
+    return None
+
+
+def emit_code_mistake_sequence(
+    messages: list[dict],
+    broken_cmd: str,
+    correct_cmd: str,
+    traceback_stderr: str,
+    mutation: CodeMutation,
+) -> None:
+    """Inject the error→fix sequence into the conversation.
+
+    Caller has already appended whatever assistant message leads into the
+    broken tool call. This emits:
+      1. tool_call  (broken bash)
+      2. tool_response (traceback)
+      3. assistant  (diagnosis + "fixing")
+    The caller's existing code then appends the correct tool_call + success
+    tool_response, completing the retry pattern.
+    """
+    messages.append(_tool_call("Bash", {"command": _wrap_as_bash(broken_cmd)}))
+    messages.append(_bash_tool_response(stdout="", stderr=traceback_stderr))
+    messages.append({"role": "assistant", "content": mutation.diagnosis})

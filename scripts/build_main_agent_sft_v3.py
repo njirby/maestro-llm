@@ -49,12 +49,16 @@ from scripts.agent_sft_common import (
     build_render_probes_snippet,
     build_render_tuple_snippet,
     build_render_verify_snippet,
+    emit_code_mistake_sequence,
     ensure_candidate_probes_for_names,
+    execute_for_traceback,
     extract_gt_wavetable_names,
     load_index_rows,
     load_manifest_entries,
     load_wavetable_lib,
     make_agent_id,
+    reaper_is_running,
+    select_and_apply_mutation,
     select_probe_rows_by_name,
     simulate_param_search,
     write_agent_manifest,
@@ -1012,6 +1016,14 @@ def build_record(
     sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
     sample_rng = random.Random(int(args.seed) + sid_seed)
 
+    # Code mistake injection decision (independent RNG stream so it doesn't
+    # shift other randomness when toggled).
+    _code_rng = random.Random(int(args.seed) + sid_seed + 9999)
+    _code_mistake_rate = getattr(args, "code_mistake_rate", 0.0)
+    _inject_code_mistake = _code_rng.random() < _code_mistake_rate
+    _code_mistake_info: dict | None = None
+    _reaper_avail = reaper_is_running(str(ROOT)) if _inject_code_mistake else False
+
     # ---- WT search (claw-code-style Agent dispatch + file-based handoff) ----
     gt_names_list = list(extract_gt_wavetable_names(Path(target_preset_path)))
     if not gt_names_list:
@@ -1119,6 +1131,7 @@ def build_record(
                 "diagnosis_subsystems_truth": [],
                 "injected_mistake": None,
                 "mistake_caught": None,
+                "injected_code_mistake": None,
                 "path_complete": False,
                 "n_remaining": 0,
                 "commentary_mode": "two_stage",
@@ -1938,10 +1951,11 @@ def build_record(
         # verdict == "good" → render tuple, listen, break out of search loop.
         tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}.wav"
         osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
-        render_cmd = _wrap_as_bash(build_render_tuple_snippet(
+        render_snippet = build_render_tuple_snippet(
             osc_names=osc_names, out_path=str(tuple_wav),
             midi_path=_trans_output_file,
-        ))
+        )
+        render_cmd = _wrap_as_bash(render_snippet)
         render_cumulative_audio(_build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset), notes, tuple_wav)
 
         tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
@@ -1952,6 +1966,23 @@ def build_record(
                 f"Rendering the tuple as a final pre-apply sanity check."
             ),
         })
+
+        # Code mistake injection: mutate the tuple render snippet and capture
+        # a real traceback from executing the broken code.
+        if _inject_code_mistake and _code_mistake_info is None:
+            _mut_result = select_and_apply_mutation(
+                "tuple", render_snippet, _code_rng, reaper_available=_reaper_avail,
+            )
+            if _mut_result is not None:
+                _mutation, _broken_code = _mut_result
+                _traceback = execute_for_traceback(_broken_code, cwd=str(ROOT))
+                if _traceback:
+                    emit_code_mistake_sequence(
+                        messages, _broken_code, render_snippet, _traceback, _mutation,
+                    )
+                    _code_mistake_info = {"mutation": _mutation.name, "category": _mutation.category, "target": "tuple_render"}
+                    _log(f"code mistake injected: {_mutation.name}")
+
         messages.append(_tool_call("Bash", {"command": render_cmd}))
         audio_assets.append(str(tuple_wav))
         _tuple_stdout = json.dumps({
@@ -2384,6 +2415,7 @@ def build_record(
             "mistake_caught": mistake_caught if injected_mistake else None,
             "transcription_mistake": _trans_mistake_info,
             "transcription_mistake_caught": bool(_trans_mistake_info),
+            "injected_code_mistake": _code_mistake_info,
         },
     }
 
@@ -2431,6 +2463,8 @@ def main() -> None:
              "altered by +-1-2 semitones; the main agent's verify-listen detects the "
              "mismatch and re-dispatches transcription with a hint; the second attempt is "
              "correct. Teaches the model to catch+recover from transcription errors.")
+    ap.add_argument("--code-mistake-rate", type=float, default=0.10,
+        help="Probability of injecting a code mistake (real traceback) per sample (default 0.10).")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
     ap.add_argument("--omni-server", default="", help="Omni audio server URL (empty = template fallback).")
@@ -2457,7 +2491,13 @@ def main() -> None:
 
     _notes = make_probe_notes("lead", clip_duration_s=10.0)
 
-    # Pre-populate CLAP embedding cache (same dance as v2 — GPU in main thread).
+    candidate_audio: dict[str, Path] = {}
+    serial_lock = threading.Lock()  # guards CLAP model (not thread-safe for concurrent forward())
+
+    # Pre-populate CLAP embedding cache in background so workers can start
+    # making Omni calls immediately. CLAP is CPU-only, vLLM is GPU — they
+    # overlap perfectly. Workers that need a CLAP embedding before the cache
+    # is warm will block on serial_lock for one embed_audio_path call.
     clap_paths: list[Path] = []
     for e in entries:
         for k in ("gt_wav", "gt_probe_wav", "default_wav"):
@@ -2468,24 +2508,27 @@ def main() -> None:
         for pp in sorted(probe_dir.glob("*.wav")):
             clap_paths.append(pp)
     clap_paths = list(dict.fromkeys(clap_paths))
-    print(f"Pre-computing CLAP embeddings for {len(clap_paths)} audio files...", flush=True)
-    for p in clap_paths:
-        if p.exists():
-            try:
-                embedder.embed_audio_path(p)
-            except Exception as exc:
-                print(f"  WARNING: CLAP embed failed for {p.name}: {exc}")
-    print(f"CLAP pre-computation done ({len(embedder._cache)} cached).", flush=True)
-    if args.clap_device != "cpu":
-        try:
-            embedder.model = embedder.model.to("cpu")
-            embedder.device = "cpu"
-            print("CLAP moved to CPU for worker-thread safety.", flush=True)
-        except Exception as exc:
-            print(f"WARNING: could not move CLAP to CPU: {exc}")
 
-    candidate_audio: dict[str, Path] = {}
-    serial_lock = threading.Lock()  # guards CLAP model (not thread-safe for concurrent forward())
+    def _precompute_clap() -> None:
+        if args.clap_device != "cpu":
+            with serial_lock:
+                try:
+                    embedder.model = embedder.model.to("cpu")
+                    embedder.device = "cpu"
+                except Exception as exc:
+                    print(f"WARNING: could not move CLAP to CPU: {exc}")
+        for p in clap_paths:
+            if p.exists():
+                with serial_lock:
+                    try:
+                        embedder.embed_audio_path(p)
+                    except Exception as exc:
+                        print(f"  WARNING: CLAP embed failed for {p.name}: {exc}")
+        print(f"CLAP pre-computation done ({len(embedder._cache)} cached).", flush=True)
+
+    print(f"Pre-computing CLAP embeddings for {len(clap_paths)} audio files (background)...", flush=True)
+    _clap_thread = threading.Thread(target=_precompute_clap, daemon=True)
+    _clap_thread.start()
 
     def _process(entry: dict) -> dict | None:
         return build_record(
@@ -2537,6 +2580,7 @@ def main() -> None:
                 print(f"WARNING: {e.get('sample_id','?')} failed: {exc}")
                 traceback.print_exc()
 
+    _clap_thread.join()
     records = [records_by_idx[i] for i in sorted(records_by_idx)]
     with open(out_path, "w") as f:
         for r in records:

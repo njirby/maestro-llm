@@ -39,6 +39,7 @@ import random
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -158,7 +159,7 @@ def _simulate_search_pool(
         # Pick CLAP-selected names (matching search agent's selection logic)
         picks: list[str] = []
         for n in slice_names:
-            if is_clap_selected(n, gt_names, name_to_emb, threshold=0.92):
+            if is_clap_selected(n, gt_names, name_to_emb, threshold=0.97):
                 picks.append(n)
         # Pad with top non-GT by CLAP to GT so pool isn't tiny
         if len(picks) < candidates_per_agent:
@@ -296,8 +297,23 @@ def omni_judge_audition(
         return "\n".join(lines) + "\nRECOMMENDATION: [] : (fallback — synth call failed)"
 
 
+@dataclass
+class JudgeResult:
+    """Return type for build_judge_record(): the SFT record + the verdict/tuple
+    that the main agent would see when it reads the judge's output file."""
+    record: dict | None
+    verdict: str                  # "good", "partial_match", or "no_match"
+    tuple: list[str] | None      # selected wavetable names (None if no_match)
+    n_osc_slots: int = 0
+    reasoning: str = ""
+    missing_character: str = ""
+    locked_slots: dict[int, str] | None = None   # osc_idx → name for slots confirmed good (partial_match)
+    unfilled_oscs: list[int] | None = None        # osc indices still needing candidates (partial_match)
+
+
 # Verdict constants — judge emits one of these in its output JSON.
 _VERDICT_GOOD = "good"
+_VERDICT_PARTIAL = "partial_match"
 _VERDICT_NO_MATCH = "no_match"
 
 
@@ -352,13 +368,28 @@ def stage2_format_judge_response(
 
     Branches on verdict:
       - "good": existing template. Final line: SELECTED: [names]: <reason>.
-      - "no_match": new template. Stage-2 instructed NOT to pick a tuple.
+      - "partial_match": new template. Lock the filled slots, recommend re-search
+        for the unfilled ones.
+        Final line: PARTIAL_MATCH: [locked names]: <missing_character>: <reason>.
+      - "no_match": template. Stage-2 instructed NOT to pick a tuple.
         Final line: NO_MATCH: <missing_character>: <re-search recommendation>.
     """
     if verdict == _VERDICT_NO_MATCH:
         return _stage2_no_match_response(
             omni_observations=omni_observations,
             pool=pool,
+            missing_character=missing_character,
+            stage2_server=stage2_server,
+            stage2_model=stage2_model,
+            timeout=timeout,
+        )
+    if verdict == _VERDICT_PARTIAL:
+        return _stage2_partial_match_response(
+            omni_observations=omni_observations,
+            pool=pool,
+            selected_tuple=selected_tuple,
+            n_osc_slots=n_osc_slots,
+            gt_names_in_pool=gt_names_in_pool,
             missing_character=missing_character,
             stage2_server=stage2_server,
             stage2_model=stage2_model,
@@ -468,14 +499,93 @@ def _stage2_no_match_response(
     return out
 
 
+def _stage2_partial_match_response(
+    omni_observations: str,
+    pool: list[str],
+    selected_tuple: list[str],
+    n_osc_slots: int,
+    gt_names_in_pool: list[str],
+    missing_character: str,
+    stage2_server: str,
+    stage2_model: str,
+    timeout: float = 180.0,
+) -> str:
+    """Stage-2 prompt for partial_match: lock the filled slots, recommend
+    re-search for the unfilled ones.
+    Output ends with `PARTIAL_MATCH: [locked names]: <missing_character>: <reason>`."""
+    locked_list_str = ", ".join(repr(n) for n in selected_tuple)
+    gt_hint = (
+        f"Ground truth (hidden from the judge at inference): the pool contains "
+        f"{', '.join(repr(g) for g in gt_names_in_pool)} which are correct for some "
+        f"oscillator slots. Your locked selection MUST include these."
+    ) if gt_names_in_pool else ""
+    prompt = (
+        f"You are a music production AI formatting the judge agent's final response.\n\n"
+        f"Omni listened to the target + all pool candidates and wrote:\n"
+        f"---\n{omni_observations}\n---\n\n"
+        f"Pool candidates: {json.dumps(pool)}\n"
+        f"The ORACLE has determined that the pool contains SOME but NOT ALL needed "
+        f"wavetables. The target uses {n_osc_slots} oscillator slots.\n"
+        f"Locked (confirmed good): [{locked_list_str}]\n"
+        f"Missing character for unfilled slot(s): '{missing_character}'\n"
+        f"{gt_hint}\n\n"
+        f"Write exactly {len(pool) + 1} lines:\n"
+        f"  - For each candidate, one line: '<name>': <one-sentence assessment>. "
+        f"For locked candidates, explain why they fit their slot well. "
+        f"For others, explain why they don't fill the remaining slot(s).\n"
+        f"  - Final line: 'PARTIAL_MATCH: [{locked_list_str}]: {missing_character}: "
+        f"<one-sentence explanation that {len(selected_tuple)} of {n_osc_slots} slots "
+        f"are filled but the pool lacks a wavetable with this character for the "
+        f"remaining slot(s) — recommend re-search>'\n\n"
+        f"Do NOT emit a SELECTED line (not all slots are filled). "
+        f"Do NOT emit a NO_MATCH line (some slots ARE filled). "
+        f"Use the EXACT names. Natural language."
+    )
+    try:
+        r = _llm_post(
+            f"{stage2_server}/v1/chat/completions",
+            {"model": stage2_model,
+             "messages": [{"role": "user", "content": prompt}],
+             "max_tokens": 800, "temperature": 0.6},
+            timeout=timeout,
+        )
+        out = r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        per_cand = "\n".join(
+            f'"{n}": {"Locked — good match for its slot." if n in selected_tuple else "Does not fill the remaining slot."}'
+            for n in pool
+        )
+        return (
+            f"{per_cand}\nPARTIAL_MATCH: [{locked_list_str}]: {missing_character}: "
+            f"{len(selected_tuple)} of {n_osc_slots} slots filled — pool lacks a "
+            f"wavetable with this character for the remaining slot(s). "
+            f"Recommending re-search."
+        )
+    # Defensive: strip any SELECTED or NO_MATCH lines Stage-2 might have leaked.
+    if "SELECTED:" in out or "NO_MATCH:" in out:
+        out_lines = [
+            ln for ln in out.splitlines()
+            if not ln.strip().upper().startswith("SELECTED:")
+            and not ln.strip().upper().startswith("NO_MATCH:")
+        ]
+        out = "\n".join(out_lines).rstrip()
+    if "PARTIAL_MATCH:" not in out:
+        out += (
+            f"\nPARTIAL_MATCH: [{locked_list_str}]: {missing_character}: "
+            f"{len(selected_tuple)} of {n_osc_slots} slots filled — pool lacks a "
+            f"wavetable with this character for the remaining slot(s). "
+            f"Recommending re-search."
+        )
+    return out
+
+
 def _extract_final_reasoning(stage2_text: str) -> str:
-    """Pull the SELECTED: or NO_MATCH: line's justification for use in the
-    output JSON file. Format-tolerant — handles both verdict types."""
+    """Pull the SELECTED:, PARTIAL_MATCH:, or NO_MATCH: line's justification
+    for use in the output JSON file. Format-tolerant."""
     for line in reversed(stage2_text.splitlines()):
         line = line.strip()
         upper = line.upper()
-        if upper.startswith("SELECTED:") or upper.startswith("NO_MATCH:"):
-            # Format: "SELECTED: [...]: <reasoning>" OR "NO_MATCH: <character>: <reasoning>"
+        if upper.startswith("SELECTED:") or upper.startswith("NO_MATCH:") or upper.startswith("PARTIAL_MATCH:"):
             parts = line.split(":", 2)
             if len(parts) >= 3:
                 return parts[2].strip()
@@ -502,10 +612,10 @@ def build_judge_record(
     stage2_server: str,
     stage2_model: str,
     judge_output_dir: Path,
-) -> dict | None:
-    """Build one SFT judge record. Returns None if the pool is empty."""
+) -> JudgeResult:
+    """Build one SFT judge record. Returns empty JudgeResult if the pool is empty."""
     if not pool:
-        return None
+        return JudgeResult(record=None, verdict="no_match", tuple=None)
 
     messages: list[dict] = []
     audio_assets: list[str] = [str(target_audio_path)]
@@ -563,21 +673,30 @@ def build_judge_record(
             messages.append(_tool_call("Read", {"file_path": rp}))
             messages.append(_read_tool_response_audio())
 
-    # Verdict computation: "good" iff every active-osc-slot's GT name is in
-    # the pool. When any required GT is absent, the judge emits "no_match" and
-    # recommends re-search; the tuple field is null.
+    # Verdict computation: three-way —
+    #   "good":          every active-osc GT is in pool → full tuple, done
+    #   "partial_match": some (but not all) active-osc GTs are in pool →
+    #                    lock the filled slots, re-search for the rest
+    #   "no_match":      zero active-osc GTs in pool → reject all, full re-search
     wts = target_preset.get("settings", {}).get("wavetables", [])
-    needed_gt_names = [
-        wts[oi].get("name", "") if oi < len(wts) else ""
-        for oi in active_oscs
-    ]
-    needed_gt_names = [n for n in needed_gt_names if n]
-    all_required_gt_in_pool = bool(needed_gt_names) and all(n in pool for n in needed_gt_names)
-    verdict = _VERDICT_GOOD if all_required_gt_in_pool else _VERDICT_NO_MATCH
+    needed_gt_names_by_osc: dict[int, str] = {}
+    for oi in active_oscs:
+        n = wts[oi].get("name", "") if oi < len(wts) else ""
+        if n:
+            needed_gt_names_by_osc[oi] = n
+    needed_gt_names = list(needed_gt_names_by_osc.values())
+
+    filled_oscs = [oi for oi, n in needed_gt_names_by_osc.items() if n in pool]
+    unfilled_oscs = [oi for oi, n in needed_gt_names_by_osc.items() if n not in pool]
+
+    if not needed_gt_names or len(filled_oscs) == len(needed_gt_names_by_osc):
+        verdict = _VERDICT_GOOD
+    elif len(filled_oscs) > 0:
+        verdict = _VERDICT_PARTIAL
+    else:
+        verdict = _VERDICT_NO_MATCH
 
     # Build-time oracle: GT-in-pool + CLAP-best proxy per osc slot.
-    # We compute the tuple even on no_match (used in meta for analysis), but
-    # the output JSON's `tuple` field will be null when verdict is no_match.
     cur_tuple: list[str | None] = [None, None, None]
     used_in_tuple: set[str] = set()
     for osc_idx in active_oscs:
@@ -601,14 +720,20 @@ def build_judge_record(
                 break
 
     selected_tuple: list[str] = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
-    selected_tuple_for_output: list[str] | None = (
-        selected_tuple if verdict == _VERDICT_GOOD else None
-    )
+    # good → full tuple; partial → tuple of filled slots only; no_match → None
+    locked_slots: dict[int, str] = {}
+    if verdict == _VERDICT_GOOD:
+        selected_tuple_for_output = selected_tuple
+    elif verdict == _VERDICT_PARTIAL:
+        locked_slots = {oi: cur_tuple[oi] for oi in filled_oscs if cur_tuple[oi]}
+        selected_tuple_for_output = list(locked_slots.values())
+    else:
+        selected_tuple_for_output = None
     gts_in_pool = [g for g in gt_wavetable_names if g in pool]
 
-    # Missing-character hint (only meaningful for no_match; empty otherwise).
+    # Missing-character hint (meaningful for partial_match and no_match).
     missing_character = ""
-    if verdict == _VERDICT_NO_MATCH:
+    if verdict in (_VERDICT_PARTIAL, _VERDICT_NO_MATCH):
         missing_character = _derive_missing_character(
             target_wav=target_audio_path,
             omni_server=omni_server,
@@ -629,6 +754,12 @@ def build_judge_record(
         if verdict == _VERDICT_GOOD:
             omni_response = "\n".join(f'"{n}": Candidate evaluated.' for n in pool) + \
                 f"\nRECOMMENDATION: [{', '.join(repr(n) for n in selected_tuple)}] : Best combination from pool."
+        elif verdict == _VERDICT_PARTIAL:
+            locked_names = list(locked_slots.values())
+            omni_response = "\n".join(
+                f'"{n}": {"Good match for its slot." if n in locked_names else "Does not fill the remaining slot."}'
+                for n in pool
+            )
         else:
             omni_response = "\n".join(
                 f'"{n}": Does not carry the {missing_character} of the target.' for n in pool
@@ -663,7 +794,7 @@ def build_judge_record(
     })
 
     # Write output file both on disk (for real) and via bash snippet (for conversation)
-    judge_output = {
+    judge_output: dict = {
         "status": "completed",
         "agentId": judge_agent_id,
         "verdict": verdict,
@@ -672,6 +803,9 @@ def build_judge_record(
         "n_osc_slots": n_osc_slots,
         "reasoning": final_reasoning,
     }
+    if verdict == _VERDICT_PARTIAL:
+        judge_output["locked_slots"] = {str(k): v for k, v in locked_slots.items()}
+        judge_output["unfilled_oscs"] = unfilled_oscs
     with open(judge_output_file, "w") as f:
         json.dump(judge_output, f)
         f.write("\n")
@@ -694,12 +828,25 @@ def build_judge_record(
     _write_stdout = json.dumps({"status": "ok", "file": str(judge_output_file)}) + "\n"
     messages.append(_bash_tool_response(_write_stdout))
     # Closing assistant turn — confirms the verdict and signals the main agent
-    # what to do next (apply tuple OR re-search).
+    # what to do next (apply tuple / re-search for remaining / full re-search).
     if verdict == _VERDICT_GOOD:
         tuple_str = ", ".join(repr(n) for n in selected_tuple)
         closing = (
             f"Selection written. Final tuple: [{tuple_str}]. The main agent can now read "
             f"{judge_output_file} and apply the chosen wavetables."
+        )
+    elif verdict == _VERDICT_PARTIAL:
+        locked_str = ", ".join(repr(n) for n in locked_slots.values())
+        n_unfilled = len(unfilled_oscs)
+        closing = (
+            f"Pool audit complete. PARTIAL_MATCH — [{locked_str}] confirmed for "
+            f"{len(locked_slots)} of {n_osc_slots} slots, but {n_unfilled} "
+            f"slot{'s' if n_unfilled > 1 else ''} still "
+            f"{'need' if n_unfilled > 1 else 'needs'} a wavetable with the "
+            f"{missing_character} of the target. Recommending the main agent keep "
+            f"current selections locked and re-dispatch search for the remaining "
+            f"slot{'s' if n_unfilled > 1 else ''}. Verdict written to "
+            f"{judge_output_file}."
         )
     else:
         closing = (
@@ -735,16 +882,27 @@ def build_judge_record(
             "gts_in_pool": gts_in_pool,
             "verdict": verdict,
             "missing_character": missing_character,
-            # selected_tuple stays populated even on no_match for analysis;
-            # the OUTPUT JSON's tuple field is null on no_match (see judge_output above).
+            # selected_tuple stays populated even on partial/no_match for analysis;
+            # the OUTPUT JSON's tuple field reflects only confirmed slots.
             "selected_tuple": selected_tuple,
+            "locked_slots": locked_slots if verdict == _VERDICT_PARTIAL else {},
+            "unfilled_oscs": unfilled_oscs if verdict == _VERDICT_PARTIAL else [],
             "judge_correct": judge_correct,
             "output_file": str(judge_output_file),
         },
     }
 
     assert_valid_ms_swift_multiturn_record(record)
-    return record
+    return JudgeResult(
+        record=record,
+        verdict=verdict,
+        tuple=selected_tuple_for_output,
+        n_osc_slots=n_osc_slots,
+        reasoning=final_reasoning,
+        missing_character=missing_character,
+        locked_slots=locked_slots if verdict == _VERDICT_PARTIAL else None,
+        unfilled_oscs=unfilled_oscs if verdict == _VERDICT_PARTIAL else None,
+    )
 
 
 def main() -> None:
@@ -863,7 +1021,7 @@ def main() -> None:
                 cache=candidate_audio,
             )
 
-        return build_judge_record(
+        result = build_judge_record(
             sample_id=sample_id,
             target_audio_path=target_audio_path,
             target_preset=target_preset,
@@ -878,6 +1036,7 @@ def main() -> None:
             stage2_model=stage2_model,
             judge_output_dir=args.judge_output_dir,
         )
+        return result.record
 
     out_path = args.out_jsonl
     out_path.parent.mkdir(parents=True, exist_ok=True)

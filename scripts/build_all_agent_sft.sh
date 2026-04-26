@@ -29,6 +29,9 @@
 #   bash scripts/build_all_agent_sft.sh --max-samples 64 \
 #       --transcription-mistake-rate 0.5 --suffix demo
 #
+#   # Unified top-down build (all 4 agents in one pass, real subagent calls)
+#   bash scripts/build_all_agent_sft.sh --unified --suffix v31
+#
 #   # Skip the search and main grades (cheaper smoke pass)
 #   bash scripts/build_all_agent_sft.sh --no-grade-search --no-grade-main
 
@@ -58,6 +61,7 @@ NUM_AGENTS=4              # search slices per sample (also judge pool simulation
 MAX_BATCHES=16            # main agent — subsystem batches per record
 MISTAKE_RATE=0.20         # main agent — parameter overshoot rate
 TRANSCR_MISTAKE_RATE=0.15 # main agent — transcription mistake rate
+CODE_MISTAKE_RATE=0.10    # main + search — code mistake injection rate
 FORCE_RESEARCH_RATE=0.30  # main + judge — fraction of samples that miss GT in round 1
 WORKERS=4
 CLAP_DEVICE="cpu"
@@ -80,11 +84,12 @@ DO_BUILD=1
 DO_GRADE=1
 DO_HTML=1
 
-# Per-agent build toggles
+# Per-agent build toggles (ignored when --unified)
 BUILD_SEARCH=1
 BUILD_JUDGE=1
 BUILD_TRANSCRIPTION=1
 BUILD_MAIN=1
+BUILD_UNIFIED=0
 
 usage() {
   cat <<USAGE
@@ -111,11 +116,13 @@ Build params
   --max-batches N                 ($MAX_BATCHES) — main agent subsystem batches
   --mistake-rate F                ($MISTAKE_RATE) — main agent param overshoot
   --transcription-mistake-rate F  ($TRANSCR_MISTAKE_RATE)
+  --code-mistake-rate F           ($CODE_MISTAKE_RATE)
   --force-research-rate F         ($FORCE_RESEARCH_RATE)
   --workers N                     ($WORKERS)
   --clap-device DEV               ($CLAP_DEVICE; e.g. cpu, cuda:0)
 
 Stages
+  --unified                       use unified top-down builder (v4) instead of 4 separate builders
   --build-only                    same as --no-grade --no-html
   --no-build                      skip the build phase
   --no-grade                      skip ALL grading
@@ -124,10 +131,10 @@ Stages
   --no-grade-judge                skip judge grading only
   --no-grade-transcription        skip transcription grading only
   --no-grade-main                 skip main grading only
-  --no-build-search               skip search build only
-  --no-build-judge                skip judge build only
-  --no-build-transcription        skip transcription build only
-  --no-build-main                 skip main build only
+  --no-build-search               skip search build only (ignored with --unified)
+  --no-build-judge                skip judge build only (ignored with --unified)
+  --no-build-transcription        skip transcription build only (ignored with --unified)
+  --no-build-main                 skip main build only (ignored with --unified)
   --no-live-exec                  skip live REAPER bash exec in main grading
   --no-llm-judge                  skip LLM-as-judge axes (structural only)
 
@@ -161,6 +168,7 @@ while [[ $# -gt 0 ]]; do
     --max-batches)                    MAX_BATCHES="$2"; shift 2 ;;
     --mistake-rate)                   MISTAKE_RATE="$2"; shift 2 ;;
     --transcription-mistake-rate)     TRANSCR_MISTAKE_RATE="$2"; shift 2 ;;
+    --code-mistake-rate)              CODE_MISTAKE_RATE="$2"; shift 2 ;;
     --force-research-rate)            FORCE_RESEARCH_RATE="$2"; shift 2 ;;
     --workers)                        WORKERS="$2"; shift 2 ;;
     --clap-device)                    CLAP_DEVICE="$2"; shift 2 ;;
@@ -181,6 +189,7 @@ while [[ $# -gt 0 ]]; do
     --no-build-judge)                 BUILD_JUDGE=0; shift ;;
     --no-build-transcription)         BUILD_TRANSCRIPTION=0; shift ;;
     --no-build-main)                  BUILD_MAIN=0; shift ;;
+    --unified)                        BUILD_UNIFIED=1; shift ;;
     --no-live-exec)                   LIVE_EXEC=0; shift ;;
     --no-llm-judge)                   LLM_JUDGE=0; shift ;;
     -h|--help)                        usage; exit 0 ;;
@@ -210,8 +219,10 @@ echo "  num-agents:                 $NUM_AGENTS"
 echo "  max-batches:                $MAX_BATCHES"
 echo "  mistake-rate:               $MISTAKE_RATE"
 echo "  transcription-mistake-rate: $TRANSCR_MISTAKE_RATE"
+echo "  code-mistake-rate:          $CODE_MISTAKE_RATE"
 echo "  force-research-rate:        $FORCE_RESEARCH_RATE"
 echo "  workers:                    $WORKERS"
+echo "  unified:                    $BUILD_UNIFIED"
 echo "  build:                      search=$BUILD_SEARCH judge=$BUILD_JUDGE trans=$BUILD_TRANSCRIPTION main=$BUILD_MAIN"
 echo "  grade:                      search=$GRADE_SEARCH judge=$GRADE_JUDGE trans=$GRADE_TRANSCRIPTION main=$GRADE_MAIN"
 echo "  live-exec:                  $LIVE_EXEC      llm-judge: $LLM_JUDGE"
@@ -232,48 +243,13 @@ HTML_FILE="$OUT_DIR/rollouts_${SUFFIX}.html"
 # ---------------------------------------------------------------------------
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  if [[ "$BUILD_SEARCH" -eq 1 ]]; then
-    echo "==> Build search agent"
-    python scripts/build_search_agent_sft_v2.py \
+  if [[ "$BUILD_UNIFIED" -eq 1 ]]; then
+    echo "==> Build ALL agents (unified top-down pipeline v4)"
+    python scripts/build_unified_sft_v4.py \
         --manifest "$MANIFEST" \
         --index-npy "$INDEX_NPY" --index-meta "$INDEX_META" \
         --wavetable-lib "$WT_LIB" \
-        --out-jsonl "$OUT_SEARCH" \
-        --shortlist-dir "$SHORTLIST_DIR" \
-        --max-samples "$MAX_SAMPLES" --num-agents "$NUM_AGENTS" \
-        --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
-        --workers "$WORKERS"
-  fi
-
-  if [[ "$BUILD_JUDGE" -eq 1 ]]; then
-    echo "==> Build judge agent"
-    python scripts/build_judge_agent_sft_v3.py \
-        --manifest "$MANIFEST" \
-        --index-npy "$INDEX_NPY" --index-meta "$INDEX_META" \
-        --wavetable-lib "$WT_LIB" \
-        --out-jsonl "$OUT_JUDGE" \
-        --judge-output-dir "$JUDGE_OUTPUT_DIR" \
-        --max-samples "$MAX_SAMPLES" --num-agents "$NUM_AGENTS" \
-        --force-research-rate "$FORCE_RESEARCH_RATE" \
-        --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
-        --workers "$WORKERS"
-  fi
-
-  if [[ "$BUILD_TRANSCRIPTION" -eq 1 ]]; then
-    echo "==> Build transcription agent"
-    python scripts/build_transcription_agent_sft_v3.py \
-        --manifest "$MANIFEST" \
-        --out-jsonl "$OUT_TRANSCRIPTION" \
-        --max-samples "$MAX_SAMPLES" --workers "$WORKERS"
-  fi
-
-  if [[ "$BUILD_MAIN" -eq 1 ]]; then
-    echo "==> Build main agent"
-    python scripts/build_main_agent_sft_v3.py \
-        --manifest "$MANIFEST" \
-        --index-npy "$INDEX_NPY" --index-meta "$INDEX_META" \
-        --wavetable-lib "$WT_LIB" \
-        --out-jsonl "$OUT_MAIN" \
+        --out-dir "$OUT_DIR" --suffix "$SUFFIX" \
         --max-samples "$MAX_SAMPLES" --max-batches "$MAX_BATCHES" \
         --num-agents "$NUM_AGENTS" \
         --mistake-rate "$MISTAKE_RATE" \
@@ -281,6 +257,59 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
         --force-research-rate "$FORCE_RESEARCH_RATE" \
         --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
         --clap-device "$CLAP_DEVICE" --workers "$WORKERS"
+  else
+    if [[ "$BUILD_SEARCH" -eq 1 ]]; then
+      echo "==> Build search agent"
+      python scripts/build_search_agent_sft_v2.py \
+          --manifest "$MANIFEST" \
+          --index-npy "$INDEX_NPY" --index-meta "$INDEX_META" \
+          --wavetable-lib "$WT_LIB" \
+          --out-jsonl "$OUT_SEARCH" \
+          --shortlist-dir "$SHORTLIST_DIR" \
+          --max-samples "$MAX_SAMPLES" --num-agents "$NUM_AGENTS" \
+          --code-mistake-rate "$CODE_MISTAKE_RATE" \
+          --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
+          --workers "$WORKERS"
+    fi
+
+    if [[ "$BUILD_JUDGE" -eq 1 ]]; then
+      echo "==> Build judge agent"
+      python scripts/build_judge_agent_sft_v3.py \
+          --manifest "$MANIFEST" \
+          --index-npy "$INDEX_NPY" --index-meta "$INDEX_META" \
+          --wavetable-lib "$WT_LIB" \
+          --out-jsonl "$OUT_JUDGE" \
+          --judge-output-dir "$JUDGE_OUTPUT_DIR" \
+          --max-samples "$MAX_SAMPLES" --num-agents "$NUM_AGENTS" \
+          --force-research-rate "$FORCE_RESEARCH_RATE" \
+          --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
+          --workers "$WORKERS"
+    fi
+
+    if [[ "$BUILD_TRANSCRIPTION" -eq 1 ]]; then
+      echo "==> Build transcription agent"
+      python scripts/build_transcription_agent_sft_v3.py \
+          --manifest "$MANIFEST" \
+          --out-jsonl "$OUT_TRANSCRIPTION" \
+          --max-samples "$MAX_SAMPLES" --workers "$WORKERS"
+    fi
+
+    if [[ "$BUILD_MAIN" -eq 1 ]]; then
+      echo "==> Build main agent"
+      python scripts/build_main_agent_sft_v3.py \
+          --manifest "$MANIFEST" \
+          --index-npy "$INDEX_NPY" --index-meta "$INDEX_META" \
+          --wavetable-lib "$WT_LIB" \
+          --out-jsonl "$OUT_MAIN" \
+          --max-samples "$MAX_SAMPLES" --max-batches "$MAX_BATCHES" \
+          --num-agents "$NUM_AGENTS" \
+          --mistake-rate "$MISTAKE_RATE" \
+          --transcription-mistake-rate "$TRANSCR_MISTAKE_RATE" \
+          --code-mistake-rate "$CODE_MISTAKE_RATE" \
+          --force-research-rate "$FORCE_RESEARCH_RATE" \
+          --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
+          --clap-device "$CLAP_DEVICE" --workers "$WORKERS"
+    fi
   fi
 fi
 

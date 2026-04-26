@@ -33,6 +33,7 @@ import hashlib
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,17 @@ _TRANSCRIPTION_TOOL_SPECS = [
         },
     }
 ]
+
+
+@dataclass
+class TranscriptionResult:
+    """Return type for build_transcription_record(): the SFT record + the
+    transcription output that the main agent would see."""
+    record: dict | None
+    notes: list[dict] = field(default_factory=list)
+    output_file: str = ""
+    n_notes: int = 0
+    duration_s: float = 0.0
 
 
 def load_notes_from_midi(midi_path: str | Path) -> list[dict]:
@@ -152,14 +164,14 @@ def build_transcription_record(
     source_midi_path: str | Path,
     output_dir: Path,
     track_idx: int = 0,
-) -> dict | None:
-    """Build one SFT transcription record. Returns None if the MIDI has no notes.
+) -> TranscriptionResult:
+    """Build one SFT transcription record. Returns empty result if MIDI has no notes.
 
     No Omni calls at build time — notes come straight from the oracle MIDI file.
     """
     notes = load_notes_from_midi(source_midi_path)
     if not notes:
-        return None
+        return TranscriptionResult(record=None)
 
     n_notes = len(notes)
     duration_s = round(
@@ -254,7 +266,13 @@ def build_transcription_record(
     }
 
     assert_valid_ms_swift_multiturn_record(record)
-    return record
+    return TranscriptionResult(
+        record=record,
+        notes=notes,
+        output_file=str(output_file),
+        n_notes=n_notes,
+        duration_s=duration_s,
+    )
 
 
 def main() -> None:
@@ -289,7 +307,7 @@ def main() -> None:
         source_midi_path = entry.get("source_midi_path")
         if not source_midi_path:
             return None
-        return build_transcription_record(
+        result = build_transcription_record(
             sample_id=sample_id,
             archetype=archetype,
             target_audio_path=target_audio_path,
@@ -297,6 +315,7 @@ def main() -> None:
             output_dir=args.output_dir,
             track_idx=args.track_idx,
         )
+        return result.record
 
     def _safe_process(entry):
         try:
