@@ -121,6 +121,7 @@ from scripts.build_transcription_agent_sft_v4 import (
 
 from maestro.synth import path_gen as _pg
 from maestro.synth.path_gen import _denormalize, _normalize, _param_family
+from maestro.synth.preset_gen import generate_preset
 from maestro.render.dawdreamer import render_preset_audio, make_probe_notes, notes_from_dicts
 
 import numpy as np
@@ -201,6 +202,20 @@ def build_record(
 
     sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
     sample_rng = random.Random(int(args.seed) + sid_seed)
+
+    # Random init preset (independent RNG stream)
+    _random_init_rate = float(getattr(args, "random_init_rate", 0.0))
+    use_random_init = False
+    if _random_init_rate > 0.0:
+        _init_rng = random.Random(int(args.seed) + sid_seed + 7777)
+        if _init_rng.random() < _random_init_rate:
+            use_random_init = True
+            _gen_rng = random.Random(int(args.seed) + sid_seed + 8888)
+            init_preset = generate_preset(archetype, _gen_rng, wavetable_lib=wavetable_lib)
+            _random_init_wav = Path(args.probe_dir) / f"{sample_id}_random_init.wav"
+            _random_init_wav.parent.mkdir(parents=True, exist_ok=True)
+            render_cumulative_audio(init_preset, notes, _random_init_wav)
+            default_audio_path = _random_init_wav
 
     # ---- WT search setup ----
     gt_names_list = list(extract_gt_wavetable_names(Path(target_preset_path)))
@@ -371,14 +386,15 @@ def build_record(
     })
 
     # Listen to baseline
-    messages.append({"role": "assistant", "content": "Skill loaded. Probing default preset baseline."})
+    _baseline_label = "starting preset" if use_random_init else "default preset"
+    messages.append({"role": "assistant", "content": f"Skill loaded. Probing {_baseline_label} baseline."})
     _default_render_cmd = _wrap_as_bash(build_render_verify_snippet(
         out_path=str(default_audio_path),
         notes_override=list(notes),
     ))
     messages.append(_tool_call("Bash", {"command": _default_render_cmd}))
     _emit_listen_sequence(messages, audio_assets, default_audio_path,
-                          listen_text="Listening to the default preset.")
+                          listen_text=f"Listening to the {_baseline_label}.")
 
     # --- TRANSCRIPTION BLOCK ---
     # Create a REAPER track and dispatch the transcription subagent.
@@ -1084,7 +1100,7 @@ def build_record(
             archetype, args.omni_server, args.omni_model,
         )
     else:
-        stage1_obs = "Target differs from default in several subsystems."
+        stage1_obs = "Target differs from the starting preset in several subsystems."
     _dt = _time.monotonic()
     diagnosis_text = stage2_diagnosis(
         stage1_obs, diff_summary, subsystems_truth,
@@ -1375,6 +1391,7 @@ def build_record(
             "injected_mistake": injected_mistake,
             "mistake_caught": mistake_caught if injected_mistake else None,
             "transcription_output_file": _trans_output_file,
+            "random_init": use_random_init,
         },
     }
 
@@ -1414,6 +1431,8 @@ def main() -> None:
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
     ap.add_argument("--mistake-rate", type=float, default=0.20)
     ap.add_argument("--transcription-mistake-rate", type=float, default=0.15)
+    ap.add_argument("--random-init-rate", type=float, default=0.0,
+        help="Fraction of samples starting from a random same-archetype preset instead of factory default.")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
     ap.add_argument("--omni-server", default="")

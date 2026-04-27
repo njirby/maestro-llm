@@ -62,6 +62,7 @@ MAX_BATCHES=16            # main agent — subsystem batches per record
 MISTAKE_RATE=0.20         # main agent — parameter overshoot rate
 TRANSCR_MISTAKE_RATE=0.15 # main agent — transcription mistake rate
 CODE_MISTAKE_RATE=0.10    # main + search — code mistake injection rate
+RANDOM_INIT_RATE=0.0      # main — fraction of samples starting from random preset
 FORCE_RESEARCH_RATE=0.30  # main + judge — fraction of samples that miss GT in round 1
 WORKERS=4
 CLAP_DEVICE="cpu"
@@ -117,6 +118,7 @@ Build params
   --mistake-rate F                ($MISTAKE_RATE) — main agent param overshoot
   --transcription-mistake-rate F  ($TRANSCR_MISTAKE_RATE)
   --code-mistake-rate F           ($CODE_MISTAKE_RATE)
+  --random-init-rate F            ($RANDOM_INIT_RATE) — random starting preset
   --force-research-rate F         ($FORCE_RESEARCH_RATE)
   --workers N                     ($WORKERS)
   --clap-device DEV               ($CLAP_DEVICE; e.g. cpu, cuda:0)
@@ -169,6 +171,7 @@ while [[ $# -gt 0 ]]; do
     --mistake-rate)                   MISTAKE_RATE="$2"; shift 2 ;;
     --transcription-mistake-rate)     TRANSCR_MISTAKE_RATE="$2"; shift 2 ;;
     --code-mistake-rate)              CODE_MISTAKE_RATE="$2"; shift 2 ;;
+    --random-init-rate)               RANDOM_INIT_RATE="$2"; shift 2 ;;
     --force-research-rate)            FORCE_RESEARCH_RATE="$2"; shift 2 ;;
     --workers)                        WORKERS="$2"; shift 2 ;;
     --clap-device)                    CLAP_DEVICE="$2"; shift 2 ;;
@@ -220,6 +223,7 @@ echo "  max-batches:                $MAX_BATCHES"
 echo "  mistake-rate:               $MISTAKE_RATE"
 echo "  transcription-mistake-rate: $TRANSCR_MISTAKE_RATE"
 echo "  code-mistake-rate:          $CODE_MISTAKE_RATE"
+echo "  random-init-rate:           $RANDOM_INIT_RATE"
 echo "  force-research-rate:        $FORCE_RESEARCH_RATE"
 echo "  workers:                    $WORKERS"
 echo "  unified:                    $BUILD_UNIFIED"
@@ -255,6 +259,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
         --mistake-rate "$MISTAKE_RATE" \
         --transcription-mistake-rate "$TRANSCR_MISTAKE_RATE" \
         --force-research-rate "$FORCE_RESEARCH_RATE" \
+        --random-init-rate "$RANDOM_INIT_RATE" \
         --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
         --clap-device "$CLAP_DEVICE" --workers "$WORKERS"
   else
@@ -307,6 +312,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
           --num-agents "$NUM_AGENTS" \
           --mistake-rate "$MISTAKE_RATE" \
           --code-mistake-rate "$CODE_MISTAKE_RATE" \
+          --random-init-rate "$RANDOM_INIT_RATE" \
           --force-research-rate "$FORCE_RESEARCH_RATE" \
           --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
           --clap-device "$CLAP_DEVICE" --workers "$WORKERS"
