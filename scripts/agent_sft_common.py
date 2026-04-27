@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -1212,3 +1213,226 @@ def emit_code_mistake_sequence(
     messages.append(_tool_call("Bash", {"command": _wrap_as_bash(broken_cmd)}))
     messages.append(_bash_tool_response(stdout="", stderr=traceback_stderr))
     messages.append({"role": "assistant", "content": mutation.diagnosis})
+
+
+# ---------------------------------------------------------------------------
+# Transcription-mistake injection — note mutation catalog
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TranscriptionMutation:
+    name: str
+    narration_templates: list[str]
+
+    def apply(self, notes: list[dict], rng: random.Random) -> tuple[list[dict], dict]:
+        raise NotImplementedError
+
+
+class _PitchShiftSmall(TranscriptionMutation):
+    def __init__(self) -> None:
+        super().__init__(
+            name="pitch_shift_small",
+            narration_templates=[
+                "The melody is slightly off — one note doesn’t match the target pitch. Re-transcribing from scratch.",
+                "One of the notes sounds like it’s the wrong pitch. Re-transcribing.",
+                "A note in the middle doesn’t sound right compared to the target. Starting over.",
+            ],
+        )
+
+    def apply(self, notes: list[dict], rng: random.Random) -> tuple[list[dict], dict]:
+        wrong = copy.deepcopy(notes)
+        idx = rng.randrange(len(wrong))
+        delta = rng.choice([-2, -1, 1, 2])
+        orig = int(wrong[idx]["pitch"])
+        wrong[idx]["pitch"] = max(0, min(127, orig + delta))
+        return wrong, {"type": self.name, "note_idx": idx, "delta": delta}
+
+
+class _OctaveError(TranscriptionMutation):
+    def __init__(self) -> None:
+        super().__init__(
+            name="octave_error",
+            narration_templates=[
+                "One note jumps to the wrong octave — the contour breaks there. Re-transcribing.",
+                "A note sounds like it’s in the wrong octave register. Starting over.",
+                "The melody jumps an octave at one point — that’s not in the original. Re-transcribing.",
+            ],
+        )
+
+    def apply(self, notes: list[dict], rng: random.Random) -> tuple[list[dict], dict]:
+        wrong = copy.deepcopy(notes)
+        idx = rng.randrange(len(wrong))
+        delta = rng.choice([-12, 12])
+        orig = int(wrong[idx]["pitch"])
+        new_pitch = orig + delta
+        if new_pitch < 0 or new_pitch > 127:
+            new_pitch = orig - delta
+        wrong[idx]["pitch"] = max(0, min(127, new_pitch))
+        return wrong, {"type": self.name, "note_idx": idx, "delta": delta}
+
+
+class _NoteDeletion(TranscriptionMutation):
+    def __init__(self) -> None:
+        super().__init__(
+            name="note_deletion",
+            narration_templates=[
+                "The melody sounds incomplete — a note seems to be missing. Re-transcribing.",
+                "Compared to the target, the transcription is missing a note. Starting over.",
+                "The phrase feels like it’s missing a beat — a note was dropped. Re-transcribing.",
+            ],
+        )
+
+    def apply(self, notes: list[dict], rng: random.Random) -> tuple[list[dict], dict]:
+        wrong = copy.deepcopy(notes)
+        idx = rng.randrange(len(wrong))
+        removed = wrong.pop(idx)
+        return wrong, {"type": self.name, "note_idx": idx, "removed_pitch": removed["pitch"]}
+
+
+class _NoteInsertion(TranscriptionMutation):
+    def __init__(self) -> None:
+        super().__init__(
+            name="note_insertion",
+            narration_templates=[
+                "There’s an extra note that wasn’t in the original melody. Re-transcribing.",
+                "I’m hearing a note that doesn’t belong in this phrase. Starting over.",
+                "The transcription has an extra event that the target doesn’t. Re-transcribing.",
+            ],
+        )
+
+    def apply(self, notes: list[dict], rng: random.Random) -> tuple[list[dict], dict]:
+        wrong = copy.deepcopy(notes)
+        pitches = [n["pitch"] for n in wrong]
+        min_p, max_p = min(pitches), max(pitches)
+        phantom_pitch = rng.randint(max(0, min_p - 3), min(127, max_p + 3))
+        max_time = max(n["start_s"] + n["dur_s"] for n in wrong)
+        phantom_start = round(rng.uniform(0, max(0.1, max_time - 0.3)), 4)
+        phantom = {
+            "pitch": phantom_pitch,
+            "start_s": phantom_start,
+            "dur_s": round(rng.uniform(0.1, 0.5), 4),
+            "velocity": rng.randint(60, 110),
+        }
+        wrong.append(phantom)
+        wrong.sort(key=lambda n: (n["start_s"], n["pitch"]))
+        return wrong, {"type": self.name, "phantom": phantom}
+
+
+class _TimingShift(TranscriptionMutation):
+    def __init__(self) -> None:
+        super().__init__(
+            name="timing_shift",
+            narration_templates=[
+                "The rhythm is off — a note’s timing doesn’t match the target. Re-transcribing.",
+                "One note sounds out of time compared to the original. Starting over.",
+                "The timing doesn’t line up for one of the notes. Re-transcribing.",
+            ],
+        )
+
+    def apply(self, notes: list[dict], rng: random.Random) -> tuple[list[dict], dict]:
+        wrong = copy.deepcopy(notes)
+        idx = rng.randrange(len(wrong))
+        shift = rng.choice([-1, 1]) * round(rng.uniform(0.15, 0.3), 4)
+        orig_start = wrong[idx]["start_s"]
+        wrong[idx]["start_s"] = round(max(0, orig_start + shift), 4)
+        wrong.sort(key=lambda n: (n["start_s"], n["pitch"]))
+        return wrong, {"type": self.name, "note_idx": idx, "shift_s": shift}
+
+
+class _MultiNoteCorruption(TranscriptionMutation):
+    def __init__(self) -> None:
+        super().__init__(
+            name="multi_note_corruption",
+            narration_templates=[
+                "Multiple notes sound wrong compared to the target. Re-transcribing from scratch.",
+                "A couple of notes don’t match the original melody. Starting over.",
+                "The melody deviates in several places. Re-transcribing.",
+            ],
+        )
+
+    def apply(self, notes: list[dict], rng: random.Random) -> tuple[list[dict], dict]:
+        wrong = copy.deepcopy(notes)
+        n_corrupt = min(2, len(wrong))
+        indices = rng.sample(range(len(wrong)), n_corrupt)
+        deltas = []
+        for idx in indices:
+            delta = rng.choice([-2, -1, 1, 2])
+            orig = int(wrong[idx]["pitch"])
+            wrong[idx]["pitch"] = max(0, min(127, orig + delta))
+            deltas.append({"note_idx": idx, "delta": delta})
+        return wrong, {"type": self.name, "corrupted": deltas}
+
+
+TRANSCRIPTION_MUTATIONS: list[TranscriptionMutation] = [
+    _PitchShiftSmall(),
+    _OctaveError(),
+    _NoteDeletion(),
+    _NoteInsertion(),
+    _TimingShift(),
+    _MultiNoteCorruption(),
+]
+
+
+_COMPOUND_NARRATIONS: list[str] = [
+    "The melody doesn't match — several notes sound off compared to the target. Re-transcribing from scratch.",
+    "This doesn't sound right. Multiple issues — some pitches are wrong and the phrasing is off. Starting over.",
+    "The transcription deviates from the target in several places. Re-transcribing.",
+    "Comparing against the target, the melody has multiple errors. Starting over from scratch.",
+    "The transcription has noticeable differences from the target — re-transcribing.",
+]
+
+
+def apply_transcription_mutations(
+    notes: list[dict],
+    rng: random.Random,
+) -> tuple[list[dict], list[dict], str] | None:
+    """Apply multiple mutations to corrupt a transcription.
+
+    The number of mutations scales with melody length (2-6 for typical
+    20-40 note melodies). Returns ``(wrong_notes, info_list, narration)``
+    or ``None`` if notes are too short to corrupt.
+    """
+    if len(notes) < 3:
+        return None
+
+    n_muts = rng.randint(2, max(2, min(6, len(notes) // 5)))
+
+    wrong = copy.deepcopy(notes)
+    infos: list[dict] = []
+
+    for _ in range(n_muts):
+        candidates = list(TRANSCRIPTION_MUTATIONS)
+        if len(wrong) < 3:
+            candidates = [m for m in candidates if m.name not in ("note_deletion", "multi_note_corruption")]
+        if not candidates:
+            break
+        mut = rng.choice(candidates)
+        wrong, info = mut.apply(wrong, rng)
+        infos.append(info)
+
+    if not infos:
+        return None
+
+    narration = rng.choice(_COMPOUND_NARRATIONS)
+    return wrong, infos, narration
+
+
+def select_transcription_mutation(
+    notes: list[dict],
+    rng: random.Random,
+    exclude_names: list[str] | None = None,
+) -> tuple[TranscriptionMutation, list[dict], dict] | None:
+    """Pick a random applicable mutation and apply it.
+
+    .. deprecated:: Use ``apply_transcription_mutations`` instead.
+    """
+    exclude = set(exclude_names or [])
+    candidates = [m for m in TRANSCRIPTION_MUTATIONS if m.name not in exclude]
+    if len(notes) < 3:
+        candidates = [m for m in candidates if m.name not in ("note_deletion", "multi_note_corruption")]
+    if not candidates:
+        return None
+    mut = rng.choice(candidates)
+    wrong, info = mut.apply(notes, rng)
+    return mut, wrong, info

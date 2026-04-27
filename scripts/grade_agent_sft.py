@@ -2843,6 +2843,176 @@ def _pitch_to_int(value) -> int | None:
     return cls + (octave + 1) * 12
 
 
+def score_transcription_v4_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Score a v4 melody_transcription record with self-verification loop."""
+    messages = record.get("messages", [])
+    meta = record.get("meta", {})
+    assistant_turns = [m.get("content", "") or "" for m in messages if m.get("role") == "assistant"]
+
+    oracle_n: int = int(meta.get("n_notes") or 0)
+    oracle_notes: list[dict] = list(meta.get("notes") or [])
+    oracle_pitches: set[int] = set()
+    for n in oracle_notes:
+        p = _pitch_to_int(n.get("pitch"))
+        if p is not None:
+            oracle_pitches.add(p)
+
+    # has_midi_insert: at least one Bash tool_call contains MIDI_InsertNote
+    has_midi_insert: float = 0.0
+    insert_cmd_text = ""
+    for m in messages:
+        if m.get("role") != "tool_call":
+            continue
+        try:
+            tc = json.loads(m.get("content", ""))
+            if tc.get("name") not in ("bash", "Bash"):
+                continue
+            cmd = tc.get("arguments", {}).get("command", "") or ""
+            if "MIDI_InsertNote" in cmd:
+                has_midi_insert = 1.0
+                insert_cmd_text = cmd
+        except Exception:
+            pass
+
+    # output_file_written: last bash that writes JSON with the schema
+    output_file_written: float = 0.0
+    note_count_match: float = 0.0
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") != "tool_call":
+            continue
+        try:
+            tc = json.loads(m.get("content", ""))
+            if tc.get("name") not in ("bash", "Bash"):
+                continue
+            cmd = tc.get("arguments", {}).get("command", "") or ""
+            has_schema = all(tok in cmd for tok in ('"n_notes"', '"notes"', '"duration_s"'))
+            if has_schema and ".json" in cmd:
+                nxt = messages[i + 1] if i + 1 < len(messages) else None
+                if nxt and nxt.get("role") == "tool_response":
+                    try:
+                        resp = json.loads(nxt.get("content", ""))
+                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
+                        inner = json.loads(stdout) if stdout.strip() else resp
+                        if inner.get("status") == "ok" and inner.get("file"):
+                            output_file_written = 1.0
+                    except Exception:
+                        pass
+                m_count = re.search(r'"n_notes"\s*:\s*(\d+)', cmd)
+                if m_count:
+                    emitted_n = int(m_count.group(1))
+                    if oracle_n > 0 and emitted_n == oracle_n:
+                        note_count_match = 1.0
+                break
+        except Exception:
+            pass
+
+    # has_verify_cycle: render snippet + listen_probe + Read + <audio> sequence
+    has_verify_cycle: float = 0.0
+    for i, m in enumerate(messages):
+        if m.get("role") != "tool_call":
+            continue
+        try:
+            tc = json.loads(m.get("content", ""))
+            if tc.get("name") not in ("bash", "Bash"):
+                continue
+            cmd = tc.get("arguments", {}).get("command", "") or ""
+            if "listen_probe" in cmd or "render_vital_preset" in cmd:
+                # Look for the Read + <audio> sequence within next 4 messages
+                for j in range(i + 1, min(i + 5, len(messages))):
+                    if messages[j].get("role") == "tool_call":
+                        try:
+                            inner_tc = json.loads(messages[j].get("content", ""))
+                            if inner_tc.get("name") == "Read":
+                                has_verify_cycle = 1.0
+                                break
+                        except Exception:
+                            pass
+                if has_verify_cycle > 0:
+                    break
+        except Exception:
+            pass
+
+    # has_render_listen: first user message has <audio>
+    has_render_listen: float = 0.0
+    if messages and messages[0].get("role") == "user":
+        if "<audio>" in str(messages[0].get("content", "")):
+            has_render_listen = 1.0
+
+    # verify_conclusion: final assistant says "match" or "Done"
+    verify_conclusion: float = 0.0
+    if assistant_turns:
+        last = assistant_turns[-1].lower()
+        if "match" in last or "done" in last:
+            verify_conclusion = 1.0
+
+    # perceptual_narration_clean: mistake samples should not have omniscient signals
+    perceptual_narration_clean: float | None = None
+    n_retries = int(meta.get("n_retries", 0))
+    if n_retries > 0:
+        omniscient_re = re.compile(r"note \d+|semitone|±\d+|\+\d+ semitone|-\d+ semitone", re.IGNORECASE)
+        violations = sum(1 for t in assistant_turns if omniscient_re.search(t))
+        perceptual_narration_clean = 1.0 if violations == 0 else 0.0
+
+    closing_assistant: float = 1.0 if messages and messages[-1].get("role") == "assistant" else 0.0
+
+    snake_hits = sum(bool(_SNAKE_CASE_RE.search(t)) for t in assistant_turns)
+    snake_case_clean = 1.0 - min(1.0, snake_hits / max(1, len(assistant_turns)))
+    bold_hits = sum(bool(_BOLD_HEADER_RE.search(t)) for t in assistant_turns)
+    format_consistent = 1.0 - min(1.0, bold_hits / max(1, len(assistant_turns)))
+
+    # pitch_coverage
+    combined_text = " ".join(assistant_turns) + " " + insert_cmd_text
+    if oracle_pitches:
+        seen = 0
+        for p in oracle_pitches:
+            if re.search(rf"\b{p}\b", combined_text):
+                seen += 1
+                continue
+            name = _pitch_name_for_grader(p)
+            if name and name in combined_text:
+                seen += 1
+        pitch_coverage: float | None = round(seen / len(oracle_pitches), 4)
+    else:
+        pitch_coverage = None
+
+    weights: dict[str, float] = {
+        "has_midi_insert": 0.15,
+        "output_file_written": 0.15,
+        "note_count_match": 0.15,
+        "has_verify_cycle": 0.15,
+        "has_render_listen": 0.10,
+        "verify_conclusion": 0.10,
+        "perceptual_narration_clean": 0.05,
+        "pitch_coverage": 0.05,
+        "closing_assistant": 0.03,
+        "snake_case_clean": 0.03,
+        "format_consistent": 0.04,
+    }
+    raw: dict[str, Any] = {
+        "has_midi_insert": has_midi_insert,
+        "output_file_written": output_file_written,
+        "note_count_match": note_count_match,
+        "has_verify_cycle": has_verify_cycle,
+        "has_render_listen": has_render_listen,
+        "verify_conclusion": verify_conclusion,
+        "perceptual_narration_clean": perceptual_narration_clean,
+        "pitch_coverage": pitch_coverage,
+        "closing_assistant": closing_assistant,
+        "snake_case_clean": snake_case_clean,
+        "format_consistent": format_consistent,
+    }
+    weighted_sum = 0.0
+    weight_sum = 0.0
+    for k, w in weights.items():
+        v = raw.get(k)
+        if v is not None:
+            weighted_sum += v * w
+            weight_sum += w
+    overall = round(weighted_sum / weight_sum, 4) if weight_sum > 0 else 0.0
+    return {**raw, "overall": overall}
+
+
 def score_record(
     record: dict[str, Any],
     llm_judge_server: str | None = None,
@@ -2875,6 +3045,8 @@ def score_record(
             record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model,
             audio_grounding_sample_rate=audio_grounding_sample_rate,
         )
+    elif task == "melody_transcription" and meta.get("pipeline_version") == "v4_transcription":
+        scores = score_transcription_v4_record(record)
     elif task == "melody_transcription":
         scores = score_transcription_record(record)
     elif task == "search":

@@ -352,29 +352,6 @@ def inject_mistake(
     return info
 
 
-def corrupt_transcription_notes(notes: list[dict], rng) -> tuple[list[dict], dict]:
-    """Create a 'wrong' version of a transcribed note list by altering one
-    note's pitch by +-1 or +-2 semitones. Returns (wrong_notes, info).
-
-    Notes are dicts with keys {"pitch", "start_s", "dur_s", "velocity"}.
-    """
-    import copy
-    if not notes:
-        return notes, {}
-    wrong = copy.deepcopy(notes)
-    idx = rng.randrange(len(wrong))
-    delta = rng.choice([-2, -1, 1, 2])
-    original_pitch = int(wrong[idx]["pitch"])
-    wrong[idx]["pitch"] = max(0, min(127, original_pitch + delta))
-    return wrong, {
-        "note_idx": idx,                            # which note was altered (0-based)
-        "start_s": float(wrong[idx]["start_s"]),
-        "wrong_pitch": int(wrong[idx]["pitch"]),
-        "correct_pitch": int(original_pitch),
-        "delta_semitones": int(delta),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Vita rendering — fresh per-batch audio (no iter_wav dependency)
 # ---------------------------------------------------------------------------
@@ -1223,17 +1200,14 @@ def build_record(
                           listen_text="Listening to the default preset.")
 
     # --- TRANSCRIPTION BLOCK ---
-    # Before search, create a REAPER track and dispatch the melody_transcription
-    # subagent to populate it with MIDI notes. The subagent's Agent tool_response
-    # already reports {status: completed, outputFile}; the main agent never
-    # actually inspects the note list — it just acknowledges and moves on —
-    # so there is no `cat` of the transcription file.
+    # Create a REAPER track and dispatch the transcription subagent.
+    # Verification and mistake recovery now happen inside the transcription
+    # agent itself (v4) — the main agent just dispatches once and proceeds.
     source_midi_path = entry.get("source_midi_path")
     transcription_summary_text = ""
-    _trans_mistake_info: dict | None = None
     _trans_output_file: str | None = None
     if source_midi_path and Path(source_midi_path).exists():
-        from scripts.build_transcription_agent_sft_v3 import (  # type: ignore
+        from scripts.build_transcription_agent_sft_v4 import (  # type: ignore
             load_notes_from_midi,
         )
         try:
@@ -1252,30 +1226,7 @@ def build_record(
             _trans_output_file = f"{_trans_agent_dir}/{_trans_agent_id}.json"
             _trans_manifest_file = f"{_trans_agent_dir}/{_trans_agent_id}.manifest.json"
 
-            # Transcription-mistake decision: deterministic per sample_id hash
-            # so the same sample always gets the same mistake behavior across
-            # re-runs. When injected, the first Agent dispatch returns a
-            # corrupted note list; the main agent's verify-listen detects the
-            # mismatch and re-dispatches; the second attempt is correct.
-            import random as _trans_random
-            _trans_mistake_rate = float(getattr(args, "transcription_mistake_rate", 0.0) or 0.0)
-            _sid_int = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
-            _trans_mistake_rng = _trans_random.Random(int(args.seed) + _sid_int + 7919)
-            _trans_inject_mistake = (
-                _trans_mistake_rate > 0.0
-                and _trans_mistake_rng.random() < _trans_mistake_rate
-                and _trans_n_notes >= 3
-            )
-            _trans_wrong_notes: list[dict] | None = None
-            if _trans_inject_mistake:
-                _trans_wrong_notes, _trans_mistake_info = corrupt_transcription_notes(
-                    _trans_notes, _trans_mistake_rng,
-                )
-
-            # Persist the transcription output file on disk so the path is real
-            # at build time (live-exec grading and downstream tools can read it).
-            # In mistake samples we also persist the wrong-first-attempt file
-            # at a sibling path so its contents are inspectable.
+            # Persist the transcription output on disk
             _trans_payload = {
                 "status": "completed",
                 "notes": _trans_notes,
@@ -1286,20 +1237,6 @@ def build_record(
             with open(_trans_output_file, "w") as _trf:
                 json.dump(_trans_payload, _trf)
                 _trf.write("\n")
-            # Wrong-attempt manifest paths (only used when injecting a mistake)
-            _wrong_agent_id = make_agent_id(sample_id, "melody_transcription", "attempt1")
-            _wrong_file = f"{_trans_agent_dir}/{_wrong_agent_id}.json"
-            _wrong_manifest_file = f"{_trans_agent_dir}/{_wrong_agent_id}.manifest.json"
-            _wrong_verify_wav = f"{_trans_agent_dir}/{_wrong_agent_id}.verify.wav"
-            if _trans_wrong_notes is not None:
-                with open(_wrong_file, "w") as _trf:
-                    json.dump({
-                        "status": "completed",
-                        "notes": _trans_wrong_notes,
-                        "n_notes": len(_trans_wrong_notes),
-                        "duration_s": _trans_duration_s,
-                    }, _trf)
-                    _trf.write("\n")
 
             # Step 1: create a REAPER track + load Vital on it
             _trans_create_snippet = (
@@ -1325,145 +1262,30 @@ def build_record(
             }) + "\n"
             messages.append(_bash_tool_response(_track_stdout))
 
-            # Step 2a (mistake samples only): emit the WRONG first attempt —
-            # dispatch, verify-listen of the corrupted notes, detection, and
-            # the re-dispatch intro. This teaches the model to catch+recover
-            # from transcription errors instead of proceeding with bad notes.
-            if _trans_wrong_notes is not None and _trans_mistake_info is not None:
-                _n_wrong = len(_trans_wrong_notes)
-
-                # Write the manifest matching claw-code's runtime convention.
-                _wrong_dispatch_prompt = (
-                    f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
-                    f"(reapy → MIDI_InsertNote) that inserts the MIDI "
-                    f"notes on that track, and save the final note list as JSON to "
-                    f"{_wrong_file} with shape "
-                    f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
-                )
-                write_agent_manifest(
-                    agent_id=_wrong_agent_id,
-                    subagent_type="melody_transcription",
-                    output_file=_wrong_file,
-                    manifest_file=_wrong_manifest_file,
-                    prompt=_wrong_dispatch_prompt,
-                )
-
-                messages.append({
-                    "role": "assistant",
-                    "content": "Dispatching the transcription subagent to listen to the target and populate the track with MIDI notes.",
-                })
-                messages.append(_tool_call("Agent", {
-                    "subagent_type": "melody_transcription",
-                    "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
-                    "prompt": _wrong_dispatch_prompt,
-                    "name": f"transcribe-{sample_id}-1",
-                }))
-                messages.append({
-                    "role": "tool_response",
-                    "content": json.dumps({
-                        "agentId": _wrong_agent_id,
-                        "subagentType": "melody_transcription",
-                        "status": "completed",
-                        "outputFile": _wrong_file,
-                        "manifestFile": _wrong_manifest_file,
-                        "createdAt": f"build-time:{_wrong_agent_id}",
-                        "startedAt": f"build-time:{_wrong_agent_id}",
-                        "n_notes": _n_wrong,
-                        "duration_s": _trans_duration_s,
-                    }, ensure_ascii=False),
-                })
-
-                # Render the WRONG verify probe and expose it so the agent can
-                # "hear" the mismatch. At build time we know which note is off
-                # and embed that in the detection narration for grounded text.
-                try:
-                    _wrong_tuples = notes_from_dicts(_trans_wrong_notes)
-                    render_preset_audio(init_preset, _wrong_tuples, out_path=_wrong_verify_wav, tail_s=1.0)
-                    audio_assets.append(_wrong_verify_wav)
-                    wrong_verify_ok = True
-                except Exception:
-                    wrong_verify_ok = False
-
-                messages.append({
-                    "role": "assistant",
-                    "content": (
-                        "Verifying the first transcription attempt — rendering the returned "
-                        "notes through the default Vital preset so I can compare the melody "
-                        "to the target."
-                    ),
-                })
-                _wrong_verify_cmd = _wrap_as_bash(build_render_verify_snippet(
-                    out_path=_wrong_verify_wav,
-                    notes_override=_wrong_tuples,
-                ))
-                messages.append(_tool_call("Bash", {"command": _wrong_verify_cmd}))
-                _wrong_probe_stdout = json.dumps({
-                    "listen_probe": {
-                        "path": _wrong_verify_wav,
-                        "exists": True,
-                        "notes": _n_wrong,
-                    },
-                }) + "\n"
-                if wrong_verify_ok:
-                    _emit_listen_sequence(
-                        messages, audio_assets, _wrong_verify_wav,
-                        probe_stdout=_wrong_probe_stdout,
-                        listen_text="Listening to the first transcription attempt.",
-                    )
-                else:
-                    messages.append(_bash_tool_response(_wrong_probe_stdout))
-
-            # Step 2 (primary dispatch): when no mistake was injected this is
-            # the one-and-only transcription call. When a mistake was injected
-            # this becomes the RETRY after detection; we merge the detection
-            # narration + re-dispatch intro into a single assistant turn to
-            # satisfy the no-adjacent-assistants validator.
-            _retry_note = ""
-            if _trans_wrong_notes is not None and _trans_mistake_info is not None:
-                _m = _trans_mistake_info
-                _direction = "high" if _m["delta_semitones"] > 0 else "low"
-                _abs_delta = abs(_m["delta_semitones"])
-                _retry_note = (
-                    f" Previous attempt had a pitch error on note "
-                    f"{_m['note_idx'] + 1} at ~{_m['start_s']:.2f}s (off by "
-                    f"{_m['delta_semitones']:+d} semitones). Please re-listen "
-                    f"and correct that note."
-                )
-                _dispatch_prose = (
-                    f"The verify render doesn't match — note {_m['note_idx'] + 1} at "
-                    f"~{_m['start_s']:.2f}s sounds {_abs_delta} semitone"
-                    f"{'s' if _abs_delta != 1 else ''} too {_direction}. "
-                    f"Re-dispatching the transcription subagent with a correction hint "
-                    f"so it can fix the off-pitch note."
-                )
-            else:
-                _dispatch_prose = (
-                    "Dispatching the transcription subagent to listen to the target "
-                    "and populate the track with MIDI notes."
-                )
-            messages.append({
-                "role": "assistant",
-                "content": _dispatch_prose,
-            })
-            _primary_dispatch_prompt = (
+            # Step 2: dispatch transcription subagent (single call)
+            _dispatch_prompt = (
                 f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
                 f"(reapy → MIDI_InsertNote) that inserts the MIDI "
                 f"notes on that track, and save the final note list as JSON to "
                 f"{_trans_output_file} with shape "
-                f'{{"notes": [...], "n_notes": N, "duration_s": X}}.' + _retry_note
+                f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
             )
             write_agent_manifest(
                 agent_id=_trans_agent_id,
                 subagent_type="melody_transcription",
                 output_file=_trans_output_file,
                 manifest_file=_trans_manifest_file,
-                prompt=_primary_dispatch_prompt,
+                prompt=_dispatch_prompt,
             )
+            messages.append({
+                "role": "assistant",
+                "content": "Dispatching the transcription subagent to listen to the target and populate the track with MIDI notes.",
+            })
             messages.append(_tool_call("Agent", {
                 "subagent_type": "melody_transcription",
                 "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
-                "prompt": _primary_dispatch_prompt,
-                "name": f"transcribe-{sample_id}-2" if _retry_note else f"transcribe-{sample_id}",
+                "prompt": _dispatch_prompt,
+                "name": f"transcribe-{sample_id}",
             }))
             messages.append({
                 "role": "tool_response",
@@ -1480,58 +1302,9 @@ def build_record(
                 }, ensure_ascii=False),
             })
 
-            # Step 3: verify the transcription by rendering the transcribed notes
-            # through the default Vital preset and listening to them. If the note
-            # content matches the target melody (ignoring timbre), the transcription
-            # is correct and we proceed. At build time we know it's correct (oracle
-            # notes); the verdict prose is always "matches", teaching the model the
-            # verify-and-proceed protocol.
-            _verify_wav = f"/tmp/agents/{sample_id}/transcription_verify.wav"
-            Path(_verify_wav).parent.mkdir(parents=True, exist_ok=True)
-            # Render the verify probe live: transcribed notes + default init preset.
-            try:
-                render_preset_audio(init_preset, notes, out_path=_verify_wav, tail_s=1.0)
-                audio_assets.append(_verify_wav)
-                verify_wav_ok = True
-            except Exception:
-                verify_wav_ok = False
-
-            messages.append({
-                "role": "assistant",
-                "content": (
-                    "Verifying the transcription: rendering the transcribed notes "
-                    "through the default Vital preset so I can compare the melody "
-                    "(note content only) to the target."
-                ),
-            })
-            _verify_cmd = _wrap_as_bash(build_render_verify_snippet(
-                out_path=_verify_wav,
-                midi_path=str(_trans_output_file),
-            ))
-            messages.append(_tool_call("Bash", {"command": _verify_cmd}))
-            _verify_probe_stdout = json.dumps({
-                "listen_probe": {
-                    "path": _verify_wav,
-                    "exists": True,
-                    "notes": _trans_n_notes,
-                },
-            }) + "\n"
-            if verify_wav_ok:
-                _emit_listen_sequence(
-                    messages, audio_assets, _verify_wav,
-                    probe_stdout=_verify_probe_stdout,
-                    listen_text="Listening to the transcription verify render.",
-                )
-            else:
-                messages.append(_bash_tool_response(_verify_probe_stdout))
-
-            _verify_prefix = (
-                "Transcription verified on retry"
-                if _trans_wrong_notes is not None else "Transcription verified"
-            )
             transcription_summary_text = (
-                f"{_verify_prefix} — {_trans_n_notes} notes match the target "
-                f"melody. MIDI ready on track {_trans_track_idx}. "
+                f"Transcription verified — {_trans_n_notes} notes on track "
+                f"{_trans_track_idx}. "
             )
 
     # Check library size — the agent needs to discover this at inference time
@@ -2413,8 +2186,7 @@ def build_record(
             "diagnosis_subsystems_truth": subsystems_truth,
             "injected_mistake": injected_mistake,
             "mistake_caught": mistake_caught if injected_mistake else None,
-            "transcription_mistake": _trans_mistake_info,
-            "transcription_mistake_caught": bool(_trans_mistake_info),
+            "transcription_output_file": _trans_output_file,
             "injected_code_mistake": _code_mistake_info,
         },
     }
@@ -2457,12 +2229,6 @@ def main() -> None:
 
     ap.add_argument("--mistake-rate", type=float, default=0.20,
         help="Probability of injecting one deliberate overshoot per sample (default 0.20).")
-    ap.add_argument("--transcription-mistake-rate", type=float, default=0.15,
-        help="Probability of injecting a transcription mistake per sample (default 0.15). "
-             "When injected, the first transcription dispatch returns notes with one pitch "
-             "altered by +-1-2 semitones; the main agent's verify-listen detects the "
-             "mismatch and re-dispatches transcription with a hint; the second attempt is "
-             "correct. Teaches the model to catch+recover from transcription errors.")
     ap.add_argument("--code-mistake-rate", type=float, default=0.10,
         help="Probability of injecting a code mistake (real traceback) per sample (default 0.10).")
     ap.add_argument("--seed", type=int, default=1337)

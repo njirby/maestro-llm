@@ -287,11 +287,13 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
     fi
 
     if [[ "$BUILD_TRANSCRIPTION" -eq 1 ]]; then
-      echo "==> Build transcription agent"
-      python scripts/build_transcription_agent_sft_v3.py \
+      echo "==> Build transcription agent (v4 — self-verifying)"
+      python scripts/build_transcription_agent_sft_v4.py \
           --manifest "$MANIFEST" \
           --out-jsonl "$OUT_TRANSCRIPTION" \
-          --max-samples "$MAX_SAMPLES" --workers "$WORKERS"
+          --max-samples "$MAX_SAMPLES" \
+          --transcription-mistake-rate "$TRANSCR_MISTAKE_RATE" \
+          --workers "$WORKERS"
     fi
 
     if [[ "$BUILD_MAIN" -eq 1 ]]; then
@@ -304,7 +306,6 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
           --max-samples "$MAX_SAMPLES" --max-batches "$MAX_BATCHES" \
           --num-agents "$NUM_AGENTS" \
           --mistake-rate "$MISTAKE_RATE" \
-          --transcription-mistake-rate "$TRANSCR_MISTAKE_RATE" \
           --code-mistake-rate "$CODE_MISTAKE_RATE" \
           --force-research-rate "$FORCE_RESEARCH_RATE" \
           --omni-server "$OMNI_URL" --omni-model "$OMNI_MODEL" \
