@@ -103,6 +103,7 @@ from scripts.build_main_agent_sft_v2 import (
     _check_server_reachable,
     _llm_post,
     _step_remaining_gap,
+    llm_post_stats,
 )
 
 # Real subagent builders
@@ -277,7 +278,7 @@ def build_record(
 
     # ---- Begin messages ----
     messages: list[dict] = []
-    audio_assets: list[str] = [str(target_audio_path), str(default_audio_path)]
+    audio_assets: list[str] = [str(target_audio_path)]
 
     # Edge case (~5%): user says "recreate this sound" without audio
     no_audio_rate = float(getattr(args, "no_audio_rate", 0.05))
@@ -394,10 +395,9 @@ def build_record(
         notes_override=list(notes),
     ))
     messages.append(_tool_call("Bash", {"command": _default_render_cmd}))
-    messages.append(_tool_response("Bash", {
-        "stdout": json.dumps({"rendered": str(default_audio_path), "ok": True}),
-        "stderr": "", "interrupted": False,
-    }))
+    messages.append(_bash_tool_response(
+        json.dumps({"rendered": str(default_audio_path), "ok": True})
+    ))
 
     # --- TRANSCRIPTION BLOCK ---
     # Create a REAPER track and dispatch the transcription subagent.
@@ -1509,6 +1509,9 @@ def main() -> None:
         if stage2_server and stage2_server != args.omni_server:
             _check_server_reachable(stage2_server, "Stage2")
 
+    import time as _wall_time
+    _wall_t0 = _wall_time.monotonic()
+
     entries = load_manifest_entries(Path(args.manifest), max_samples=args.max_samples)
     index_rows = load_index_rows(args.index_meta)
     selected_by_name = select_probe_rows_by_name(index_rows)
@@ -1631,6 +1634,17 @@ def main() -> None:
             for r in records:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
         print(f"Wrote {len(records):>4} records to {out_path}", flush=True)
+
+    _wall_elapsed = _wall_time.monotonic() - _wall_t0
+    _n_ok = len(all_main)
+    print(flush=True)
+    print(f"=== Timing summary ===", flush=True)
+    print(f"  wall clock:      {_wall_elapsed:>8.1f}s  ({_wall_elapsed/60:.1f} min)", flush=True)
+    print(f"  records built:   {_n_ok:>8}", flush=True)
+    if _n_ok:
+        print(f"  per rollout:     {_wall_elapsed/_n_ok:>8.1f}s", flush=True)
+        print(f"  throughput:      {_n_ok/_wall_elapsed*3600:>8.1f} rollouts/hr  (at {args.workers} workers)", flush=True)
+    print(f"  LLM calls:       {llm_post_stats.summary()}", flush=True)
 
 
 if __name__ == "__main__":

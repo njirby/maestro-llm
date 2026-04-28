@@ -1243,7 +1243,7 @@ def build_record(
 
     # ---- Begin messages ----
     messages: list[dict] = []
-    audio_assets: list[str] = [str(target_audio_path), str(default_audio_path)]
+    audio_assets: list[str] = [str(target_audio_path)]
 
     # Edge case (~5%): user says "recreate this sound" without selecting an audio
     # clip in REAPER. Model should recognise the missing <audio> and ask the
@@ -1374,10 +1374,9 @@ def build_record(
         notes_override=list(notes),
     ))
     messages.append(_tool_call("Bash", {"command": _default_render_cmd}))
-    messages.append(_tool_response("Bash", {
-        "stdout": json.dumps({"rendered": str(default_audio_path), "ok": True}),
-        "stderr": "", "interrupted": False,
-    }))
+    messages.append(_bash_tool_response(
+        json.dumps({"rendered": str(default_audio_path), "ok": True})
+    ))
 
     # --- TRANSCRIPTION BLOCK ---
     # Create a REAPER track and dispatch the transcription subagent.
