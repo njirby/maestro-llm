@@ -10,15 +10,23 @@ We solve this by running a dedicated render worker in a spawned subprocess
 (created once, reused for all renders via a pair of queues).  A threading
 lock serializes callers so request/response pairs never interleave.
 
-Preset loading uses a constructed binary state file that wraps the .vital
-JSON in the 5-layer format DawDreamer/JUCE expects:
-  VC2! header → XML envelope → JUCE base64 → VstW/FBCh wrapper → JSON
+Preset application uses ``set_parameter()`` for all ~760 numeric automation
+params (filter cutoff, oscillator levels, FX, envelopes, LFOs, etc.).
+A complete Vital JSON key → DawDreamer param index mapping handles naming
+divergences between the two systems (e.g. ``osc_1_on`` → "Oscillator 1
+Switch", ``chorus_cutoff`` → "Chorus Filter Cutoff").
+
+Non-automatable state (wavetables, modulation routing, LFO shapes) cannot
+be set via ``set_parameter()`` and ``load_state()`` doesn't apply on
+headless Linux (Vital requires a GUI editor window to commit state).
+For wavetable changes, use vita or REAPER+reapy with the chunk API.
 """
 from __future__ import annotations
 
 import json
 import multiprocessing as mp
 import os
+import re
 import struct
 import tempfile
 import threading
@@ -50,13 +58,7 @@ _JUCE_B64_TABLE = ".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01234567
 
 
 def _juce_base64_encode(data: bytes) -> str:
-    """Encode bytes using JUCE's custom base64 (MemoryBlock::toBase64Encoding).
-
-    JUCE uses a bit-level encoding: for each group of 6 bits (read
-    little-endian from the byte stream), emit the corresponding character
-    from the JUCE alphabet.  The encoded string is prefixed with the
-    decimal byte count and a dot separator.
-    """
+    """Encode bytes using JUCE's custom base64 (MemoryBlock::toBase64Encoding)."""
     size = len(data)
     num_chars = ((size * 8) + 5) // 6
     chars = []
@@ -78,22 +80,13 @@ def _juce_base64_encode(data: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 def _build_dawdreamer_state(preset_dict: dict) -> bytes:
-    """Convert a Vital preset dict into a binary blob that DawDreamer's
-    ``load_state()`` accepts — full wavetables, modulation, and all.
-
-    The format mirrors what JUCE's VST3 hosting code writes via
-    ``copyXmlToBinary`` and what Vital's ``setStateInformation`` parses.
-    """
+    """Convert a Vital preset dict into a binary blob for ``load_state()``."""
     json_bytes = json.dumps(preset_dict, separators=(",", ":")).encode("utf-8") + b"\x00"
     juce_trailer = b"\x00" * 16 + b"JUCEPrivateData"
     chunk_data = json_bytes + juce_trailer
     chunk_size = len(chunk_data)
 
-    # VstW + FBCh header (same as REAPER chunk, but without the REAPER-specific
-    # 24-byte outer wrapper — starts directly at VstW).
     future = b"\x00" * 128
-    # body_size covers: FBCh(4) + version(4) + Vita(4) + fxVersion(4) +
-    #                   numPrograms(4) + future(128) + chunkSize(4) + chunk_data
     body_size = 4 + 4 + 4 + 4 + 4 + 128 + 4 + chunk_size
 
     icomp = (
@@ -104,8 +97,8 @@ def _build_dawdreamer_state(preset_dict: dict) -> bytes:
         + b"FBCh"
         + struct.pack(">i", 2)
         + b"Vita"
-        + struct.pack(">i", 0x00010600)  # Vital 1.6.0
-        + struct.pack(">i", 0)  # numPrograms
+        + struct.pack(">i", 0x00010600)
+        + struct.pack(">i", 0)
         + future
         + struct.pack(">i", chunk_size)
         + chunk_data
@@ -117,19 +110,149 @@ def _build_dawdreamer_state(preset_dict: dict) -> bytes:
         f"<VST3PluginState><IComponent>{b64}</IComponent></VST3PluginState>"
     )
     xml_bytes = xml_str.encode("utf-8") + b"\x00"
-    # VC2! magic + string-length + xml
     return struct.pack("<II", 0x21324356, len(xml_bytes)) + xml_bytes
+
+
+# ---------------------------------------------------------------------------
+# Vital JSON key → DawDreamer parameter index mapping
+# ---------------------------------------------------------------------------
+
+def _build_param_mapping(synth) -> tuple[dict[str, int], dict]:
+    """Build Vital JSON key → DawDreamer param index mapping.
+
+    Returns (vital_key_to_dd_index, param_ranges) where param_ranges is
+    loaded from the bundled JSON file for normalization.
+    """
+    n = synth.get_plugin_parameter_size()
+    dd_norm: dict[str, int] = {}
+    for i in range(n):
+        name = synth.get_parameter_name(i)
+        norm = re.sub(r"[^a-z0-9]", "", name.lower())
+        dd_norm[norm] = i
+
+    ranges_path = Path(__file__).resolve().parent.parent / "synth" / "param_ranges.json"
+    with open(ranges_path) as f:
+        param_ranges = json.load(f)
+
+    mapping: dict[str, int] = {}
+    for vital_key in param_ranges:
+        norm = vital_key.replace("_", "")
+
+        candidates = [norm]
+
+        # osc → oscillator, env → envelope
+        expanded = norm.replace("osc", "oscillator").replace("env", "envelope")
+        candidates.append(expanded)
+
+        for base in list(candidates):
+            # on → switch
+            if base.endswith("on"):
+                candidates.append(base[:-2] + "switch")
+            # dry_wet → mix
+            if "drywet" in base:
+                candidates.append(base.replace("drywet", "mix"))
+            # chorus/delay cutoff/spread → chorus/delay filter cutoff/spread
+            for prefix in ("chorus", "delay"):
+                for suffix in ("cutoff", "spread"):
+                    if base.startswith(prefix) and base.endswith(suffix) and "filter" not in base:
+                        candidates.append(base.replace(prefix + suffix, prefix + "filter" + suffix))
+            # compressor ratio/threshold → strip prefix
+            if base.startswith("compressor") and ("ratio" in base or "threshold" in base):
+                candidates.append(base.replace("compressor", "", 1))
+            # lfo delay_time → delay, fade_time → fadein
+            if "delaytime" in base:
+                candidates.append(base.replace("delaytime", "delay"))
+            if "fadetime" in base:
+                candidates.append(base.replace("fadetime", "fadein"))
+            # lfo keytrack_transpose → transpose, keytrack_tune → tune
+            if "keytracktranspose" in base:
+                candidates.append(base.replace("keytracktranspose", "transpose"))
+            if "keytracktune" in base:
+                candidates.append(base.replace("keytracktune", "tune"))
+            # random_N → randomlfoN
+            m = re.match(r"random(\d)(.*)", base)
+            if m and not base.startswith("randomlfo"):
+                candidates.append(f"randomlfo{m.group(1)}{m.group(2)}")
+            # macro_control_N → macroN
+            if "macrocontrol" in base:
+                candidates.append(base.replace("macrocontrol", "macro"))
+            # reverb shelf cutoff/gain
+            if "shelf" in base:
+                candidates.append(base.replace("shelfcutoff", "cutoff").replace("shelfgain", "gain"))
+            # osc frame_spread → unison frame spread
+            if "framespread" in base and "unison" not in base:
+                candidates.append(base.replace("framespread", "unisonframespread"))
+            # osc random_phase → phase randomization
+            if "randomphase" in base:
+                candidates.append(base.replace("randomphase", "phaserandomization"))
+            # osc unison_stack_type → stack style
+            if "unisonstacktype" in base:
+                candidates.append(base.replace("unisonstacktype", "stackstyle"))
+            # spectral_morph → frequency morph
+            if "spectralmorph" in base:
+                candidates.append(base.replace("spectralmorph", "frequencymorph"))
+            # portamento_on → portamento force
+            if base == "portamentoon":
+                candidates.append("portamentoforce")
+
+        for c in candidates:
+            if c in dd_norm:
+                mapping[vital_key] = dd_norm[c]
+                break
+
+    return mapping, param_ranges
+
+
+def _apply_preset_params(synth, preset_dict: dict, mapping: dict[str, int],
+                         param_ranges: dict) -> int:
+    """Set all numeric preset params via ``set_parameter()``. Returns count set."""
+    settings = preset_dict.get("settings", preset_dict)
+    count = 0
+    for vital_key, dd_idx in mapping.items():
+        val = settings.get(vital_key)
+        if val is None or not isinstance(val, (int, float)):
+            continue
+        r = param_ranges.get(vital_key)
+        if not r:
+            continue
+        lo, hi = r["min"], r["max"]
+        if hi <= lo:
+            continue
+        norm = max(0.0, min(1.0, (float(val) - lo) / (hi - lo)))
+        synth.set_parameter(dd_idx, norm)
+        count += 1
+    return count
 
 
 # ---------------------------------------------------------------------------
 # Render worker
 # ---------------------------------------------------------------------------
 
+def _install_x11_error_handler():
+    """Install a non-fatal X11 error handler so load_state's editor-window
+    hack doesn't crash when running under Xvfb."""
+    try:
+        import ctypes, ctypes.util
+        libx11_path = ctypes.util.find_library("X11")
+        if not libx11_path:
+            return
+        libx11 = ctypes.CDLL(libx11_path)
+        libx11.XInitThreads()
+        HANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+        _ignore = HANDLER(lambda d, e: 0)
+        libx11.XSetErrorHandler(_ignore)
+        _install_x11_error_handler._prevent_gc = _ignore
+    except Exception:
+        pass
+
+
 def _render_worker(req_q, resp_q, vst3_path, sample_rate, block_size):
     """Long-lived subprocess that owns the single DawDreamer engine."""
+    _install_x11_error_handler()
     import dawdreamer as daw
     engine = daw.RenderEngine(sample_rate, block_size)
     synth = engine.make_plugin_processor("vital", vst3_path)
+    mapping, param_ranges = _build_param_mapping(synth)
 
     while True:
         msg = req_q.get()
@@ -138,15 +261,7 @@ def _render_worker(req_q, resp_q, vst3_path, sample_rate, block_size):
         preset_json, notes, tail_s = msg
         try:
             preset_dict = json.loads(preset_json)
-            state_blob = _build_dawdreamer_state(preset_dict)
-
-            with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
-                f.write(state_blob)
-                tmp = f.name
-            try:
-                synth.load_state(tmp)
-            finally:
-                os.unlink(tmp)
+            _apply_preset_params(synth, preset_dict, mapping, param_ranges)
 
             synth.clear_midi()
             for pitch, vel, start, dur in notes:
