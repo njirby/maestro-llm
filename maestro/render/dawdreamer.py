@@ -9,12 +9,17 @@ render blocks all other threads via the GIL/message-loop interaction.
 We solve this by running a dedicated render worker in a spawned subprocess
 (created once, reused for all renders via a pair of queues).  A threading
 lock serializes callers so request/response pairs never interleave.
+
+Preset loading uses a constructed binary state file that wraps the .vital
+JSON in the 5-layer format DawDreamer/JUCE expects:
+  VC2! header → XML envelope → JUCE base64 → VstW/FBCh wrapper → JSON
 """
 from __future__ import annotations
 
 import json
 import multiprocessing as mp
 import os
+import struct
 import tempfile
 import threading
 from pathlib import Path
@@ -37,6 +42,89 @@ _resp_q: mp.Queue | None = None
 _worker_proc: mp.Process | None = None
 
 
+# ---------------------------------------------------------------------------
+# JUCE-compatible base64 encoding
+# ---------------------------------------------------------------------------
+
+_JUCE_B64_TABLE = ".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
+
+
+def _juce_base64_encode(data: bytes) -> str:
+    """Encode bytes using JUCE's custom base64 (MemoryBlock::toBase64Encoding).
+
+    JUCE uses a bit-level encoding: for each group of 6 bits (read
+    little-endian from the byte stream), emit the corresponding character
+    from the JUCE alphabet.  The encoded string is prefixed with the
+    decimal byte count and a dot separator.
+    """
+    size = len(data)
+    num_chars = ((size * 8) + 5) // 6
+    chars = []
+    for i in range(num_chars):
+        bit_pos = i * 6
+        byte_idx = bit_pos >> 3
+        bit_off = bit_pos & 7
+        if byte_idx + 1 < size:
+            word = data[byte_idx] | (data[byte_idx + 1] << 8)
+        else:
+            word = data[byte_idx] if byte_idx < size else 0
+        val = (word >> bit_off) & 0x3F
+        chars.append(_JUCE_B64_TABLE[val])
+    return f"{size}.{''.join(chars)}"
+
+
+# ---------------------------------------------------------------------------
+# Build a DawDreamer-compatible state file from a .vital preset dict
+# ---------------------------------------------------------------------------
+
+def _build_dawdreamer_state(preset_dict: dict) -> bytes:
+    """Convert a Vital preset dict into a binary blob that DawDreamer's
+    ``load_state()`` accepts — full wavetables, modulation, and all.
+
+    The format mirrors what JUCE's VST3 hosting code writes via
+    ``copyXmlToBinary`` and what Vital's ``setStateInformation`` parses.
+    """
+    json_bytes = json.dumps(preset_dict, separators=(",", ":")).encode("utf-8") + b"\x00"
+    juce_trailer = b"\x00" * 16 + b"JUCEPrivateData"
+    chunk_data = json_bytes + juce_trailer
+    chunk_size = len(chunk_data)
+
+    # VstW + FBCh header (same as REAPER chunk, but without the REAPER-specific
+    # 24-byte outer wrapper — starts directly at VstW).
+    future = b"\x00" * 128
+    # body_size covers: FBCh(4) + version(4) + Vita(4) + fxVersion(4) +
+    #                   numPrograms(4) + future(128) + chunkSize(4) + chunk_data
+    body_size = 4 + 4 + 4 + 4 + 4 + 128 + 4 + chunk_size
+
+    icomp = (
+        b"VstW"
+        + struct.pack(">III", 8, 1, 0)
+        + b"CcnK"
+        + struct.pack(">i", body_size)
+        + b"FBCh"
+        + struct.pack(">i", 2)
+        + b"Vita"
+        + struct.pack(">i", 0x00010600)  # Vital 1.6.0
+        + struct.pack(">i", 0)  # numPrograms
+        + future
+        + struct.pack(">i", chunk_size)
+        + chunk_data
+    )
+
+    b64 = _juce_base64_encode(icomp)
+    xml_str = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f"<VST3PluginState><IComponent>{b64}</IComponent></VST3PluginState>"
+    )
+    xml_bytes = xml_str.encode("utf-8") + b"\x00"
+    # VC2! magic + string-length + xml
+    return struct.pack("<II", 0x21324356, len(xml_bytes)) + xml_bytes
+
+
+# ---------------------------------------------------------------------------
+# Render worker
+# ---------------------------------------------------------------------------
+
 def _render_worker(req_q, resp_q, vst3_path, sample_rate, block_size):
     """Long-lived subprocess that owns the single DawDreamer engine."""
     import dawdreamer as daw
@@ -49,8 +137,11 @@ def _render_worker(req_q, resp_q, vst3_path, sample_rate, block_size):
             break
         preset_json, notes, tail_s = msg
         try:
-            with tempfile.NamedTemporaryFile(suffix=".vital", mode="w", delete=False) as f:
-                f.write(preset_json)
+            preset_dict = json.loads(preset_json)
+            state_blob = _build_dawdreamer_state(preset_dict)
+
+            with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+                f.write(state_blob)
                 tmp = f.name
             try:
                 synth.load_state(tmp)

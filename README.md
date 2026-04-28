@@ -138,6 +138,7 @@ configs/
 | [Vital Synth](docs/vital-synth.md) | Preset generation, wavetable library, quality metrics, render throughput, path generation |
 | [MS-Swift Training](docs/ms-swift-training.md) | Audio token budget, packing, Megatron sequence-parallel findings, LoRA rank sweeps |
 | [VST Chunk Format](docs/vital-chunk-format.md) | Binary chunk layout, `build_vital_chunk()`, gotchas |
+| [DawDreamer State Format](docs/dawdreamer-state-format.md) | 5-layer JUCE binary format for offline VST3 preset loading |
 | [Vital yabridge Setup](docs/vital-yabridge-setup.md) | Why Linux-native Vital crashes REAPER, WINE + yabridge install |
 | [Agent SFT Architecture](docs/agent_sft_architecture.md) | Deep dive on the 4-agent design and inter-agent protocol |
 | [Megatron QLoRA Investigation](docs/megatron_qlora_investigation.md) | Detailed TP/BNB patching experiments |
