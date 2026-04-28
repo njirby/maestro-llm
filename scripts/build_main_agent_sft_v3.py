@@ -1367,16 +1367,17 @@ def build_record(
         }, ensure_ascii=False),
     })
 
-    # Listen to baseline: render init preset via DawDreamer, then read → audio
-    _baseline_label = "starting preset" if use_random_init else "default preset"
-    messages.append({"role": "assistant", "content": f"Skill loaded. Probing {_baseline_label} baseline."})
+    # Render baseline (needed for batch-rendering diffs later), but skip
+    # listening — the model already heard the result via the judge agent.
     _default_render_cmd = _wrap_as_bash(build_render_verify_snippet(
         out_path=str(default_audio_path),
         notes_override=list(notes),
     ))
     messages.append(_tool_call("Bash", {"command": _default_render_cmd}))
-    _emit_listen_sequence(messages, audio_assets, default_audio_path,
-                          listen_text=f"Listening to the {_baseline_label}.")
+    messages.append(_tool_response("Bash", {
+        "stdout": json.dumps({"rendered": str(default_audio_path), "ok": True}),
+        "stderr": "", "interrupted": False,
+    }))
 
     # --- TRANSCRIPTION BLOCK ---
     # Create a REAPER track and dispatch the transcription subagent.
