@@ -760,6 +760,32 @@ def _assert_no_similarity_score_leak(messages: list[dict]) -> None:
             raise ValueError(f"score_leak_detected_at_message_{i}")
 
 
+import threading as _llm_threading
+
+class _LlmPostStats:
+    def __init__(self):
+        self._lock = _llm_threading.Lock()
+        self.calls = 0
+        self.successes = 0
+        self.retries = 0
+        self.failures = 0
+    def record_success(self, retries: int = 0):
+        with self._lock:
+            self.calls += 1
+            self.successes += 1
+            self.retries += retries
+    def record_failure(self, retries: int = 0):
+        with self._lock:
+            self.calls += 1
+            self.failures += 1
+            self.retries += retries
+    def summary(self) -> str:
+        return (f"calls={self.calls}  ok={self.successes}  "
+                f"failed={self.failures}  retries={self.retries}")
+
+llm_post_stats = _LlmPostStats()
+
+
 def _llm_post(server_url: str, payload: dict, timeout: float = 120.0, max_retries: int = 3) -> dict:
     """POST to an OpenAI-compatible completions endpoint with retry on timeout/5xx/connect errors."""
     import httpx, time
@@ -769,12 +795,16 @@ def _llm_post(server_url: str, payload: dict, timeout: float = 120.0, max_retrie
             with httpx.Client() as client:
                 resp = client.post(server_url, json=payload, timeout=timeout)
                 resp.raise_for_status()
+                llm_post_stats.record_success(retries=attempt)
                 return resp.json()
         except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.ConnectError) as exc:
             last_exc = exc
+            _tag = type(exc).__name__
+            print(f"  LLM_POST retry {attempt+1}/{max_retries} ({_tag}: {exc})", flush=True)
             if attempt < max_retries - 1:
                 time.sleep(3)
     assert last_exc is not None
+    llm_post_stats.record_failure(retries=max_retries)
     raise last_exc
 
 
