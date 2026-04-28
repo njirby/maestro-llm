@@ -19,13 +19,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.agent_sft_common import validate_ms_swift_multiturn_record
 from scripts.build_main_agent_sft_v3 import (
+    MistakeInfo,
     SUBSYSTEM_ORDER,
+    SUBSYSTEM_PARAM_POOL,
     SubsystemBatch,
+    _format_param_deltas,
     build_batches_from_diff,
     build_diagnosis_subsystem_truth,
     extract_diagnosis_subsystems_mentioned,
     format_subsystem_diff_summary,
-    inject_mistake,
+    inject_mistakes,
     presentation_subsystem,
 )
 from maestro.synth.path_gen import _param_family
@@ -94,30 +97,145 @@ def test_build_batches_from_diff_buckets_by_subsystem():
     assert all(_param_family(n) == "osc" for n in osc_batch.params)
 
 
-def test_inject_mistake_modifies_applied():
-    """inject_mistake mutates params_applied on the chosen batch."""
+def test_inject_mistakes_modifies_applied():
+    """inject_mistakes mutates params_applied on chosen batches."""
     import random
     b = SubsystemBatch(
         subsystem="oscillator",
-        params={"osc_1_level": 0.5, "osc_1_pan": 0.3},
-        params_applied={"osc_1_level": 0.5, "osc_1_pan": 0.3},
+        params={"osc_1_level": 0.5, "osc_1_pan": 0.3, "osc_1_tune": 0.7},
+        params_applied={"osc_1_level": 0.5, "osc_1_pan": 0.3, "osc_1_tune": 0.7},
     )
     rng = random.Random(42)
-    info = inject_mistake([b], rng, mistake_rate=1.0)
-    if info is not None:
-        assert info["wrong_value"] != info["true_value"]
-        assert b.params_applied[info["param"]] == info["wrong_value"]
-        assert b.params[info["param"]] == info["true_value"]  # original unchanged
+    results = inject_mistakes([b], rng, per_param_rate=1.0,
+                              init_preset_settings={"osc_1_level": 0.0, "osc_1_pan": 0.5, "osc_1_tune": 0.0})
+    assert len(results) > 0
+    assert b.mistakes is not None
+    for m in results:
+        assert isinstance(m, MistakeInfo)
+        assert m.kind in ("overshoot", "undershoot", "omission", "spurious")
+        assert m.magnitude >= 0.03
+        if m.kind != "omission":
+            assert m.param in b.params_applied or m.kind == "spurious"
+        assert m.param in b.params or m.kind == "spurious"
 
 
-def test_inject_mistake_none_when_rate_zero():
+def test_inject_mistakes_empty_when_rate_zero():
     import random
     b = SubsystemBatch(
         subsystem="oscillator",
         params={"osc_1_level": 0.5, "osc_1_pan": 0.3},
         params_applied={"osc_1_level": 0.5, "osc_1_pan": 0.3},
     )
-    assert inject_mistake([b], random.Random(42), mistake_rate=0.0) is None
+    results = inject_mistakes([b], random.Random(42), per_param_rate=0.0)
+    assert results == []
+    assert b.mistakes is None
+
+
+def test_inject_mistakes_respects_max_per_batch():
+    import random
+    b = SubsystemBatch(
+        subsystem="oscillator",
+        params={f"osc_1_p{i}": 0.5 for i in range(20)},
+        params_applied={f"osc_1_p{i}": 0.5 for i in range(20)},
+    )
+    results = inject_mistakes([b], random.Random(99), per_param_rate=1.0,
+                              max_mistakes_per_batch=3, max_mistakes_total=10,
+                              init_preset_settings={f"osc_1_p{i}": 0.0 for i in range(20)})
+    assert len(results) <= 3
+
+
+def test_inject_mistakes_respects_max_total():
+    import random
+    batches = [
+        SubsystemBatch(
+            subsystem=sub,
+            params={f"{sub}_p{i}": 0.5 for i in range(10)},
+            params_applied={f"{sub}_p{i}": 0.5 for i in range(10)},
+        )
+        for sub in ["oscillator", "filter", "lfo"]
+    ]
+    init_s = {f"{sub}_p{i}": 0.0 for sub in ["oscillator", "filter", "lfo"] for i in range(10)}
+    results = inject_mistakes(batches, random.Random(7), per_param_rate=1.0,
+                              max_mistakes_total=4, init_preset_settings=init_s)
+    assert len(results) <= 4
+
+
+def test_inject_mistakes_omission_removes_from_applied():
+    import random
+    for seed in range(200):
+        b = SubsystemBatch(
+            subsystem="filter",
+            params={"filter_1_cutoff": 0.7, "filter_1_resonance": 0.3, "filter_1_drive": 0.6},
+            params_applied={"filter_1_cutoff": 0.7, "filter_1_resonance": 0.3, "filter_1_drive": 0.6},
+        )
+        results = inject_mistakes([b], random.Random(seed), per_param_rate=0.8,
+                                  init_preset_settings={"filter_1_cutoff": 0.0, "filter_1_resonance": 0.0, "filter_1_drive": 0.0})
+        omissions = [m for m in results if m.kind == "omission"]
+        for m in omissions:
+            assert m.param not in b.params_applied, f"Omitted param {m.param} should not be in params_applied"
+            assert m.param in b.params, "Omitted param must be in GT params"
+        if omissions:
+            return  # found at least one omission
+    assert False, "No omission generated across 200 seeds"
+
+
+def test_inject_mistakes_spurious_adds_same_subsystem_param():
+    import random
+    for seed in range(200):
+        b = SubsystemBatch(
+            subsystem="oscillator",
+            params={"osc_1_level": 0.8, "osc_1_pan": 0.5},
+            params_applied={"osc_1_level": 0.8, "osc_1_pan": 0.5},
+        )
+        results = inject_mistakes([b], random.Random(seed), per_param_rate=0.8,
+                                  init_preset_settings={"osc_1_level": 0.5, "osc_1_pan": 0.5})
+        spurious = [m for m in results if m.kind == "spurious"]
+        for m in spurious:
+            assert m.param in b.params_applied, "Spurious param must be added to params_applied"
+            assert m.param not in b.params, "Spurious param must NOT be in GT params"
+            assert m.param in SUBSYSTEM_PARAM_POOL.get("oscillator", []), \
+                f"Spurious param {m.param} should be from oscillator pool"
+        if spurious:
+            return
+    assert False, "No spurious generated across 200 seeds"
+
+
+def test_inject_mistakes_undershoot_between_init_and_target():
+    import random
+    for seed in range(200):
+        b = SubsystemBatch(
+            subsystem="filter",
+            params={"filter_1_cutoff": 0.8, "filter_1_resonance": 0.6},
+            params_applied={"filter_1_cutoff": 0.8, "filter_1_resonance": 0.6},
+        )
+        results = inject_mistakes([b], random.Random(seed), per_param_rate=0.8,
+                                  init_preset_settings={"filter_1_cutoff": 0.0, "filter_1_resonance": 0.0})
+        undershoots = [m for m in results if m.kind == "undershoot"]
+        for m in undershoots:
+            init_norm = 0.0
+            true_norm = b.params[m.param]
+            lo, hi = min(init_norm, true_norm), max(init_norm, true_norm)
+            assert lo <= m.wrong_value <= hi, \
+                f"Undershoot {m.param}: wrong={m.wrong_value} should be between {lo} and {hi}"
+        if undershoots:
+            return
+    assert False, "No undershoot generated across 200 seeds"
+
+
+def test_format_param_deltas_omitted_tag():
+    result = _format_param_deltas([("filter_1_cutoff", 0.5, 0.5, "omitted")])
+    assert "planned but not applied" in result
+
+
+def test_format_param_deltas_spurious_tag():
+    result = _format_param_deltas([("osc_1_tune", 0.0, 0.3, "spurious")])
+    assert "unplanned change" in result
+
+
+def test_format_param_deltas_backward_compat():
+    result = _format_param_deltas([("filter_1_cutoff", 0.3, 0.8)])
+    assert "→" in result
+    assert "planned but not applied" not in result
 
 
 # ---- build_diagnosis_subsystem_truth ----
@@ -267,8 +385,9 @@ def _make_v3_record(n_batches=3, has_correction=False, has_mistake=False):
             "batch_labels": batch_labels,
             "diagnosis_subsystems_mentioned": ["oscillator", "filter", "lfo"],
             "diagnosis_subsystems_truth": ["oscillator", "filter", "lfo"],
-            "injected_mistake": ({"batch_index": 1, "subsystem": "filter", "param": "filter_1_cutoff", "wrong_value": 0.2, "true_value": 0.6} if has_mistake else None),
-            "mistake_caught": (True if has_correction and has_mistake else None),
+            "injected_mistakes": ([{"param": "filter_1_cutoff", "kind": "overshoot", "wrong_value": 0.2, "true_value": 0.6, "magnitude": 0.4}] if has_mistake else []),
+            "total_correction_turns": (1 if has_correction and has_mistake else 0),
+            "mistake_caught": (True if has_correction and has_mistake else False),
         },
     }
 

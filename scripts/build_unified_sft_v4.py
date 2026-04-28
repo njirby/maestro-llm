@@ -87,7 +87,8 @@ from scripts.build_main_agent_sft_v3 import (
     denormalize_batch_params,
     extract_diagnosis_subsystems_mentioned,
     format_subsystem_diff_summary,
-    inject_mistake,
+    MistakeInfo,
+    inject_mistakes,
     omni_stage1_diagnose,
     omni_stage1_verdict,
     presentation_subsystem,
@@ -314,15 +315,16 @@ def build_record(
                 "batch_labels": [],
                 "diagnosis_subsystems_mentioned": [],
                 "diagnosis_subsystems_truth": [],
-                "injected_mistake": None,
-                "mistake_caught": None,
+                "injected_mistakes": [],
+                "total_correction_turns": 0,
+                "mistake_caught": False,
                 "path_complete": False,
                 "n_remaining": 0,
                 "commentary_mode": "two_stage",
                 "num_agents": int(args.num_agents),
                 "pool_top_k": int(args.pool_top_k),
                 "max_batches": int(args.max_batches),
-                "mistake_rate": float(args.mistake_rate),
+                "per_param_mistake_rate": float(getattr(args, "per_param_mistake_rate", 0.10) or 0.10),
             },
         }
         assert_valid_ms_swift_multiturn_record(record)
@@ -1120,7 +1122,15 @@ def build_record(
             cumulative["settings"][key] = copy.deepcopy(target_preset["settings"][key])
 
     mistake_rng = random.Random(int(args.seed) + sid_seed)
-    injected_mistake = inject_mistake(batches, mistake_rng, args.mistake_rate)
+    _per_param_rate = getattr(args, "per_param_mistake_rate", None)
+    if _per_param_rate is None:
+        _per_param_rate = getattr(args, "mistake_rate", 0.10)
+    all_injected_mistakes = inject_mistakes(
+        batches, mistake_rng,
+        per_param_rate=_per_param_rate,
+        init_preset_settings=init_preset.get("settings", {}),
+    )
+    total_correction_turns = 0
 
     batch_labels: list[dict] = []
     prior_checks: list[str] = []
@@ -1136,7 +1146,7 @@ def build_record(
     for bi, b in enumerate(batches):
         batch_before_values: dict[str, float] = {
             name: float(cumulative["settings"].get(name, 0.0) or 0.0)
-            for name in b.params_applied
+            for name in set(b.params.keys()) | set(b.params_applied.keys())
         }
         for name, norm in b.params_applied.items():
             native = _denormalize(name, norm)
@@ -1213,10 +1223,15 @@ def build_record(
 
         if args.omni_server:
             plan_bullet = _extract_plan_bullet(diagnosis_text, b.subsystem)
-            param_deltas: list[tuple[str, float, float]] = [
-                (name, batch_before_values.get(name, 0.0), float(cumulative["settings"].get(name, 0.0) or 0.0))
-                for name in sorted(b.params_applied.keys())
-            ]
+            _mistake_map = {m.param: m for m in (b.mistakes or [])}
+            _all_delta_names = sorted(set(b.params.keys()) | set(b.params_applied.keys()))
+            param_deltas: list[tuple] = []
+            for _dn in _all_delta_names:
+                _bv = batch_before_values.get(_dn, 0.0)
+                _av = float(cumulative["settings"].get(_dn, 0.0) or 0.0)
+                _dm = _mistake_map.get(_dn)
+                _tag = _dm.kind if _dm and _dm.kind in ("omission", "spurious") else None
+                param_deltas.append((_dn, _bv, _av, _tag))
             _ot = _time.monotonic()
             check_sentence = stage2_batch_check(
                 subsystem=b.subsystem,
@@ -1226,7 +1241,7 @@ def build_record(
                 archetype=archetype,
                 stage2_server=stage2_server,
                 stage2_model=stage2_model,
-                is_final=is_last and not b.mistake,
+                is_final=is_last and not b.mistakes,
                 n_params_applied=len(b.params),
             )
             _log(f"  batch {bi}/{len(batches)-1} ({b.subsystem}) omni {_time.monotonic()-_ot:.1f}s")
@@ -1243,67 +1258,94 @@ def build_record(
             "is_correction": False,
         })
 
-        # Inline correction
-        if b.mistake:
-            true_norm = b.mistake["true_value"]
-            corr_native = _denormalize(b.mistake["param"], true_norm)
-            cumulative["settings"][b.mistake["param"]] = corr_native
-            cumulative_native_overrides[b.mistake["param"]] = corr_native
+        # ---- ITERATIVE CORRECTION (after a batch with mistakes) ----
+        if b.mistakes:
+            unfixed = list(b.mistakes)
+            correction_turn = 0
+            max_corr = getattr(args, "max_correction_turns", 3)
 
-            corr_wav = batch_audio_dir / f"batch_{bi}_correction.wav"
-            render_cumulative_audio(cumulative, notes, corr_wav)
-            with serial_lock:
-                try:
-                    corr_clap = float(embedder.cosine_paths(corr_wav, target_audio_path))
-                except Exception:
-                    corr_clap = None
+            while unfixed and correction_turn < max_corr:
+                correction_turn += 1
+                total_correction_turns += 1
 
-            disp = _json_key_to_display(b.mistake["param"])
-            corr_prefix = f"{pending_check}\n\n" if pending_check else ""
-            pending_check = None
-            if args.omni_server:
-                corr_intro = corr_prefix + stage2_correction_intro(
-                    subsystem=b.subsystem,
-                    param_display_names=[disp],
-                    mistake_info=b.mistake,
-                    archetype=archetype,
-                    stage2_server=stage2_server,
-                    stage2_model=stage2_model,
+                unfixed.sort(key=lambda m: m.magnitude, reverse=True)
+                if len(unfixed) >= 3 and correction_turn == 1:
+                    n_fix = 1
+                elif len(unfixed) >= 2:
+                    n_fix = mistake_rng.choice([1, 2])
+                else:
+                    n_fix = 1
+                fixing_now = [unfixed.pop(0) for _ in range(n_fix)]
+
+                for m in fixing_now:
+                    corr_native = _denormalize(m.param, m.true_value)
+                    cumulative["settings"][m.param] = corr_native
+                    cumulative_native_overrides[m.param] = corr_native
+
+                corr_wav = batch_audio_dir / f"batch_{bi}_correction_{correction_turn}.wav"
+                render_cumulative_audio(cumulative, notes, corr_wav)
+                with serial_lock:
+                    try:
+                        corr_clap = float(embedder.cosine_paths(corr_wav, target_audio_path))
+                    except Exception:
+                        corr_clap = None
+
+                corr_prefix = f"{pending_check}\n\n" if pending_check else ""
+                pending_check = None
+                if args.omni_server:
+                    corr_intro = corr_prefix + stage2_correction_intro(
+                        subsystem=b.subsystem,
+                        mistakes_being_fixed=fixing_now,
+                        remaining_mistakes=unfixed,
+                        archetype=archetype,
+                        stage2_server=stage2_server,
+                        stage2_model=stage2_model,
+                    )
+                else:
+                    fix_desc = ", ".join(_json_key_to_display(m.param) for m in fixing_now)
+                    corr_intro = f"{corr_prefix}Noticed issues in {b.subsystem} — correcting {fix_desc}."
+                messages.append({"role": "assistant", "content": corr_intro})
+
+                corr_by_idx: dict[int, float] = {}
+                for m in fixing_now:
+                    corr_idx = _JSON_KEY_TO_REAPER.get(m.param, {}).get("idx")
+                    if corr_idx is not None:
+                        corr_by_idx[corr_idx] = float(m.true_value)
+                        current_reaper_values[corr_idx] = float(m.true_value)
+
+                if corr_by_idx:
+                    messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_by_idx)}))
+                    _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_by_idx)}) + "\n"
+                    messages.append(_bash_tool_response(_corr_stdout))
+                else:
+                    messages.append(_tool_call("Bash", {"command": "echo 'no matching REAPER param'"}))
+                    messages.append(_bash_tool_response("no matching REAPER param\n"))
+
+                audio_assets.append(str(corr_wav))
+                messages.append({"role": "assistant", "content": "Listening to the corrected preset."})
+                _corr_render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(corr_wav)))
+                messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
+                _emit_listen_sequence(
+                    messages, audio_assets, corr_wav,
+                    listen_text="Listening to the corrected preset.",
                 )
-            else:
-                corr_intro = f"{corr_prefix}Overshot on {b.subsystem} — backing off {disp} to the planned value."
-            messages.append({"role": "assistant", "content": corr_intro})
+                last_batch_audio = corr_wav
 
-            corr_param_key = b.mistake["param"]
-            corr_idx = _JSON_KEY_TO_REAPER.get(corr_param_key, {}).get("idx")
-            if corr_idx is not None:
-                corr_by_idx = {corr_idx: float(true_norm)}
-                messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_by_idx)}))
-                _corr_stdout = json.dumps({"status": "ok", "applied": 1}) + "\n"
-                messages.append(_bash_tool_response(_corr_stdout))
-                current_reaper_values[corr_idx] = float(true_norm)
-            else:
-                messages.append(_tool_call("Bash", {"command": "echo 'no matching REAPER param'"}))
-                messages.append(_bash_tool_response("no matching REAPER param\n"))
+                if unfixed:
+                    pending_check = f"Improved {b.subsystem}, but something still sounds off — listening again."
+                else:
+                    pending_check = f"The {b.subsystem} region now sits back in line with the plan."
 
-            audio_assets.append(str(corr_wav))
-            messages.append({"role": "assistant", "content": "Listening to the corrected preset."})
-            _corr_render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(corr_wav)))
-            messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
-            _emit_listen_sequence(
-                messages, audio_assets, corr_wav,
-                listen_text="Reading corrected audio.",
-            )
-            last_batch_audio = corr_wav
-            pending_check = f"The {b.subsystem} region now sits back in line with the plan."
-
-            batch_labels.append({
-                "index": len(batch_labels),
-                "subsystem": "correction",
-                "param_names": [b.mistake["param"]],
-                "clap_score_after_batch": corr_clap,
-                "is_correction": True,
-            })
+                batch_labels.append({
+                    "index": len(batch_labels),
+                    "subsystem": "correction",
+                    "param_names": [m.param for m in fixing_now],
+                    "correction_turn": correction_turn,
+                    "mistakes_fixed": [{"param": m.param, "kind": m.kind, "magnitude": round(m.magnitude, 4)} for m in fixing_now],
+                    "mistakes_remaining": len(unfixed),
+                    "clap_score_after_batch": corr_clap,
+                    "is_correction": True,
+                })
 
     if _diagnosis_text:
         messages.append({"role": "assistant", "content": _diagnosis_text})
@@ -1342,7 +1384,7 @@ def build_record(
 
     # ---- Record assembly ----
     diagnosis_subs_mentioned = extract_diagnosis_subsystems_mentioned(diagnosis_text)
-    mistake_caught = injected_mistake is not None
+    mistake_caught = bool(all_injected_mistakes)
 
     record = {
         "id": sample_id,
@@ -1381,15 +1423,20 @@ def build_record(
             "num_agents": int(args.num_agents),
             "pool_top_k": int(args.pool_top_k),
             "max_batches": int(args.max_batches),
-            "mistake_rate": float(args.mistake_rate),
+            "per_param_mistake_rate": float(_per_param_rate),
             "commentary_mode": "two_stage",
             "path_complete": path_complete,
             "n_remaining": final_gap["n_remaining"] if final_gap else 0,
             "batch_labels": batch_labels,
             "diagnosis_subsystems_mentioned": diagnosis_subs_mentioned,
             "diagnosis_subsystems_truth": subsystems_truth,
-            "injected_mistake": injected_mistake,
-            "mistake_caught": mistake_caught if injected_mistake else None,
+            "injected_mistakes": [
+                {"param": m.param, "kind": m.kind, "wrong_value": round(m.wrong_value, 4),
+                 "true_value": round(m.true_value, 4), "magnitude": round(m.magnitude, 4)}
+                for m in all_injected_mistakes
+            ],
+            "total_correction_turns": total_correction_turns,
+            "mistake_caught": mistake_caught,
             "transcription_output_file": _trans_output_file,
             "random_init": use_random_init,
         },
@@ -1429,7 +1476,12 @@ def main() -> None:
                     help="Reduced from 0.30 — real CLAP thresholding causes natural misses.")
     ap.add_argument("--no-audio-rate", type=float, default=0.05)
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
-    ap.add_argument("--mistake-rate", type=float, default=0.20)
+    ap.add_argument("--per-param-mistake-rate", type=float, default=0.10,
+        help="Independent per-param mistake probability (default 0.10).")
+    ap.add_argument("--mistake-rate", type=float, default=None,
+        help="Deprecated alias for --per-param-mistake-rate.")
+    ap.add_argument("--max-correction-turns", type=int, default=3,
+        help="Max correction iterations per mistaken batch (default 3).")
     ap.add_argument("--transcription-mistake-rate", type=float, default=0.15)
     ap.add_argument("--random-init-rate", type=float, default=0.0,
         help="Fraction of samples starting from a random same-archetype preset instead of factory default.")
@@ -1441,6 +1493,12 @@ def main() -> None:
     ap.add_argument("--stage2-model", default="")
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args()
+
+    if args.mistake_rate is not None:
+        import warnings
+        warnings.warn("--mistake-rate is deprecated, use --per-param-mistake-rate", DeprecationWarning)
+        if args.per_param_mistake_rate == 0.10:
+            args.per_param_mistake_rate = args.mistake_rate
 
     stage2_server = args.stage2_server or args.omni_server
     stage2_model = args.stage2_model or args.omni_model

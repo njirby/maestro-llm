@@ -175,7 +175,7 @@ _V3_TOOL_SPECS = json.dumps(
     ensure_ascii=False,
 )
 from maestro.synth import path_gen as _pg
-from maestro.synth.path_gen import _denormalize, _normalize, _param_family
+from maestro.synth.path_gen import PARAM_RANGES, _denormalize, _normalize, _param_family
 from maestro.synth.preset_gen import generate_preset
 
 
@@ -200,6 +200,13 @@ _FAM_TO_SUBSYSTEM: dict[str, str] = {}
 for _label, _fams in SUBSYSTEM_ORDER:
     for _f in _fams:
         _FAM_TO_SUBSYSTEM[_f] = _label
+
+
+SUBSYSTEM_PARAM_POOL: dict[str, list[str]] = {}
+for _pk in PARAM_RANGES:
+    _sub = _FAM_TO_SUBSYSTEM.get(_param_family(_pk), "macro")
+    if _pk in _JSON_KEY_TO_REAPER:
+        SUBSYSTEM_PARAM_POOL.setdefault(_sub, []).append(_pk)
 
 
 def presentation_subsystem(fam: str) -> str:
@@ -272,13 +279,22 @@ def _batch_search_queries(
 
 
 @dataclass
+class MistakeInfo:
+    param: str
+    kind: str          # "overshoot" | "undershoot" | "omission" | "spurious"
+    wrong_value: float
+    true_value: float
+    magnitude: float   # abs(wrong - true) normalized
+
+
+@dataclass
 class SubsystemBatch:
     subsystem: str                      # presentation label: "oscillator", "filter", ...
     params: dict[str, float]            # {name: target_norm}  (always GT truth)
     params_applied: dict[str, float]    # {name: applied_norm} (= params unless mistake injected)
     is_correction: bool = False
     audio_wav: Path | None = None       # rendered per-batch audio
-    mistake: dict | None = None         # {"name": str, "wrong_value": float, "true_value": float}
+    mistakes: list[MistakeInfo] | None = None
 
 
 def build_batches_from_diff(
@@ -313,44 +329,151 @@ def build_batches_from_diff(
     return batches
 
 
+def inject_mistakes(
+    batches: list[SubsystemBatch],
+    rng: "random.Random",
+    per_param_rate: float = 0.10,
+    max_mistakes_per_batch: int = 3,
+    max_mistakes_total: int = 4,
+    init_preset_settings: dict | None = None,
+) -> list[MistakeInfo]:
+    """Independently roll each param in each batch for a mistake.
+
+    Mistake types: overshoot, undershoot, omission, spurious addition.
+    Mutates ``batch.params_applied`` and ``batch.mistakes`` in place.
+    Returns flat list of all MistakeInfo across all batches.
+    """
+    if not batches:
+        return []
+    init_s = init_preset_settings or {}
+    all_batch_params: set[str] = set()
+    for b in batches:
+        all_batch_params.update(b.params.keys())
+
+    all_mistakes: list[MistakeInfo] = []
+    _KINDS = ["overshoot", "undershoot", "omission", "spurious"]
+    _WEIGHTS = [0.35, 0.30, 0.20, 0.15]
+
+    for b in batches:
+        if len(b.params) < 2:
+            continue
+        batch_mistakes: list[MistakeInfo] = []
+        sorted_keys = sorted(b.params.keys())
+
+        for param_name in sorted_keys:
+            if len(all_mistakes) + len(batch_mistakes) >= max_mistakes_total:
+                break
+            if len(batch_mistakes) >= max_mistakes_per_batch:
+                break
+            if rng.random() >= per_param_rate:
+                continue
+
+            true_norm = b.params[param_name]
+            kind = rng.choices(_KINDS, weights=_WEIGHTS, k=1)[0]
+            magnitude = rng.uniform(0.03, 0.50)
+
+            if kind == "overshoot":
+                direction = 1.0 if true_norm < 0.5 else -1.0
+                wrong_norm = max(0.0, min(1.0, true_norm + direction * magnitude))
+                actual_mag = abs(wrong_norm - true_norm)
+                if actual_mag < 0.03:
+                    continue
+                b.params_applied[param_name] = wrong_norm
+                batch_mistakes.append(MistakeInfo(
+                    param=param_name, kind="overshoot",
+                    wrong_value=wrong_norm, true_value=true_norm,
+                    magnitude=actual_mag,
+                ))
+
+            elif kind == "undershoot":
+                init_native = init_s.get(param_name)
+                init_norm = _normalize(param_name, init_native) if init_native is not None else 0.0
+                if init_norm is None:
+                    init_norm = 0.0
+                span = true_norm - init_norm
+                if abs(span) < 0.05:
+                    continue
+                fraction = 1.0 - rng.uniform(0.10, 0.60)
+                wrong_norm = init_norm + fraction * span
+                wrong_norm = max(0.0, min(1.0, wrong_norm))
+                actual_mag = abs(wrong_norm - true_norm)
+                if actual_mag < 0.03:
+                    continue
+                b.params_applied[param_name] = wrong_norm
+                batch_mistakes.append(MistakeInfo(
+                    param=param_name, kind="undershoot",
+                    wrong_value=wrong_norm, true_value=true_norm,
+                    magnitude=actual_mag,
+                ))
+
+            elif kind == "omission":
+                del b.params_applied[param_name]
+                init_native = init_s.get(param_name)
+                current_norm = _normalize(param_name, init_native) if init_native is not None else 0.0
+                if current_norm is None:
+                    current_norm = 0.0
+                actual_mag = abs(current_norm - true_norm)
+                if actual_mag < 0.03:
+                    b.params_applied[param_name] = true_norm
+                    continue
+                batch_mistakes.append(MistakeInfo(
+                    param=param_name, kind="omission",
+                    wrong_value=current_norm, true_value=true_norm,
+                    magnitude=actual_mag,
+                ))
+
+            elif kind == "spurious":
+                pool = SUBSYSTEM_PARAM_POOL.get(b.subsystem, [])
+                candidates = [p for p in pool if p not in all_batch_params and p not in b.params_applied]
+                if not candidates:
+                    continue
+                spur_param = rng.choice(candidates)
+                spur_init_native = init_s.get(spur_param)
+                spur_init_norm = _normalize(spur_param, spur_init_native) if spur_init_native is not None else 0.5
+                if spur_init_norm is None:
+                    spur_init_norm = 0.5
+                spur_direction = rng.choice([-1.0, 1.0])
+                spur_wrong = max(0.0, min(1.0, spur_init_norm + spur_direction * magnitude))
+                actual_mag = abs(spur_wrong - spur_init_norm)
+                if actual_mag < 0.03:
+                    continue
+                b.params_applied[spur_param] = spur_wrong
+                all_batch_params.add(spur_param)
+                batch_mistakes.append(MistakeInfo(
+                    param=spur_param, kind="spurious",
+                    wrong_value=spur_wrong, true_value=spur_init_norm,
+                    magnitude=actual_mag,
+                ))
+
+        if batch_mistakes:
+            b.mistakes = batch_mistakes
+            all_mistakes.extend(batch_mistakes)
+
+    return all_mistakes
+
+
 def inject_mistake(
     batches: list[SubsystemBatch],
     rng: "random.Random",
     mistake_rate: float = 0.20,
 ) -> dict | None:
-    """With probability ``mistake_rate``, pick one param in one batch and overshoot it.
-
-    Mutates ``batch.params_applied`` in place.  Returns a mistake-info dict
-    ``{batch_index, subsystem, param, wrong_value, true_value}`` or None.
-    """
-    import random as _random
-    if not batches or rng.random() >= mistake_rate:
+    """Deprecated: use inject_mistakes(). Kept for backward compatibility."""
+    import warnings
+    warnings.warn("inject_mistake() is deprecated, use inject_mistakes()", DeprecationWarning, stacklevel=2)
+    results = inject_mistakes(batches, rng, per_param_rate=mistake_rate, max_mistakes_total=1)
+    if not results:
         return None
-    # Pick a batch with enough params to make the mistake meaningful.
-    eligible = [(i, b) for i, b in enumerate(batches) if len(b.params) >= 2]
-    if not eligible:
-        return None
-    bi, batch = rng.choice(eligible)
-    param_name = rng.choice(sorted(batch.params.keys()))
-    true_norm = batch.params[param_name]
-
-    # Overshoot: push away from target by ≥0.20 norm.
-    direction = 1.0 if true_norm < 0.5 else -1.0
-    wrong_norm = true_norm + direction * rng.uniform(0.25, 0.50)
-    wrong_norm = max(0.0, min(1.0, wrong_norm))
-    if abs(wrong_norm - true_norm) < 0.20:
-        return None  # clamping collapsed the gap; skip
-
-    batch.params_applied[param_name] = wrong_norm
-    info = {
-        "batch_index": bi,
-        "subsystem": batch.subsystem,
-        "param": param_name,
-        "wrong_value": float(wrong_norm),
-        "true_value": float(true_norm),
-    }
-    batch.mistake = info
-    return info
+    m = results[0]
+    for b in batches:
+        if b.mistakes:
+            return {
+                "batch_index": batches.index(b),
+                "subsystem": b.subsystem,
+                "param": m.param,
+                "wrong_value": m.wrong_value,
+                "true_value": m.true_value,
+            }
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -690,21 +813,31 @@ def _humanize_param_name(p: str) -> str:
 
 
 def _format_param_deltas(
-    param_before_after: list[tuple[str, float, float]], max_rows: int = 10
+    param_before_after: list[tuple], max_rows: int = 10
 ) -> str:
     """Format param deltas for the batch-check prompt.
 
-    Shows each param as 'name: before → after' with a direction word appended.
-    Numbers are included so the model can judge magnitude, but the prompt
-    forbids echoing them in the output.
+    Each element is (name, before, after) or (name, before, after, tag) where
+    tag is None, "omitted", or "spurious".
     """
     rows: list[str] = []
-    for name, before, after in param_before_after[:max_rows]:
+    for entry in param_before_after[:max_rows]:
+        name, before, after = entry[0], entry[1], entry[2]
+        tag = entry[3] if len(entry) > 3 else None
         try:
             before_f = float(before) if before is not None else None
             after_f = float(after) if after is not None else None
         except (TypeError, ValueError):
             before_f, after_f = None, None
+        if tag == "omitted":
+            bstr = f"{before_f:.3f}" if before_f is not None else "?"
+            rows.append(f"  - {_humanize_param_name(name)}: {bstr} → {bstr} (planned but not applied)")
+            continue
+        if tag == "spurious":
+            bstr = f"{before_f:.3f}" if before_f is not None else "?"
+            astr = f"{after_f:.3f}" if after_f is not None else "?"
+            rows.append(f"  - {_humanize_param_name(name)}: {bstr} → {astr} (unplanned change)")
+            continue
         direction = ""
         if before_f is not None and after_f is not None:
             if abs(after_f - before_f) < 1e-6:
@@ -796,27 +929,56 @@ def stage2_batch_check(
 
 def stage2_correction_intro(
     subsystem: str,
-    param_display_names: list[str],
-    mistake_info: dict | None,
-    archetype: str,
-    stage2_server: str,
-    stage2_model: str,
+    mistakes_being_fixed: list[MistakeInfo] | None = None,
+    remaining_mistakes: list[MistakeInfo] | None = None,
+    archetype: str = "",
+    stage2_server: str = "",
+    stage2_model: str = "",
+    *,
+    param_display_names: list[str] | None = None,
+    mistake_info: dict | None = None,
 ) -> str:
-    """Stage 2: one sentence naming the overshoot and announcing the fix."""
-    if mistake_info:
+    """One sentence naming the mistake(s) and announcing the fix.
+
+    Supports both new MistakeInfo list interface and legacy dict interface.
+    """
+    # Legacy compat: if called with old-style dict, adapt
+    if mistake_info is not None and mistakes_being_fixed is None:
         disp = _json_key_to_display(mistake_info["param"])
         direction = "too far" if abs(mistake_info["wrong_value"]) > abs(mistake_info["true_value"]) else "off target"
-        gist = f"{disp} was set {direction} during the earlier {mistake_info['subsystem']} batch"
+        gist = f"{disp} was set {direction} during the earlier {mistake_info.get('subsystem', subsystem)} batch"
+        params_str = ", ".join((param_display_names or [])[:3]) or "several parameters"
+        prompt = (
+            f"You are a music production AI. A previous edit overshot: {gist}. "
+            f"Now correcting {params_str} back to the planned target values.\n\n"
+            f"Write EXACTLY ONE sentence announcing the correction, naming the subsystem and "
+            f"the direction of the overshoot. Natural language, under 30 words, no snake_case, "
+            f"no **bold**."
+        )
     else:
-        gist = f"values from an earlier batch need correction in {subsystem}"
-    params_str = ", ".join(param_display_names[:3]) or "several parameters"
-    prompt = (
-        f"You are a music production AI. A previous edit overshot: {gist}. "
-        f"Now correcting {params_str} back to the planned target values.\n\n"
-        f"Write EXACTLY ONE sentence announcing the correction, naming the subsystem and "
-        f"the direction of the overshoot. Natural language, under 30 words, no snake_case, "
-        f"no **bold**."
-    )
+        fixing = mistakes_being_fixed or []
+        remaining = remaining_mistakes or []
+        _KIND_GIST = {
+            "overshoot": "was pushed too far",
+            "undershoot": "didn't go far enough",
+            "omission": "was accidentally left out",
+            "spurious": "was changed but shouldn't have been",
+        }
+        gist_parts = []
+        for m in fixing:
+            disp = _json_key_to_display(m.param)
+            gist_parts.append(f"{disp} {_KIND_GIST.get(m.kind, 'needs correction')}")
+        gist = "; ".join(gist_parts) if gist_parts else f"values in {subsystem} need correction"
+        remaining_hint = f" {len(remaining)} other issue(s) may still need attention." if remaining else ""
+        params_str = ", ".join(_json_key_to_display(m.param) for m in fixing[:3]) or "several parameters"
+        prompt = (
+            f"You are a music production AI. Issues after a {subsystem} edit: {gist}. "
+            f"Now correcting {params_str} back to the planned target values.{remaining_hint}\n\n"
+            f"Write EXACTLY ONE sentence announcing the correction. Name the issue type "
+            f"(overshot, undershot, missed, or unneeded change) and the subsystem. "
+            f"Natural language, under 30 words, no snake_case, no **bold**."
+        )
+
     try:
         r = _llm_post(
             f"{stage2_server}/v1/chat/completions",
@@ -830,7 +992,7 @@ def stage2_correction_intro(
         )
         return r["choices"][0]["message"]["content"].strip().split("\n")[0]
     except Exception:
-        return f"Overshot on {subsystem} — backing off {params_str} to the planned values."
+        return f"Noticed issues in {subsystem} — correcting {params_str} to the planned values."
 
 
 def stage2_verdict(
@@ -1121,8 +1283,9 @@ def build_record(
                 "batch_labels": [],
                 "diagnosis_subsystems_mentioned": [],
                 "diagnosis_subsystems_truth": [],
-                "injected_mistake": None,
-                "mistake_caught": None,
+                "injected_mistakes": [],
+                "total_correction_turns": 0,
+                "mistake_caught": False,
                 "injected_code_mistake": None,
                 "path_complete": False,
                 "n_remaining": 0,
@@ -1130,7 +1293,7 @@ def build_record(
                 "num_agents": int(args.num_agents),
                 "pool_top_k": int(args.pool_top_k),
                 "max_batches": int(args.max_batches),
-                "mistake_rate": float(args.mistake_rate),
+                "per_param_mistake_rate": float(getattr(args, "per_param_mistake_rate", 0.10) or 0.10),
             },
         }
         assert_valid_ms_swift_multiturn_record(record)
@@ -1898,11 +2061,19 @@ def build_record(
         if key in target_preset.get("settings", {}):
             cumulative["settings"][key] = copy.deepcopy(target_preset["settings"][key])
 
-    # Inject a mistake (~20% of samples, seeded by sample_id).
+    # Inject mistakes (per-param independent rolls, seeded by sample_id).
     import random as _random
     sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
     mistake_rng = _random.Random(int(args.seed) + sid_seed)
-    injected_mistake = inject_mistake(batches, mistake_rng, args.mistake_rate)
+    _per_param_rate = getattr(args, "per_param_mistake_rate", None)
+    if _per_param_rate is None:
+        _per_param_rate = getattr(args, "mistake_rate", 0.10)
+    all_injected_mistakes = inject_mistakes(
+        batches, mistake_rng,
+        per_param_rate=_per_param_rate,
+        init_preset_settings=init_preset.get("settings", {}),
+    )
+    total_correction_turns = 0
 
     batch_labels: list[dict] = []
     prior_checks: list[str] = []
@@ -1920,7 +2091,7 @@ def build_record(
         # the perceptual change in Stage 2 narration.
         batch_before_values: dict[str, float] = {
             name: float(cumulative["settings"].get(name, 0.0) or 0.0)
-            for name in b.params_applied
+            for name in set(b.params.keys()) | set(b.params_applied.keys())
         }
         # Apply batch params to cumulative (uses params_applied which may contain mistake)
         for name, norm in b.params_applied.items():
@@ -2008,10 +2179,15 @@ def build_record(
 
         if args.omni_server:
             plan_bullet = _extract_plan_bullet(diagnosis_text, b.subsystem)
-            param_deltas: list[tuple[str, float, float]] = [
-                (name, batch_before_values.get(name, 0.0), float(cumulative["settings"].get(name, 0.0) or 0.0))
-                for name in sorted(b.params_applied.keys())
-            ]
+            _mistake_map = {m.param: m for m in (b.mistakes or [])}
+            _all_delta_names = sorted(set(b.params.keys()) | set(b.params_applied.keys()))
+            param_deltas: list[tuple] = []
+            for _dn in _all_delta_names:
+                _bv = batch_before_values.get(_dn, 0.0)
+                _av = float(cumulative["settings"].get(_dn, 0.0) or 0.0)
+                _dm = _mistake_map.get(_dn)
+                _tag = _dm.kind if _dm and _dm.kind in ("omission", "spurious") else None
+                param_deltas.append((_dn, _bv, _av, _tag))
             _ot = _time.monotonic()
             check_sentence = stage2_batch_check(
                 subsystem=b.subsystem,
@@ -2021,7 +2197,7 @@ def build_record(
                 archetype=archetype,
                 stage2_server=stage2_server,
                 stage2_model=stage2_model,
-                is_final=is_last and not b.mistake,
+                is_final=is_last and not b.mistakes,
                 n_params_applied=len(b.params),
             )
             _log(f"  batch {bi}/{len(batches)-1} ({b.subsystem}) omni {_time.monotonic()-_ot:.1f}s")
@@ -2038,71 +2214,96 @@ def build_record(
             "is_correction": False,
         })
 
-        # ---- INLINE CORRECTION (immediately after the mistaken batch) ----
-        if b.mistake:
-            # Fix the mistake param back to its true value
-            true_norm = b.mistake["true_value"]
-            corr_native = _denormalize(b.mistake["param"], true_norm)
-            cumulative["settings"][b.mistake["param"]] = corr_native
-            cumulative_native_overrides[b.mistake["param"]] = corr_native
+        # ---- ITERATIVE CORRECTION (after a batch with mistakes) ----
+        if b.mistakes:
+            unfixed = list(b.mistakes)
+            correction_turn = 0
+            max_corr = getattr(args, "max_correction_turns", 3)
 
-            corr_wav = batch_audio_dir / f"batch_{bi}_correction.wav"
-            render_cumulative_audio(cumulative, notes, corr_wav)
-            with serial_lock:
-                try:
-                    corr_clap = float(embedder.cosine_paths(corr_wav, target_audio_path))
-                except Exception:
-                    corr_clap = None
+            while unfixed and correction_turn < max_corr:
+                correction_turn += 1
+                total_correction_turns += 1
 
-            disp = _json_key_to_display(b.mistake["param"])
-            corr_prefix = f"{pending_check}\n\n" if pending_check else ""
-            pending_check = None
-            if args.omni_server:
-                corr_intro = corr_prefix + stage2_correction_intro(
-                    subsystem=b.subsystem,
-                    param_display_names=[disp],
-                    mistake_info=b.mistake,
-                    archetype=archetype,
-                    stage2_server=stage2_server,
-                    stage2_model=stage2_model,
+                unfixed.sort(key=lambda m: m.magnitude, reverse=True)
+                if len(unfixed) >= 3 and correction_turn == 1:
+                    n_fix = 1
+                elif len(unfixed) >= 2:
+                    n_fix = mistake_rng.choice([1, 2])
+                else:
+                    n_fix = 1
+                fixing_now = [unfixed.pop(0) for _ in range(n_fix)]
+
+                for m in fixing_now:
+                    corr_native = _denormalize(m.param, m.true_value)
+                    cumulative["settings"][m.param] = corr_native
+                    cumulative_native_overrides[m.param] = corr_native
+
+                corr_wav = batch_audio_dir / f"batch_{bi}_correction_{correction_turn}.wav"
+                render_cumulative_audio(cumulative, notes, corr_wav)
+                with serial_lock:
+                    try:
+                        corr_clap = float(embedder.cosine_paths(corr_wav, target_audio_path))
+                    except Exception:
+                        corr_clap = None
+
+                corr_prefix = f"{pending_check}\n\n" if pending_check else ""
+                pending_check = None
+                if args.omni_server:
+                    corr_intro = corr_prefix + stage2_correction_intro(
+                        subsystem=b.subsystem,
+                        mistakes_being_fixed=fixing_now,
+                        remaining_mistakes=unfixed,
+                        archetype=archetype,
+                        stage2_server=stage2_server,
+                        stage2_model=stage2_model,
+                    )
+                else:
+                    fix_desc = ", ".join(_json_key_to_display(m.param) for m in fixing_now)
+                    corr_intro = f"{corr_prefix}Noticed issues in {b.subsystem} — correcting {fix_desc}."
+                messages.append({"role": "assistant", "content": corr_intro})
+
+                corr_by_idx: dict[int, float] = {}
+                for m in fixing_now:
+                    corr_idx = _JSON_KEY_TO_REAPER.get(m.param, {}).get("idx")
+                    if corr_idx is not None:
+                        corr_by_idx[corr_idx] = float(m.true_value)
+                        current_reaper_values[corr_idx] = float(m.true_value)
+
+                if corr_by_idx:
+                    messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_by_idx)}))
+                    _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_by_idx)}) + "\n"
+                    messages.append(_bash_tool_response(_corr_stdout))
+                else:
+                    messages.append(_tool_call("Bash", {"command": "echo 'no matching REAPER param'"}))
+                    messages.append(_bash_tool_response("no matching REAPER param\n"))
+
+                audio_assets.append(str(corr_wav))
+                messages.append({"role": "assistant", "content": "Listening to the corrected preset."})
+                _corr_render_cmd = _wrap_as_bash(build_reaper_render_snippet(
+                    out_path=str(corr_wav),
+                ))
+                messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
+                _emit_listen_sequence(
+                    messages, audio_assets, corr_wav,
+                    listen_text="Listening to the corrected preset.",
                 )
-            else:
-                corr_intro = f"{corr_prefix}Overshot on {b.subsystem} — backing off {disp} to the planned value."
-            messages.append({"role": "assistant", "content": corr_intro})
+                last_batch_audio = corr_wav
 
-            corr_param_key = b.mistake["param"]
-            corr_idx = _JSON_KEY_TO_REAPER.get(corr_param_key, {}).get("idx")
-            if corr_idx is not None:
-                corr_by_idx = {corr_idx: float(true_norm)}
-                messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_by_idx)}))
-                _corr_stdout = json.dumps({"status": "ok", "applied": 1}) + "\n"
-                messages.append(_bash_tool_response(_corr_stdout))
-                current_reaper_values[corr_idx] = float(true_norm)
-            else:
-                corr_by_idx = {}
-                messages.append(_tool_call("Bash", {"command": "echo 'no matching REAPER param'"}))
-                messages.append(_bash_tool_response("no matching REAPER param\n"))
+                if unfixed:
+                    pending_check = f"Improved {b.subsystem}, but something still sounds off — listening again."
+                else:
+                    pending_check = f"The {b.subsystem} region now sits back in line with the plan."
 
-            audio_assets.append(str(corr_wav))
-            messages.append({"role": "assistant", "content": "Listening to the corrected preset."})
-            _corr_render_cmd = _wrap_as_bash(build_reaper_render_snippet(
-                out_path=str(corr_wav),
-            ))
-            messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
-            _emit_listen_sequence(
-                messages, audio_assets, corr_wav,
-                listen_text="Listening to the corrected preset.",
-            )
-            last_batch_audio = corr_wav
-            pending_check = f"The {b.subsystem} region now sits back in line with the plan."
-
-            batch_labels.append({
-                "index": len(batch_labels),
-                "subsystem": "correction",
-                "param_names": [b.mistake["param"]],
-                "clap_score_after_batch": corr_clap,
-                "is_correction": True,
-            })
+                batch_labels.append({
+                    "index": len(batch_labels),
+                    "subsystem": "correction",
+                    "param_names": [m.param for m in fixing_now],
+                    "correction_turn": correction_turn,
+                    "mistakes_fixed": [{"param": m.param, "kind": m.kind, "magnitude": round(m.magnitude, 4)} for m in fixing_now],
+                    "mistakes_remaining": len(unfixed),
+                    "clap_score_after_batch": corr_clap,
+                    "is_correction": True,
+                })
 
     # If no batches, flush diagnosis
     if _diagnosis_text:
@@ -2153,7 +2354,7 @@ def build_record(
 
     # ---- Record assembly ----
     diagnosis_subs_mentioned = extract_diagnosis_subsystems_mentioned(diagnosis_text)
-    mistake_caught = injected_mistake is not None  # inline correction always emitted
+    mistake_caught = bool(all_injected_mistakes)
 
     record = {
         "id": sample_id,
@@ -2193,15 +2394,20 @@ def build_record(
             "num_agents": int(args.num_agents),
             "pool_top_k": int(args.pool_top_k),
             "max_batches": int(args.max_batches),
-            "mistake_rate": float(args.mistake_rate),
+            "per_param_mistake_rate": float(_per_param_rate),
             "commentary_mode": "two_stage",
             "path_complete": path_complete,
             "n_remaining": final_gap["n_remaining"] if final_gap else 0,
             "batch_labels": batch_labels,
             "diagnosis_subsystems_mentioned": diagnosis_subs_mentioned,
             "diagnosis_subsystems_truth": subsystems_truth,
-            "injected_mistake": injected_mistake,
-            "mistake_caught": mistake_caught if injected_mistake else None,
+            "injected_mistakes": [
+                {"param": m.param, "kind": m.kind, "wrong_value": round(m.wrong_value, 4),
+                 "true_value": round(m.true_value, 4), "magnitude": round(m.magnitude, 4)}
+                for m in all_injected_mistakes
+            ],
+            "total_correction_turns": total_correction_turns,
+            "mistake_caught": mistake_caught,
             "transcription_output_file": _trans_output_file,
             "injected_code_mistake": _code_mistake_info,
             "random_init": use_random_init,
@@ -2244,8 +2450,13 @@ def main() -> None:
              "to recognise the missing attachment instead of proceeding with a fabricated target.")
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
 
-    ap.add_argument("--mistake-rate", type=float, default=0.20,
-        help="Probability of injecting one deliberate overshoot per sample (default 0.20).")
+    ap.add_argument("--per-param-mistake-rate", type=float, default=0.10,
+        help="Independent per-param mistake probability (default 0.10). "
+             "With 8 params per batch, expect ~1 mistake per batch on average.")
+    ap.add_argument("--mistake-rate", type=float, default=None,
+        help="Deprecated alias for --per-param-mistake-rate.")
+    ap.add_argument("--max-correction-turns", type=int, default=3,
+        help="Max correction iterations per mistaken batch (default 3).")
     ap.add_argument("--code-mistake-rate", type=float, default=0.10,
         help="Probability of injecting a code mistake (real traceback) per sample (default 0.10).")
     ap.add_argument("--random-init-rate", type=float, default=0.0,
@@ -2258,6 +2469,13 @@ def main() -> None:
     ap.add_argument("--stage2-model", default="", help="Stage 2 model name (defaults to --omni-model).")
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args()
+
+    # Deprecation mapping: --mistake-rate → --per-param-mistake-rate
+    if args.mistake_rate is not None:
+        import warnings
+        warnings.warn("--mistake-rate is deprecated, use --per-param-mistake-rate", DeprecationWarning)
+        if args.per_param_mistake_rate == 0.10:  # still at default
+            args.per_param_mistake_rate = args.mistake_rate
 
     stage2_server = args.stage2_server or args.omni_server
     stage2_model = args.stage2_model or args.omni_model

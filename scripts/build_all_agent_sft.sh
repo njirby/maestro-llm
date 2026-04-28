@@ -59,7 +59,7 @@ SUFFIX="v20"
 MAX_SAMPLES=8
 NUM_AGENTS=4              # search slices per sample (also judge pool simulation)
 MAX_BATCHES=16            # main agent — subsystem batches per record
-MISTAKE_RATE=0.20         # main agent — parameter overshoot rate
+MISTAKE_RATE=0.10         # main agent — per-param mistake probability
 TRANSCR_MISTAKE_RATE=0.15 # main agent — transcription mistake rate
 CODE_MISTAKE_RATE=0.10    # main + search — code mistake injection rate
 RANDOM_INIT_RATE=0.0      # main — fraction of samples starting from random preset
@@ -115,7 +115,7 @@ Build params
   --max-samples N                 ($MAX_SAMPLES)
   --num-agents N                  ($NUM_AGENTS) — search slices / judge pool sim
   --max-batches N                 ($MAX_BATCHES) — main agent subsystem batches
-  --mistake-rate F                ($MISTAKE_RATE) — main agent param overshoot
+  --per-param-mistake-rate F      ($MISTAKE_RATE) — per-param mistake probability
   --transcription-mistake-rate F  ($TRANSCR_MISTAKE_RATE)
   --code-mistake-rate F           ($CODE_MISTAKE_RATE)
   --random-init-rate F            ($RANDOM_INIT_RATE) — random starting preset
@@ -168,7 +168,7 @@ while [[ $# -gt 0 ]]; do
     --max-samples)                    MAX_SAMPLES="$2"; shift 2 ;;
     --num-agents)                     NUM_AGENTS="$2"; shift 2 ;;
     --max-batches)                    MAX_BATCHES="$2"; shift 2 ;;
-    --mistake-rate)                   MISTAKE_RATE="$2"; shift 2 ;;
+    --per-param-mistake-rate|--mistake-rate)  MISTAKE_RATE="$2"; shift 2 ;;
     --transcription-mistake-rate)     TRANSCR_MISTAKE_RATE="$2"; shift 2 ;;
     --code-mistake-rate)              CODE_MISTAKE_RATE="$2"; shift 2 ;;
     --random-init-rate)               RANDOM_INIT_RATE="$2"; shift 2 ;;
@@ -220,7 +220,7 @@ echo "  omni:                       $OMNI_URL ($OMNI_MODEL)"
 echo "  max-samples:                $MAX_SAMPLES"
 echo "  num-agents:                 $NUM_AGENTS"
 echo "  max-batches:                $MAX_BATCHES"
-echo "  mistake-rate:               $MISTAKE_RATE"
+echo "  per-param-mistake-rate:     $MISTAKE_RATE"
 echo "  transcription-mistake-rate: $TRANSCR_MISTAKE_RATE"
 echo "  code-mistake-rate:          $CODE_MISTAKE_RATE"
 echo "  random-init-rate:           $RANDOM_INIT_RATE"
@@ -256,7 +256,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
         --out-dir "$OUT_DIR" --suffix "$SUFFIX" \
         --max-samples "$MAX_SAMPLES" --max-batches "$MAX_BATCHES" \
         --num-agents "$NUM_AGENTS" \
-        --mistake-rate "$MISTAKE_RATE" \
+        --per-param-mistake-rate "$MISTAKE_RATE" \
         --transcription-mistake-rate "$TRANSCR_MISTAKE_RATE" \
         --force-research-rate "$FORCE_RESEARCH_RATE" \
         --random-init-rate "$RANDOM_INIT_RATE" \
@@ -310,7 +310,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
           --out-jsonl "$OUT_MAIN" \
           --max-samples "$MAX_SAMPLES" --max-batches "$MAX_BATCHES" \
           --num-agents "$NUM_AGENTS" \
-          --mistake-rate "$MISTAKE_RATE" \
+          --per-param-mistake-rate "$MISTAKE_RATE" \
           --code-mistake-rate "$CODE_MISTAKE_RATE" \
           --random-init-rate "$RANDOM_INIT_RATE" \
           --force-research-rate "$FORCE_RESEARCH_RATE" \
