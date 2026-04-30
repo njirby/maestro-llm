@@ -651,37 +651,77 @@ def _emit_listen_sequence(
 # ---------------------------------------------------------------------------
 
 def build_list_wavetables_total_snippet() -> str:
-    """Inline snippet that prints the total count of unique wavetables."""
+    """Inline Python that scans Vital's data dirs and prints wavetable count."""
     return (
-        "import json\n"
-        'lib = json.load(open("data/wavetable_lib.json"))\n'
-        "seen, names = set(), []\n"
-        "for wt in lib:\n"
-        '    n = wt.get("name", "")\n'
-        "    if n and n not in seen:\n"
-        "        seen.add(n)\n"
-        "        names.append(n)\n"
-        'print(json.dumps({"total": len(names)}))'
+        "import json, os, glob\n"
+        "_VITAL_DIRS = [os.path.expanduser('~/.local/share/vital'), "
+        "os.path.expanduser('~/Library/Application Support/Vital')]\n"
+        "_seen, _count = set(), 0\n"
+        "for _vd in _VITAL_DIRS:\n"
+        "    if not os.path.isdir(_vd): continue\n"
+        "    for _vt in sorted(glob.glob(os.path.join(_vd, '**', '*.vitaltable'), recursive=True)):\n"
+        "        try:\n"
+        "            _w = json.load(open(_vt)); _n = _w.get('name','')\n"
+        "            if _n and _n not in _seen and 'groups' in _w: _seen.add(_n); _count += 1\n"
+        "        except: pass\n"
+        "    for _vp in sorted(glob.glob(os.path.join(_vd, '**', '*.vital'), recursive=True)):\n"
+        "        try:\n"
+        "            for _w in json.load(open(_vp)).get('settings',{}).get('wavetables',[]):\n"
+        "                _n = _w.get('name','') if isinstance(_w,dict) else ''\n"
+        "                if _n and _n not in _seen and 'groups' in _w: _seen.add(_n); _count += 1\n"
+        "        except: pass\n"
+        "print(json.dumps({'total': _count}))\n"
     )
 
 
 def build_list_wavetables_slice_snippet(start: int, end: int) -> str:
-    """Inline snippet that lists wavetable names in an index range."""
+    """Inline Python that scans Vital's data dirs and prints wavetable names in a range."""
     return (
-        "import json\n"
-        'lib = json.load(open("data/wavetable_lib.json"))\n'
-        "seen, names = set(), []\n"
-        "for wt in lib:\n"
-        '    n = wt.get("name", "")\n'
-        "    if n and n not in seen:\n"
-        "        seen.add(n)\n"
-        "        names.append(n)\n"
-        f"start, end = {start}, min({end}, len(names))\n"
-        "rows = [{\"idx\": i, \"name\": names[i]} for i in range(start, end)]\n"
-        'print(json.dumps({"wavetables": rows, "start": start, "end": end, '
-        '"count": len(rows), "total": len(names)}))'
+        "import json, os, glob\n"
+        "_VITAL_DIRS = [os.path.expanduser('~/.local/share/vital'), "
+        "os.path.expanduser('~/Library/Application Support/Vital')]\n"
+        "_seen, _names = set(), []\n"
+        "for _vd in _VITAL_DIRS:\n"
+        "    if not os.path.isdir(_vd): continue\n"
+        "    for _vt in sorted(glob.glob(os.path.join(_vd, '**', '*.vitaltable'), recursive=True)):\n"
+        "        try:\n"
+        "            _w = json.load(open(_vt)); _n = _w.get('name','')\n"
+        "            if _n and _n not in _seen and 'groups' in _w: _seen.add(_n); _names.append(_n)\n"
+        "        except: pass\n"
+        "    for _vp in sorted(glob.glob(os.path.join(_vd, '**', '*.vital'), recursive=True)):\n"
+        "        try:\n"
+        "            for _w in json.load(open(_vp)).get('settings',{}).get('wavetables',[]):\n"
+        "                _n = _w.get('name','') if isinstance(_w,dict) else ''\n"
+        "                if _n and _n not in _seen and 'groups' in _w: _seen.add(_n); _names.append(_n)\n"
+        "        except: pass\n"
+        "_names.sort()\n"
+        f"_start, _end = {start}, min({end}, len(_names))\n"
+        "_rows = [{{'idx': i, 'name': _names[i]}} for i in range(_start, _end)]\n"
+        "print(json.dumps({{'wavetables': _rows, 'start': _start, 'end': _end, "
+        "'count': len(_rows), 'total': len(_names)}}))\n"
     )
 
+
+_WT_DISCOVER_SNIPPET = (
+    "import os, glob as _glob\n"
+    "_VITAL_DIRS = [os.path.expanduser('~/.local/share/vital'), "
+    "os.path.expanduser('~/Library/Application Support/Vital')]\n"
+    "_seen_wt, lib = set(), []\n"
+    "for _vd in _VITAL_DIRS:\n"
+    "    if not os.path.isdir(_vd): continue\n"
+    "    for _vt in sorted(_glob.glob(os.path.join(_vd, '**', '*.vitaltable'), recursive=True)):\n"
+    "        try:\n"
+    "            _w = json.load(open(_vt)); _n = _w.get('name','')\n"
+    "            if _n and _n not in _seen_wt and 'groups' in _w: _seen_wt.add(_n); lib.append(_w)\n"
+    "        except: pass\n"
+    "    for _vp in sorted(_glob.glob(os.path.join(_vd, '**', '*.vital'), recursive=True)):\n"
+    "        try:\n"
+    "            for _w in json.load(open(_vp)).get('settings',{}).get('wavetables',[]):\n"
+    "                _n = _w.get('name','') if isinstance(_w,dict) else ''\n"
+    "                if _n and _n not in _seen_wt and 'groups' in _w: _seen_wt.add(_n); lib.append(_w)\n"
+    "        except: pass\n"
+    "lib.sort(key=lambda w: w.get('name',''))\n"
+)
 
 _DAWDREAMER_RENDER_HELPER = """\
 import json, os, re, tempfile
@@ -756,16 +796,11 @@ def build_render_probes_snippet(
         + f"midi_notes = load_midi_notes({midi_path_literal})\n"
         + f"OUT_DIR = {out_dir_json}\n"
         "os.makedirs(OUT_DIR, exist_ok=True)\n"
-        'lib = json.load(open("data/wavetable_lib.json"))\n'
-        "seen, all_names = set(), []\n"
-        "for wt in lib:\n"
-        '    n = wt.get("name", "")\n'
-        "    if n and n not in seen:\n"
-        "        seen.add(n)\n"
-        "        all_names.append(n)\n"
+        + _WT_DISCOVER_SNIPPET
+        + "all_names = [wt.get('name','') for wt in lib]\n"
         + assignments_code
         + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
-        'base_preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        'base_preset = json.load(open("skills/vital/data/init_preset.json"))\n'
         "rendered = []\n"
         "for idx, wt_name in enumerate(probe_names):\n"
         "    if wt_name not in name_to_wt: continue\n"
@@ -802,9 +837,9 @@ def build_render_tuple_snippet(
         _DAWDREAMER_RENDER_HELPER
         + f"midi_notes = load_midi_notes({midi_path_literal})\n"
         + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
-        'wt_lib = json.load(open("data/wavetable_lib.json"))\n'
-        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
-        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        + _WT_DISCOVER_SNIPPET
+        + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
+        + 'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
         f"for osc_idx, wt_name in {assignments_literal}:\n"
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
@@ -835,7 +870,7 @@ def build_render_verify_snippet(
         _DAWDREAMER_RENDER_HELPER
         + midi_line
         + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
-        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
         f"render_vital_preset(preset, {out_path_json}, midi_notes)\n"
         f"print(json.dumps({{'listen_probe': {{'path': {out_path_json}, 'exists': True}}}}))"
     )
@@ -864,9 +899,9 @@ def build_render_cumulative_snippet(
         _DAWDREAMER_RENDER_HELPER
         + midi_line
         + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
-        'wt_lib = json.load(open("data/wavetable_lib.json"))\n'
-        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
-        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        + _WT_DISCOVER_SNIPPET
+        + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
+        + 'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
         f"for osc_idx, wt_name in {assignments_literal}:\n"
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
@@ -897,7 +932,7 @@ def build_reaper_render_snippet(
     return (
         _REAPY_HELPER
         + "import os\n"
-        f"out_path = {out_path!r}\n"
+        f"out_path = os.path.abspath({out_path!r})\n"
         "os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)\n"
         "with reapy.inside_reaper():\n"
         f"    proj = RPR.EnumProjects(-1, '', 512)[0]\n"
@@ -912,7 +947,7 @@ def build_reaper_render_snippet(
         "    RPR.GetSetProjectInfo_String(proj, 'RENDER_PATTERN', "
         "os.path.splitext(os.path.basename(out_path))[0], True)\n"
         "    RPR.Main_OnCommand(42, 0)\n"
-        "print(json.dumps({'listen_probe': {'path': out_path, 'exists': True}}))\n"
+        "print(json.dumps({'listen_probe': {'path': out_path, 'exists': os.path.isfile(out_path)}}))\n"
     )
 
 
@@ -1048,15 +1083,15 @@ CODE_MUTATIONS: list[CodeMutation] = [
         _new="preset['setting']",
     ),
     CodeMutation(
-        name="file_not_found_lib",
+        name="glob_ext_typo",
         category="dawdreamer",
         target_snippets=["probes", "tuple", "cumulative"],
         diagnosis=(
-            "The render failed — the wavetable library path is wrong. It should be "
-            "`data/wavetable_lib.json`, not `data/wavetable_library.json`. Correcting."
+            "The render failed — no wavetables were found. The glob pattern used "
+            "`*.vitaltable2` but the correct extension is `*.vitaltable`. Fixing the typo."
         ),
-        _old='"data/wavetable_lib.json"',
-        _new='"data/wavetable_library.json"',
+        _old="*.vitaltable",
+        _new="*.vitaltable2",
     ),
     CodeMutation(
         name="name_error_midi",

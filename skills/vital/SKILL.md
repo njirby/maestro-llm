@@ -26,8 +26,8 @@ All operations are Python, invoked through the `bash` tool as inline heredocs. T
 
 Concrete operations:
 
-- **List wavetables**: Load `data/wavetable_lib.json`, deduplicate by name, print total or a slice. (Pure Python, no REAPER interaction.)
-- **Render probes**: DawDreamer loads `maestro/synth/init_preset.json`, swaps `wavetables[0]` with each candidate, renders the target's MIDI notes via `add_midi_note()`, writes WAV with `soundfile`.
+- **Discover wavetables**: Inline Python scans `~/.local/share/vital/` (Linux) and `~/Library/Application Support/Vital/` (macOS) for `.vitaltable` and `.vital` files. No premade scripts — the agent writes the glob/JSON-parse loop itself. The number of available wavetables depends on what Vital packs are installed.
+- **Render probes**: DawDreamer loads `skills/vital/data/init_preset.json`, discovers wavetables from the local filesystem, swaps `wavetables[0]` with each candidate, renders the target's MIDI notes via `add_midi_note()`, writes WAV with `soundfile`.
 - **Render tuple**: Same as probes but assigns wavetables to multiple oscillator slots simultaneously before rendering.
 - **Set parameters**: reapy scans `RPR.TrackFX_GetParamName` to find indices by REAPER display name, then calls `RPR.TrackFX_SetParam` with normalized 0-1 values.
 - **Apply VST chunk**: Python builds the Vital preset JSON, base64-encodes it, and calls `RPR.TrackFX_SetNamedConfigParm` via reapy to apply to the live REAPER track.
@@ -64,7 +64,7 @@ See `references/subsystem_taxonomy.md` for the mapping from Vital parameter fami
 - **Multi-audio Omni comparison is out-of-distribution.** Do not ask Omni to compare target+default simultaneously — it conflates the two and hallucinates attack direction and modulation. For Stage 1 observations, use target-only audio with the preset-bucket summary as a grounding prior.
 - **Filter cutoff is in MIDI note units** (not Hz). Resonance is 0-1.
 - **Wavetable names can contain spaces, hyphens, and parentheses** — quote them in bash. Names never contain commas (safe to comma-join with `--names`).
-- **The library has 282 unique wavetables** (post-dedup by name from a 568-entry raw library).
+- **Wavetable count varies by installation** — discovered at runtime from Vital's data directories. Deduplicated by name.
 - **Edge case**: if the user invokes the pipeline without attaching an audio clip (no audio tag in the first user message), refuse with a prompt asking the user to select an audio item in REAPER first. Do not fabricate a target.
 - **Audio duration cap**: target clips are limited to ~30 seconds by the rendering backend. Longer clips (for melody transcription of whole verses, bridges, etc.) aren't yet supported in a single transcription pass — they'd need parallel-slice transcription which is future work.
 

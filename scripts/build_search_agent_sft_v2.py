@@ -506,9 +506,8 @@ def build_search_record(
         _user_parts.append(f"Transcription MIDI: {midi_path}.")
     _user_parts.append(
         f"Evaluate wavetables at indices {shard_start}-{shard_end - 1}. "
-        f"Load data/wavetable_lib.json, list names in your range, "
-        f"render all candidates at once with DawDreamer using the "
-        f"transcription MIDI, then listen to each batch and assess. "
+        f"Scan Vital's data directories for .vitaltable and .vital files to get names in your range, "
+        f"render all candidates at once, then listen to each batch and assess. "
         f"Return a JSON shortlist of 2-4 wavetable names."
     )
     messages.append({

@@ -68,6 +68,7 @@ from scripts.agent_sft_common import (
     _read_tool_response_audio,
     _REAPY_HELPER,
     _tool_call,
+    _WT_DISCOVER_SNIPPET,
     _wrap_as_bash,
 )
 from scripts.build_main_agent_sft_v2 import (
@@ -300,7 +301,7 @@ class SubsystemBatch:
 def build_batches_from_diff(
     target_preset: dict,
     init_preset: dict,
-    threshold: float = 0.01,
+    threshold: float = 0.0,
 ) -> list[SubsystemBatch]:
     """Diff target vs init, bucket changed params by subsystem, return ordered batches.
 
@@ -505,7 +506,7 @@ def render_cumulative_audio(
 def build_diagnosis_subsystem_truth(
     target_preset: dict,
     init_preset: dict,
-    threshold: float = 0.01,
+    threshold: float = 0.0,
 ) -> dict[str, list[str]]:
     """Compute {presentation_subsystem → [param_names]} of all params that differ.
 
@@ -949,11 +950,11 @@ def stage2_correction_intro(
         gist = f"{disp} was set {direction} during the earlier {mistake_info.get('subsystem', subsystem)} batch"
         params_str = ", ".join((param_display_names or [])[:3]) or "several parameters"
         prompt = (
-            f"You are a music production AI. A previous edit overshot: {gist}. "
-            f"Now correcting {params_str} back to the planned target values.\n\n"
-            f"Write EXACTLY ONE sentence announcing the correction, naming the subsystem and "
-            f"the direction of the overshoot. Natural language, under 30 words, no snake_case, "
-            f"no **bold**."
+            f"You are a music production AI. After listening, you noticed an issue: {gist}. "
+            f"You are about to correct {params_str}.\n\n"
+            f"Write EXACTLY ONE sentence describing what you heard wrong and what you will fix. "
+            f"Use present/future tense (NOT past tense — the fix hasn't happened yet). "
+            f"Natural language, under 30 words, no snake_case, no **bold**."
         )
     else:
         fixing = mistakes_being_fixed or []
@@ -972,10 +973,11 @@ def stage2_correction_intro(
         remaining_hint = f" {len(remaining)} other issue(s) may still need attention." if remaining else ""
         params_str = ", ".join(_json_key_to_display(m.param) for m in fixing[:3]) or "several parameters"
         prompt = (
-            f"You are a music production AI. Issues after a {subsystem} edit: {gist}. "
-            f"Now correcting {params_str} back to the planned target values.{remaining_hint}\n\n"
-            f"Write EXACTLY ONE sentence announcing the correction. Name the issue type "
-            f"(overshot, undershot, missed, or unneeded change) and the subsystem. "
+            f"You are a music production AI. After listening to a {subsystem} edit, you noticed: "
+            f"{gist}. You are about to correct {params_str}.{remaining_hint}\n\n"
+            f"Write EXACTLY ONE sentence describing what sounds wrong and what you will fix. "
+            f"Use present/future tense (NOT past tense — the fix hasn't happened yet). "
+            f"Name the issue type (overshot, undershot, missed, or unneeded change) and the subsystem. "
             f"Natural language, under 30 words, no snake_case, no **bold**."
         )
 
@@ -990,9 +992,22 @@ def stage2_correction_intro(
             },
             timeout=120.0,
         )
-        return r["choices"][0]["message"]["content"].strip().split("\n")[0]
+        text = r["choices"][0]["message"]["content"].strip().split("\n")[0]
+        # LLM sometimes ignores the tense instruction — patch past → future
+        import re as _re
+        for pat, repl in [
+            (r"\bare corrected\b", "will be corrected"),
+            (r"\bhas been corrected\b", "will be corrected"),
+            (r"\bwas corrected\b", "will be corrected"),
+            (r"\bhave been adjusted\b", "will be adjusted"),
+            (r"\bwas adjusted\b", "will be adjusted"),
+            (r"\bhas been fixed\b", "will be fixed"),
+            (r"\bwas fixed\b", "will be fixed"),
+        ]:
+            text = _re.sub(pat, repl, text, flags=_re.IGNORECASE)
+        return text
     except Exception:
-        return f"Noticed issues in {subsystem} — correcting {params_str} to the planned values."
+        return f"That doesn't sound right in {subsystem} — I'll adjust {params_str}."
 
 
 def stage2_verdict(
@@ -1652,10 +1667,9 @@ def build_record(
                 _search_prompt_parts.append(f"Transcription MIDI: {_trans_output_file}.")
             _search_prompt_parts.append(
                 f"Evaluate wavetables at indices {start}-{end - 1}. "
-                f"Load data/wavetable_lib.json, list names in your range, "
-                f"swap each into the synth, render with DawDreamer using the "
-                f"transcription MIDI, and listen. Return a JSON shortlist of "
-                f"2-4 wavetable names."
+                f"Scan Vital's data directories for .vitaltable and .vital files to get names in your range, "
+                f"swap each into the synth, render, and listen. "
+                f"Return a JSON shortlist of 2-4 wavetable names."
             )
             messages.append(_tool_call("Agent", {
                 "subagent_type": "wavetable_search",
@@ -2009,9 +2023,9 @@ def build_record(
         _REAPY_HELPER
         + _BUILD_CHUNK_HELPER
         + "import base64\n"
-        'wt_lib = json.load(open("data/wavetable_lib.json"))\n'
-        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
-        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        + _WT_DISCOVER_SNIPPET
+        + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
+        'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
         f"for osc_idx, wt_name in {apply_assignments}:\n"
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
@@ -2259,7 +2273,7 @@ def build_record(
                     )
                 else:
                     fix_desc = ", ".join(_json_key_to_display(m.param) for m in fixing_now)
-                    corr_intro = f"{corr_prefix}Noticed issues in {b.subsystem} — correcting {fix_desc}."
+                    corr_intro = f"{corr_prefix}That doesn't sound right in {b.subsystem} — I'll adjust {fix_desc}."
                 messages.append({"role": "assistant", "content": corr_intro})
 
                 corr_by_idx: dict[int, float] = {}

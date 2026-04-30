@@ -296,7 +296,7 @@ def _make_v3_record(n_batches=3, has_correction=False, has_mistake=False):
         {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"echo probe"}}'},
         {"role": "tool_response", "content": '{"status":"ok","baseline_audio":"<audio>","path":"/tmp/d.wav"}'},
         {"role": "assistant", "content": "Checking wavetable library size."},
-        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"python skills/vital/scripts/list_wavetables.py --total"}}'},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"python - <<\'PY\'\\nimport json, os, glob\\n_VITAL_DIRS = [os.path.expanduser(\'~/.local/share/vital\')]\\n_seen, _count = set(), 0\\nfor _vd in _VITAL_DIRS:\\n    for _vt in sorted(glob.glob(os.path.join(_vd, \'**\', \'*.vitaltable\'), recursive=True)):\\n        _w = json.load(open(_vt)); _n = _w.get(\'name\',\'\')\\n        if _n and _n not in _seen: _seen.add(_n); _count += 1\\nprint(json.dumps({\'total\': _count}))\\nPY"}}'},
         {"role": "tool_response", "content": '{"total":282}'},
         {"role": "assistant", "content": "Library has 282 wavetables. Dispatching 2 search agents across slices [0-47, 141-188]."},
         # Agent call 1
@@ -537,16 +537,17 @@ def test_v3_wt_scaffold_has_cat_read():
     assert cat_calls, "Main agent should use bash cat to read shortlist files"
 
 
-def test_v3_wt_scaffold_uses_list_wavetables_script():
-    """Main agent should check library size via list_wavetables.py."""
+def test_v3_wt_scaffold_discovers_wavetables_inline():
+    """Main agent should discover wavetables via inline FS scan, not a premade script."""
     record = _make_v3_record()
-    list_calls = []
+    discovery_calls = []
     for m in record["messages"]:
         if m["role"] == "tool_call":
             parsed = json.loads(m["content"])
-            if parsed["name"] == "bash" and "list_wavetables.py" in parsed["arguments"]["command"]:
-                list_calls.append(parsed)
-    assert list_calls, "Main agent should call skills/vital/scripts/list_wavetables.py"
+            cmd = parsed.get("arguments", {}).get("command", "")
+            if parsed["name"].lower() == "bash" and ".vitaltable" in cmd:
+                discovery_calls.append(parsed)
+    assert discovery_calls, "Main agent should scan FS for .vitaltable files inline"
 
 
 def test_v3_wt_scaffold_has_tuple_audio():

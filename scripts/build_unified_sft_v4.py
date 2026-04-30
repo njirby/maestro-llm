@@ -64,6 +64,7 @@ from scripts.agent_sft_common import (
     _read_tool_response_audio,
     _REAPY_HELPER,
     _tool_call,
+    _WT_DISCOVER_SNIPPET,
     _wrap_as_bash,
 )
 
@@ -695,10 +696,9 @@ def build_record(
                 _search_prompt_parts.append(f"Transcription MIDI: {_trans_output_file}.")
             _search_prompt_parts.append(
                 f"Evaluate wavetables at indices {start}-{end - 1}. "
-                f"Load data/wavetable_lib.json, list names in your range, "
-                f"swap each into the synth, render with DawDreamer using the "
-                f"transcription MIDI, and listen. Return a JSON shortlist of "
-                f"2-4 wavetable names."
+                f"Scan Vital's data directories for .vitaltable and .vital files to get names in your range, "
+                f"swap each into the synth, render, and listen. "
+                f"Return a JSON shortlist of 2-4 wavetable names."
             )
             messages.append(_tool_call("Agent", {
                 "subagent_type": "wavetable_search",
@@ -1072,9 +1072,9 @@ def build_record(
         _REAPY_HELPER
         + _BUILD_CHUNK_HELPER
         + "import base64\n"
-        'wt_lib = json.load(open("data/wavetable_lib.json"))\n'
-        "name_to_wt = {wt['name']: wt for wt in wt_lib if 'name' in wt}\n"
-        'preset = json.load(open("maestro/synth/init_preset.json"))\n'
+        + _WT_DISCOVER_SNIPPET
+        + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
+        'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
         f"for osc_idx, wt_name in {apply_assignments}:\n"
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
