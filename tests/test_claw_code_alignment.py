@@ -52,6 +52,8 @@ BASH_RESPONSE_FIELDS = {"stdout", "stderr", "interrupted"}
 _OUTPUT_DIR = Path(__file__).parent.parent / "outputs" / "smoke_v3"
 
 _OUTPUT_SUFFIXES = [
+    "v61_no_slot_leak",
+    "v60_grep_shortlist",
     "v59_specs_fix",
     "v58_agent_cleanup",
     "v57_text_output",

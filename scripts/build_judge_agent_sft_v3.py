@@ -408,7 +408,6 @@ def stage2_format_judge_response(
         f"---\n{omni_observations}\n---\n\n"
         f"Pool candidates: {json.dumps(pool)}\n"
         f"The ORACLE has pre-determined that the correct selection is: [{selected_list_str}]\n"
-        f"(n_osc_slots = {n_osc_slots})\n"
         f"{gt_hint}\n\n"
         f"Write exactly {len(pool) + 1} lines:\n"
         f"  - For each candidate, one line: '<name>': <one-sentence assessment>. "
@@ -525,7 +524,7 @@ def _stage2_partial_match_response(
         f"---\n{omni_observations}\n---\n\n"
         f"Pool candidates: {json.dumps(pool)}\n"
         f"The ORACLE has determined that the pool contains SOME but NOT ALL needed "
-        f"wavetables. The target uses {n_osc_slots} oscillator slots.\n"
+        f"wavetables.\n"
         f"Locked (confirmed good): [{locked_list_str}]\n"
         f"Missing character for unfilled slot(s): '{missing_character}'\n"
         f"{gt_hint}\n\n"
@@ -534,9 +533,9 @@ def _stage2_partial_match_response(
         f"For locked candidates, explain why they fit their slot well. "
         f"For others, explain why they don't fill the remaining slot(s).\n"
         f"  - Final line: 'PARTIAL_MATCH: [{locked_list_str}]: {missing_character}: "
-        f"<one-sentence explanation that {len(selected_tuple)} of {n_osc_slots} slots "
-        f"are filled but the pool lacks a wavetable with this character for the "
-        f"remaining slot(s) — recommend re-search>'\n\n"
+        f"<one-sentence explanation that some slots are filled but the pool lacks "
+        f"a wavetable with this character for the remaining slot(s) — "
+        f"recommend re-search>'\n\n"
         f"Do NOT emit a SELECTED line (not all slots are filled). "
         f"Do NOT emit a NO_MATCH line (some slots ARE filled). "
         f"Use the EXACT names. Natural language."
@@ -557,9 +556,8 @@ def _stage2_partial_match_response(
         )
         return (
             f"{per_cand}\nPARTIAL_MATCH: [{locked_list_str}]: {missing_character}: "
-            f"{len(selected_tuple)} of {n_osc_slots} slots filled — pool lacks a "
-            f"wavetable with this character for the remaining slot(s). "
-            f"Recommending re-search."
+            f"Some slots filled but pool lacks a wavetable with this character "
+            f"for the remaining slot(s). Recommending re-search."
         )
     # Defensive: strip any SELECTED or NO_MATCH lines Stage-2 might have leaked.
     if "SELECTED:" in out or "NO_MATCH:" in out:
@@ -572,9 +570,8 @@ def _stage2_partial_match_response(
     if "PARTIAL_MATCH:" not in out:
         out += (
             f"\nPARTIAL_MATCH: [{locked_list_str}]: {missing_character}: "
-            f"{len(selected_tuple)} of {n_osc_slots} slots filled — pool lacks a "
-            f"wavetable with this character for the remaining slot(s). "
-            f"Recommending re-search."
+            f"Some slots filled but pool lacks a wavetable with this character "
+            f"for the remaining slot(s). Recommending re-search."
         )
     return out
 
@@ -791,12 +788,10 @@ def build_judge_record(
         locked_str = ", ".join(repr(n) for n in locked_slots.values())
         n_unfilled = len(unfilled_oscs)
         closing = (
-            f"PARTIAL_MATCH — [{locked_str}] confirmed for "
-            f"{len(locked_slots)} of {n_osc_slots} slots, but {n_unfilled} "
-            f"slot{'s' if n_unfilled > 1 else ''} still "
-            f"{'need' if n_unfilled > 1 else 'needs'} a wavetable with the "
-            f"{missing_character} of the target. Recommending re-dispatch search "
-            f"for the remaining slot{'s' if n_unfilled > 1 else ''}."
+            f"PARTIAL_MATCH — [{locked_str}] confirmed but the pool still lacks "
+            f"a wavetable with the {missing_character} of the target for the "
+            f"remaining slot{'s' if n_unfilled > 1 else ''}. Recommending "
+            f"re-dispatch search."
         )
     else:
         closing = (
