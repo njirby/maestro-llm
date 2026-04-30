@@ -712,23 +712,25 @@ def build_record(
                 }, ensure_ascii=False),
             })
 
-        # Read shortlists
-        cat_cmd = "cat " + " ".join(round_output_files)
+        # Extract shortlist lines from search agent output files
+        grep_cmd = "grep -hi 'shortlist:' " + " ".join(round_output_files)
         messages.append({
             "role": "assistant",
             "content": f"Reading shortlists from {len(round_output_files)} search agents.",
         })
-        messages.append(_tool_call("Bash", {"command": cat_cmd}))
-        cat_output_lines = []
+        messages.append(_tool_call("Bash", {"command": grep_cmd}))
+        grep_output_lines = []
         round_shortlists: list[list[str]] = []
         for (_start, _end, _aid, out_file, _mf, sl) in round_agent_meta:
             try:
                 with open(out_file) as f:
-                    cat_output_lines.append(f.read().strip())
+                    for line in f:
+                        if "shortlist:" in line.lower():
+                            grep_output_lines.append(line.strip())
             except Exception:
-                cat_output_lines.append("")
+                pass
             round_shortlists.append(sl)
-        messages.append(_bash_tool_response("\n".join(cat_output_lines) + "\n"))
+        messages.append(_bash_tool_response("\n".join(grep_output_lines) + "\n"))
 
         # Pool in shortlists
         for sl in round_shortlists:

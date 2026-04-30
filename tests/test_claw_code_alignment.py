@@ -442,9 +442,9 @@ def test_agent_dispatch_has_cat_followup():
         for out_file, subtype in agent_output_files:
             if subtype == "melody_transcription":
                 continue
-            found_cat = any("cat " in cmd and out_file in cmd for cmd in all_bash_cmds)
-            assert found_cat, \
-                f"{rec['id']}: {subtype} outputFile '{out_file}' never cat'd"
+            found_read = any(out_file in cmd for cmd in all_bash_cmds)
+            assert found_read, \
+                f"{rec['id']}: {subtype} outputFile '{out_file}' never read (cat/grep)"
 
 
 @_skip_if_no_records("main")
