@@ -92,7 +92,7 @@ def _make_transcription_record(
             "duration_s": duration_s,
             "pitch_range": [min(n["pitch"] for n in oracle_notes), max(n["pitch"] for n in oracle_notes)] if oracle_notes else [0, 0],
             "notes": oracle_notes,
-            "output_file": "/tmp/x.json",
+            "output_file": "/tmp/x.md",
             "track_idx": 0,
         },
     }

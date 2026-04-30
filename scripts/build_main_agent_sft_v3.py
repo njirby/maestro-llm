@@ -118,7 +118,7 @@ _V3_TOOL_SPECS = json.dumps(
                 "name": "Agent",
                 "description": (
                     "Spawn a background sub-agent to perform a delegated task. "
-                    "Returns immediately with an agentId, status, and outputFile path. "
+                    "Returns immediately with a status and outputFile path. "
                     "Read outputFile (e.g. via bash cat) to consume the sub-agent's result."
                 ),
                 "parameters": {
@@ -128,8 +128,9 @@ _V3_TOOL_SPECS = json.dumps(
                         "description": {"type": "string", "description": "Short task description."},
                         "prompt": {"type": "string", "description": "Full task prompt for the sub-agent."},
                         "name": {"type": "string", "description": "Optional name for the sub-agent."},
+                        "run_in_background": {"type": "boolean", "description": "Run the agent in the background."},
                     },
-                    "required": ["subagent_type", "description", "prompt"],
+                    "required": ["description", "prompt"],
                 },
             },
         },
@@ -1417,20 +1418,18 @@ def build_record(
             _trans_track_name = "target_melody"
             _trans_agent_id = make_agent_id(sample_id, "melody_transcription")
             _trans_agent_dir = f"/tmp/agents/{sample_id}"
-            _trans_output_file = f"{_trans_agent_dir}/{_trans_agent_id}.json"
+            _trans_output_file = f"{_trans_agent_dir}/{_trans_agent_id}.md"
             _trans_manifest_file = f"{_trans_agent_dir}/{_trans_agent_id}.manifest.json"
+            _trans_notes_file = f"{_trans_agent_dir}/{sample_id}_notes.json"
 
-            # Persist the transcription output on disk
-            _trans_payload = {
-                "status": "completed",
-                "notes": _trans_notes,
-                "n_notes": _trans_n_notes,
-                "duration_s": _trans_duration_s,
-            }
             Path(_trans_output_file).parent.mkdir(parents=True, exist_ok=True)
+            # Agent output file — text (what the framework captures)
             with open(_trans_output_file, "w") as _trf:
-                json.dump(_trans_payload, _trf)
-                _trf.write("\n")
+                _trf.write(f"Transcription complete. {_trans_n_notes} notes on track 0.\n")
+            # MIDI notes file — structured JSON for render functions
+            with open(_trans_notes_file, "w") as _tnf:
+                json.dump({"notes": _trans_notes, "n_notes": _trans_n_notes, "duration_s": _trans_duration_s}, _tnf)
+                _tnf.write("\n")
 
             # Step 1: create a REAPER track + load Vital on it
             _trans_create_snippet = (
@@ -1479,19 +1478,13 @@ def build_record(
                 "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
                 "prompt": _dispatch_prompt,
                 "name": f"transcribe-{sample_id}",
+                "run_in_background": True,
             }))
             messages.append({
                 "role": "tool_response",
                 "content": json.dumps({
-                    "agentId": _trans_agent_id,
-                    "subagentType": "melody_transcription",
                     "status": "completed",
                     "outputFile": _trans_output_file,
-                    "manifestFile": _trans_manifest_file,
-                    "createdAt": f"build-time:{_trans_agent_id}",
-                    "startedAt": f"build-time:{_trans_agent_id}",
-                    "n_notes": _trans_n_notes,
-                    "duration_s": _trans_duration_s,
                 }, ensure_ascii=False),
             })
 
@@ -1560,20 +1553,21 @@ def build_record(
         return picks[:4]
 
     def _write_shortlist_file(agent_id: str, start: int, end: int, shortlist: list[str]) -> tuple[str, str]:
-        """Write single-line JSON shortlist file + manifest. Returns (output_file, manifest_file)."""
+        """Write search agent output file + manifest. Returns (output_file, manifest_file).
+
+        The output file contains the agent's final assistant message (plain text),
+        matching claw-code's Agent tool outputFile format.
+        """
         out_dir = Path(agent_out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{agent_id}.json"
+        out_path = out_dir / f"{agent_id}.md"
         manifest_path = out_dir / f"{agent_id}.manifest.json"
+        shortlist_str = ", ".join(f'"{n}"' for n in shortlist)
         with open(out_path, "w") as f:
-            json.dump({
-                "status": "completed",
-                "agentId": agent_id,
-                "shardStart": start,
-                "shardEnd": end,
-                "shortlist": shortlist,
-            }, f)
-            f.write("\n")
+            f.write(
+                f"Shortlist: [{shortlist_str}]. {len(shortlist)} candidate(s) "
+                f"flagged for the judge agent.\n"
+            )
         write_agent_manifest(
             agent_id=agent_id,
             subagent_type="wavetable_search",
@@ -1663,7 +1657,7 @@ def build_record(
         for ai_idx, (start, end, agent_id, _out, _manifest, _sl) in enumerate(round_agent_meta):
             _search_prompt_parts = [f"Target: {target_audio_path}."]
             if _trans_output_file:
-                _search_prompt_parts.append(f"Transcription MIDI: {_trans_output_file}.")
+                _search_prompt_parts.append(f"Transcription MIDI: {_trans_notes_file}.")
             _search_prompt_parts.append(
                 f"Evaluate wavetables at indices {start}-{end - 1}. "
                 f"Scan Vital's data directories for .vitaltable and .vital files to get names in your range, "
@@ -1675,6 +1669,7 @@ def build_record(
                 "description": f"Evaluate wavetables {start}-{end - 1} for target sound",
                 "prompt": "\n".join(_search_prompt_parts),
                 "name": f"search-r{rounds_used}-a{ai_idx + 1}",
+                "run_in_background": True,
             }))
 
         # Then all tool_responses (one per parallel call)
@@ -1682,13 +1677,8 @@ def build_record(
             messages.append({
                 "role": "tool_response",
                 "content": json.dumps({
-                    "agentId": agent_id,
-                    "subagentType": "wavetable_search",
                     "status": "completed",
                     "outputFile": output_file,
-                    "manifestFile": manifest_file,
-                    "createdAt": f"build-time:{agent_id}",
-                    "startedAt": f"build-time:{agent_id}",
                 }, ensure_ascii=False),
             })
 
@@ -1699,19 +1689,15 @@ def build_record(
             "content": f"Reading shortlists from {len(round_output_files)} search agents.",
         })
         messages.append(_tool_call("Bash", {"command": cat_cmd}))
-        # Concatenate the file contents (single-line JSON per file)
         cat_output_lines = []
         round_shortlists: list[list[str]] = []
-        for out_file in round_output_files:
+        for (_start, _end, _aid, out_file, _mf, sl) in round_agent_meta:
             try:
                 with open(out_file) as f:
-                    content = f.read().strip()
-                cat_output_lines.append(content)
-                parsed = json.loads(content)
-                round_shortlists.append(parsed.get("shortlist", []))
+                    cat_output_lines.append(f.read().strip())
             except Exception:
                 cat_output_lines.append("")
-                round_shortlists.append([])
+            round_shortlists.append(sl)
         messages.append(_bash_tool_response("\n".join(cat_output_lines) + "\n"))
 
         # Pool in new shortlists
@@ -1801,41 +1787,23 @@ def build_record(
         # Write judge output file (simulates runtime judge agent's output) —
         # new schema with verdict + missing_character + nullable tuple.
         judge_agent_id = make_agent_id(sample_id, "wavetable_judge", rounds_used)
-        judge_output_file = Path(agent_out_dir) / f"{judge_agent_id}.json"
+        judge_output_file = Path(agent_out_dir) / f"{judge_agent_id}.md"
         judge_manifest_file = Path(agent_out_dir) / f"{judge_agent_id}.manifest.json"
         judge_output_file.parent.mkdir(parents=True, exist_ok=True)
         if judge_verdict == "good":
-            judge_reasoning = (
-                f"After listening to the {len(pool)} pool candidates against the target, "
-                f"{', '.join(repr(n) for n in cur_active_names)} together captures the "
-                f"target's character most closely."
+            tuple_str = ", ".join(repr(n) for n in cur_active_names)
+            judge_output_text = (
+                f"Final tuple: [{tuple_str}]. The main agent can now apply the "
+                f"chosen wavetables."
             )
-            judge_output_payload = {
-                "status": "completed",
-                "agentId": judge_agent_id,
-                "verdict": "good",
-                "missing_character": "",
-                "tuple": cur_active_names,
-                "n_osc_slots": n_osc_slots,
-                "reasoning": judge_reasoning,
-            }
         else:
-            judge_reasoning = (
-                f"Pool of {len(pool)} candidates lacks any wavetable with the "
-                f"{missing_character} the target relies on. Recommending re-search "
-                f"across unexplored library regions."
+            judge_output_text = (
+                f"NO_MATCH — none of these {len(pool)} candidates carries "
+                f"the {missing_character} of the target. Recommending re-dispatch "
+                f"search across unexplored library regions."
             )
-            judge_output_payload = {
-                "status": "completed",
-                "agentId": judge_agent_id,
-                "verdict": "no_match",
-                "missing_character": missing_character,
-                "tuple": None,
-                "n_osc_slots": n_osc_slots,
-                "reasoning": judge_reasoning,
-            }
         with open(judge_output_file, "w") as jf:
-            json.dump(judge_output_payload, jf)
+            jf.write(judge_output_text)
             jf.write("\n")
 
         # Dispatch judge agent
@@ -1872,17 +1840,13 @@ def build_record(
             "description": f"Select best oscillator combination (up to 3) from pool of {len(pool)} candidates",
             "prompt": _judge_dispatch_prompt,
             "name": f"judge-{rounds_used}",
+            "run_in_background": True,
         }))
         messages.append({
             "role": "tool_response",
             "content": json.dumps({
-                "agentId": judge_agent_id,
-                "subagentType": "wavetable_judge",
                 "status": "completed",
                 "outputFile": str(judge_output_file),
-                "manifestFile": str(judge_manifest_file),
-                "createdAt": f"build-time:{judge_agent_id}",
-                "startedAt": f"build-time:{judge_agent_id}",
             }, ensure_ascii=False),
         })
 
@@ -1919,7 +1883,7 @@ def build_record(
         osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
         render_snippet = build_render_tuple_snippet(
             osc_names=osc_names, out_path=str(tuple_wav),
-            midi_path=_trans_output_file,
+            midi_path=_trans_notes_file,
         )
         render_cmd = _wrap_as_bash(render_snippet)
         render_cumulative_audio(_build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset), notes, tuple_wav)
@@ -1972,7 +1936,7 @@ def build_record(
         osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
         render_cmd = _wrap_as_bash(build_render_tuple_snippet(
             osc_names=osc_names, out_path=str(tuple_wav),
-            midi_path=_trans_output_file,
+            midi_path=_trans_notes_file,
         ))
         render_cumulative_audio(
             _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),

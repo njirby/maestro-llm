@@ -693,36 +693,30 @@ def build_search_record(
         final_text = f"{pending_notes}\n\n{final_text}"
         pending_notes = None
 
-    # Persist shortlist to disk (build-time) so the main agent's `cat` works.
-    # The sub-agent conversation does NOT include a file-write tool_call — in
-    # claw-code the framework captures the agent's result automatically.
+    # Final assistant turn — summarize result (the framework captures this as output)
+    shortlist_str = ", ".join(f'"{n}"' for n in selected_so_far)
+    final_assistant_content = (
+        f"{final_text}\n\n"
+        f"Shortlist: [{shortlist_str}]. {len(selected_so_far)} candidate(s) "
+        f"flagged for the judge agent."
+    )
+
+    # Persist the final assistant message to disk (build-time) so the main
+    # agent's `cat` works.  In claw-code the framework writes the sub-agent's
+    # last response to the outputFile — plain text, not JSON.
     shortlist_path: str | None = None
     if shortlist_dir is not None:
         from scripts.agent_sft_common import make_agent_id  # type: ignore
         shortlist_dir.mkdir(parents=True, exist_ok=True)
         agent_id = make_agent_id(sample_id, "wavetable_search", agent_idx)
-        shortlist_path = str(shortlist_dir / f"{agent_id}.json")
-        payload = {
-            "status": "completed",
-            "agentId": agent_id,
-            "shardStart": shard_start,
-            "shardEnd": shard_end,
-            "shortlist": selected_so_far,
-            "nBatches": len(all_ordered),
-        }
+        shortlist_path = str(shortlist_dir / f"{agent_id}.md")
         with open(shortlist_path, "w") as f:
-            json.dump(payload, f)
+            f.write(final_assistant_content)
             f.write("\n")
 
-    # Final assistant turn — summarize result (the framework captures this as output)
-    shortlist_str = ", ".join(f'"{n}"' for n in selected_so_far)
     messages.append({
         "role": "assistant",
-        "content": (
-            f"{final_text}\n\n"
-            f"Shortlist: [{shortlist_str}]. {len(selected_so_far)} candidate(s) "
-            f"flagged for the judge agent."
-        ),
+        "content": final_assistant_content,
     })
 
     record = {
@@ -846,18 +840,10 @@ def main() -> None:
             _trans_agent_id = make_agent_id(sample_id, "melody_transcription")
             _trans_dir = Path(f"/tmp/agents/{sample_id}")
             _trans_dir.mkdir(parents=True, exist_ok=True)
-            _midi_path = str(_trans_dir / f"{_trans_agent_id}.json")
+            _midi_path = str(_trans_dir / f"{sample_id}_notes.json")
             if not Path(_midi_path).exists():
-                _trans_payload = {
-                    "status": "completed",
-                    "notes": _midi_notes_dicts,
-                    "n_notes": len(_midi_notes_dicts),
-                    "duration_s": round(
-                        max(n["start_s"] + n["dur_s"] for n in _midi_notes_dicts), 2,
-                    ),
-                }
                 with open(_midi_path, "w") as _trf:
-                    json.dump(_trans_payload, _trf)
+                    json.dump({"notes": _midi_notes_dicts, "n_notes": len(_midi_notes_dicts)}, _trf)
                     _trf.write("\n")
 
         # Build dense name↔idx mapping — matches list_wavetables.py (dedup by name)

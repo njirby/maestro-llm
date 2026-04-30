@@ -199,7 +199,7 @@ def build_transcription_record_v4(
     init_preset = _get_init_preset()
 
     agent_id = make_agent_id(sample_id, "melody_transcription")
-    output_file = Path(output_dir) / sample_id / f"{agent_id}.json"
+    output_file = Path(output_dir) / sample_id / f"{agent_id}.md"
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Deterministic RNG for this sample
@@ -268,7 +268,7 @@ def build_transcription_record_v4(
             attempt_agent_id = make_agent_id(
                 sample_id, "melody_transcription", f"attempt{attempt_idx + 1}",
             )
-            attempt_output = Path(output_dir) / sample_id / f"{attempt_agent_id}.json"
+            attempt_output = Path(output_dir) / sample_id / f"{attempt_agent_id}.md"
 
         # ── Insert MIDI notes ──
         cmd = build_insert_cmd(
@@ -276,15 +276,7 @@ def build_transcription_record_v4(
         )
         messages.append(_tool_call("Bash", {"command": cmd}))
 
-        # Persist to disk
         attempt_output.parent.mkdir(parents=True, exist_ok=True)
-        with open(attempt_output, "w") as f:
-            json.dump({
-                "notes": attempt_notes,
-                "n_notes": attempt_n_notes,
-                "duration_s": attempt_duration_s,
-            }, f)
-            f.write("\n")
 
         insert_stdout = json.dumps({
             "status": "ok",
@@ -350,15 +342,10 @@ def build_transcription_record_v4(
                 "content": attempt_narration,
             })
 
-    # Persist the final (correct) output
+    # Persist the final assistant message to disk so the main agent's reference
+    # path is valid.  In claw-code, outputFile = agent's last response (text).
     with open(output_file, "w") as f:
-        json.dump({
-            "status": "completed",
-            "notes": notes,
-            "n_notes": n_notes,
-            "duration_s": duration_s,
-        }, f)
-        f.write("\n")
+        f.write("The melody matches the target.\n")
 
     record = {
         "id": f"{sample_id}_transcription",

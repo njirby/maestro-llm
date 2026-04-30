@@ -87,7 +87,7 @@ def _make_search_v2(
             "gt_in_shard": gt_in_shard,
             "final_shortlist": final_shortlist,
             "gt_on_shortlist": gt_on_shortlist,
-            "shortlist_output_file": "/tmp/agents/s1_search_1.json",
+            "shortlist_output_file": "/tmp/agents/s1_search_1.md",
         },
     }
 
@@ -237,7 +237,7 @@ def _make_judge_v3(
             "gts_in_pool": gts_in_pool,
             "selected_tuple": selected_tuple,
             "judge_correct": judge_correct,
-            "output_file": "/tmp/judge/judge_s1.json",
+            "output_file": "/tmp/judge/judge_s1.md",
         },
     }
 

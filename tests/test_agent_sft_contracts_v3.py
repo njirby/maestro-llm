@@ -300,15 +300,15 @@ def _make_v3_record(n_batches=3, has_correction=False, has_mistake=False):
         {"role": "tool_response", "content": '{"total":282}'},
         {"role": "assistant", "content": "Library has 282 wavetables. Dispatching 2 search agents across slices [0-47, 141-188]."},
         # Agent call 1
-        {"role": "tool_call", "content": '{"name":"Agent","arguments":{"subagent_type":"wavetable_search","description":"Evaluate wavetables 0-47 for keys target","prompt":"Target..."}}'},
-        {"role": "tool_response", "content": '{"agentId":"search_1","subagentType":"wavetable_search","status":"completed","outputFile":"/tmp/agents/search_1.json"}'},
+        {"role": "tool_call", "content": '{"name":"Agent","arguments":{"subagent_type":"wavetable_search","description":"Evaluate wavetables 0-47 for keys target","prompt":"Target...","run_in_background":true}}'},
+        {"role": "tool_response", "content": '{"status":"completed","outputFile":"/tmp/agents/search_1.md"}'},
         # Agent call 2
-        {"role": "tool_call", "content": '{"name":"Agent","arguments":{"subagent_type":"wavetable_search","description":"Evaluate wavetables 141-188 for keys target","prompt":"Target..."}}'},
-        {"role": "tool_response", "content": '{"agentId":"search_2","subagentType":"wavetable_search","status":"completed","outputFile":"/tmp/agents/search_2.json"}'},
+        {"role": "tool_call", "content": '{"name":"Agent","arguments":{"subagent_type":"wavetable_search","description":"Evaluate wavetables 141-188 for keys target","prompt":"Target...","run_in_background":true}}'},
+        {"role": "tool_response", "content": '{"status":"completed","outputFile":"/tmp/agents/search_2.md"}'},
         # Cat shortlists
         {"role": "assistant", "content": "Reading shortlists from 2 search agents."},
-        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"cat /tmp/agents/search_1.json /tmp/agents/search_2.json"}}'},
-        {"role": "tool_response", "content": '{"status":"completed","shortlist":["01 Basic Shapes","Cymatics Chill 25"]}\n{"status":"completed","shortlist":["Pink Noise"]}'},
+        {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"cat /tmp/agents/search_1.md /tmp/agents/search_2.md"}}'},
+        {"role": "tool_response", "content": 'Shortlist: ["01 Basic Shapes", "Cymatics Chill 25"]. 2 candidate(s) flagged for the judge agent.\nShortlist: ["Pink Noise"]. 1 candidate(s) flagged for the judge agent.'},
         # Pool summary + tuple intro (merged)
         {"role": "assistant", "content": "Pooled 3 candidates across 1 round(s): ['01 Basic Shapes', 'Cymatics Chill 25', 'Pink Noise'].\n\nThe target uses 1 active oscillator. Evaluating 2 wavetable combinations."},
         {"role": "tool_call", "content": '{"name":"bash","arguments":{"command":"# Render tuple 1"}}'},
@@ -494,7 +494,7 @@ def test_v3_wt_scaffold_uses_agent_tool():
 
 
 def test_v3_wt_scaffold_agents_have_subagent_type():
-    """Each Agent call should specify subagent_type=wavetable_search."""
+    """Each Agent call should specify subagent_type=wavetable_search and run_in_background."""
     record = _make_v3_record()
     for m in record["messages"]:
         if m["role"] == "tool_call":
@@ -504,6 +504,7 @@ def test_v3_wt_scaffold_agents_have_subagent_type():
                 assert args.get("subagent_type") == "wavetable_search"
                 assert "description" in args
                 assert "prompt" in args
+                assert args.get("run_in_background") is True, "Agent calls must have run_in_background=true"
 
 
 def test_v3_wt_scaffold_agent_returns_output_file():
@@ -522,7 +523,9 @@ def test_v3_wt_scaffold_agent_returns_output_file():
     assert agent_responses, "Should have Agent tool responses"
     for resp in agent_responses:
         assert "outputFile" in resp, f"Agent response missing outputFile: {resp}"
-        assert "agentId" in resp
+        assert "status" in resp
+        assert "manifestFile" not in resp, "Non-claw-code field 'manifestFile' should be stripped"
+        assert "agentId" not in resp, "Non-claw-code field 'agentId' should be stripped"
 
 
 def test_v3_wt_scaffold_has_cat_read():

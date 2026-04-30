@@ -626,7 +626,7 @@ def build_judge_record(
     pool_str = ", ".join(f'"{n}"' for n in pool)
     from scripts.agent_sft_common import make_agent_id  # type: ignore
     judge_agent_id = make_agent_id(sample_id, "wavetable_judge")
-    judge_output_file = judge_output_dir / f"{judge_agent_id}.json"
+    judge_output_file = judge_output_dir / f"{judge_agent_id}.md"
     judge_output_file.parent.mkdir(parents=True, exist_ok=True)
 
     # User prompt — mirrors what the main agent's Agent tool_call sends.
@@ -780,25 +780,6 @@ def build_judge_record(
     )
     final_reasoning = _extract_final_reasoning(stage2_response)
 
-    # Persist output file to disk (build-time) so the main agent's `cat` works.
-    # The sub-agent conversation does NOT include a file-write — the framework
-    # captures the agent's result automatically.
-    judge_output: dict = {
-        "status": "completed",
-        "agentId": judge_agent_id,
-        "verdict": verdict,
-        "missing_character": missing_character,
-        "tuple": selected_tuple_for_output,
-        "n_osc_slots": n_osc_slots,
-        "reasoning": final_reasoning,
-    }
-    if verdict == _VERDICT_PARTIAL:
-        judge_output["locked_slots"] = {str(k): v for k, v in locked_slots.items()}
-        judge_output["unfilled_oscs"] = unfilled_oscs
-    with open(judge_output_file, "w") as f:
-        json.dump(judge_output, f)
-        f.write("\n")
-
     # Build closing text based on verdict
     if verdict == _VERDICT_GOOD:
         tuple_str = ", ".join(repr(n) for n in selected_tuple)
@@ -825,13 +806,22 @@ def build_judge_record(
         )
 
     # Single assistant turn: deliberation + closing (avoids adjacent assistant messages)
+    final_assistant_content = (
+        f"Listening to the target alongside all {len(pool)} pool candidates at once.\n\n"
+        f"{stage2_response}\n\n"
+        f"{closing}"
+    )
+
+    # Persist the final assistant message to disk (build-time) so the main
+    # agent's `cat` works.  In claw-code the framework writes the sub-agent's
+    # last response to the outputFile — plain text, not JSON.
+    with open(judge_output_file, "w") as f:
+        f.write(final_assistant_content)
+        f.write("\n")
+
     messages.append({
         "role": "assistant",
-        "content": (
-            f"Listening to the target alongside all {len(pool)} pool candidates at once.\n\n"
-            f"{stage2_response}\n\n"
-            f"{closing}"
-        ),
+        "content": final_assistant_content,
     })
 
     # Judge correctness: did the selection match the GTs present in the pool

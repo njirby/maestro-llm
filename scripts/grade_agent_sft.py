@@ -455,7 +455,7 @@ def _check_file_causality(
                 if fp_c.endswith(pat):
                     break
             else:
-                if fp.endswith((".wav", ".json")):
+                if fp.endswith((".wav", ".json", ".md")):
                     violations.append({"path": fp, "read_at_msg": idx, "kind": "Read"})
 
         if name == "Bash":

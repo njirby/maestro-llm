@@ -420,19 +420,15 @@ def build_record(
             _trans_track_name = "target_melody"
             _trans_agent_id = make_agent_id(sample_id, "melody_transcription")
             _trans_agent_dir = f"/tmp/agents/{sample_id}"
-            _trans_output_file = f"{_trans_agent_dir}/{_trans_agent_id}.json"
+            _trans_output_file = f"{_trans_agent_dir}/{_trans_agent_id}.md"
             _trans_manifest_file = f"{_trans_agent_dir}/{_trans_agent_id}.manifest.json"
+            _trans_notes_file = f"{_trans_agent_dir}/{sample_id}_notes.json"
 
-            _trans_payload = {
-                "status": "completed",
-                "notes": _trans_notes,
-                "n_notes": _trans_n_notes,
-                "duration_s": _trans_duration_s,
-            }
             Path(_trans_output_file).parent.mkdir(parents=True, exist_ok=True)
-            with open(_trans_output_file, "w") as _trf:
-                json.dump(_trans_payload, _trf)
-                _trf.write("\n")
+            # MIDI notes file — structured JSON for render functions
+            with open(_trans_notes_file, "w") as _tnf:
+                json.dump({"notes": _trans_notes, "n_notes": _trans_n_notes, "duration_s": _trans_duration_s}, _tnf)
+                _tnf.write("\n")
 
             # Step 1: create a REAPER track + load Vital on it
             _trans_create_snippet = (
@@ -481,19 +477,13 @@ def build_record(
                 "description": f"Transcribe target melody to MIDI on track {_trans_track_idx}",
                 "prompt": _dispatch_prompt,
                 "name": f"transcribe-{sample_id}",
+                "run_in_background": True,
             }))
             messages.append({
                 "role": "tool_response",
                 "content": json.dumps({
-                    "agentId": _trans_agent_id,
-                    "subagentType": "melody_transcription",
                     "status": "completed",
                     "outputFile": _trans_output_file,
-                    "manifestFile": _trans_manifest_file,
-                    "createdAt": f"build-time:{_trans_agent_id}",
-                    "startedAt": f"build-time:{_trans_agent_id}",
-                    "n_notes": _trans_n_notes,
-                    "duration_s": _trans_duration_s,
                 }, ensure_ascii=False),
             })
 
@@ -511,6 +501,17 @@ def build_record(
             )
             if trans_result.record:
                 transcription_records.append(trans_result.record)
+
+            # Write the transcription agent's final message to the output file.
+            # In claw-code, outputFile = agent's last assistant response (text).
+            trans_final_msg = (
+                trans_result.record["messages"][-1]["content"]
+                if trans_result.record
+                else f"Transcription complete. {_trans_n_notes} notes on track 0."
+            )
+            with open(_trans_output_file, "w") as _trf:
+                _trf.write(trans_final_msg)
+                _trf.write("\n")
 
             transcription_summary_text = (
                 f"Transcription verified — {_trans_n_notes} notes on track "
@@ -643,7 +644,7 @@ def build_record(
                 candidates_per_batch=int(getattr(args, "candidates_per_batch", 8)),
                 shortlist_dir=Path(agent_out_dir),
                 clap_threshold=0.97,
-                midi_path=_trans_output_file,
+                midi_path=_trans_notes_file,
             )
             return ai, agent_id, sr
 
@@ -667,16 +668,11 @@ def build_record(
 
             out_dir = Path(agent_out_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
-            out_path = out_dir / f"{agent_id}.json"
+            out_path = out_dir / f"{agent_id}.md"
             manifest_path = out_dir / f"{agent_id}.manifest.json"
+            final_msg = search_result.record["messages"][-1]["content"] if search_result.record else ""
             with open(out_path, "w") as f:
-                json.dump({
-                    "status": "completed",
-                    "agentId": agent_id,
-                    "shardStart": start,
-                    "shardEnd": end,
-                    "shortlist": sl,
-                }, f)
+                f.write(final_msg)
                 f.write("\n")
             write_agent_manifest(
                 agent_id=agent_id,
@@ -691,8 +687,8 @@ def build_record(
         # Emit Agent tool_calls
         for ai_idx, (start, end, agent_id, _out, _manifest, _sl) in enumerate(round_agent_meta):
             _search_prompt_parts = [f"Target: {target_audio_path}."]
-            if _trans_output_file:
-                _search_prompt_parts.append(f"Transcription MIDI: {_trans_output_file}.")
+            if _trans_notes_file:
+                _search_prompt_parts.append(f"Transcription MIDI: {_trans_notes_file}.")
             _search_prompt_parts.append(
                 f"Evaluate wavetables at indices {start}-{end - 1}. "
                 f"Scan Vital's data directories for .vitaltable and .vital files to get names in your range, "
@@ -704,19 +700,15 @@ def build_record(
                 "description": f"Evaluate wavetables {start}-{end - 1} for target sound",
                 "prompt": "\n".join(_search_prompt_parts),
                 "name": f"search-r{rounds_used}-a{ai_idx + 1}",
+                "run_in_background": True,
             }))
 
         for _start, _end, agent_id, output_file, manifest_file, _sl in round_agent_meta:
             messages.append({
                 "role": "tool_response",
                 "content": json.dumps({
-                    "agentId": agent_id,
-                    "subagentType": "wavetable_search",
                     "status": "completed",
                     "outputFile": output_file,
-                    "manifestFile": manifest_file,
-                    "createdAt": f"build-time:{agent_id}",
-                    "startedAt": f"build-time:{agent_id}",
                 }, ensure_ascii=False),
             })
 
@@ -729,16 +721,13 @@ def build_record(
         messages.append(_tool_call("Bash", {"command": cat_cmd}))
         cat_output_lines = []
         round_shortlists: list[list[str]] = []
-        for out_file in round_output_files:
+        for (_start, _end, _aid, out_file, _mf, sl) in round_agent_meta:
             try:
                 with open(out_file) as f:
-                    content = f.read().strip()
-                cat_output_lines.append(content)
-                parsed = json.loads(content)
-                round_shortlists.append(parsed.get("shortlist", []))
+                    cat_output_lines.append(f.read().strip())
             except Exception:
                 cat_output_lines.append("")
-                round_shortlists.append([])
+            round_shortlists.append(sl)
         messages.append(_bash_tool_response("\n".join(cat_output_lines) + "\n"))
 
         # Pool in shortlists
@@ -823,7 +812,7 @@ def build_record(
 
         # Read judge output file path
         judge_agent_id = make_agent_id(sample_id, "wavetable_judge", rounds_used)
-        judge_output_file = Path(agent_out_dir) / f"{judge_agent_id}.json"
+        judge_output_file = Path(agent_out_dir) / f"{judge_agent_id}.md"
         judge_manifest_file = Path(agent_out_dir) / f"{judge_agent_id}.manifest.json"
 
         # Dispatch judge in main conversation
@@ -867,29 +856,11 @@ def build_record(
         )
         # Write judge output file on disk for the cat (always overwrite —
         # stale files from prior builds would show the wrong verdict).
+        # In claw-code, outputFile contains the agent's final assistant message.
         judge_output_file.parent.mkdir(parents=True, exist_ok=True)
-        if judge_verdict == "good":
-            _payload_tuple = cur_active_names
-        elif judge_verdict == "partial_match" and judge_result.locked_slots:
-            _payload_tuple = list(judge_result.locked_slots.values())
-        else:
-            _payload_tuple = None
-        judge_output_payload: dict = {
-            "status": "completed",
-            "agentId": judge_agent_id,
-            "verdict": judge_verdict,
-            "missing_character": missing_character,
-            "tuple": _payload_tuple,
-            "n_osc_slots": n_osc_slots,
-            "reasoning": judge_result.reasoning,
-        }
-        if judge_verdict == "partial_match" and judge_result.locked_slots:
-            judge_output_payload["locked_slots"] = {
-                str(k): v for k, v in judge_result.locked_slots.items()
-            }
-            judge_output_payload["unfilled_oscs"] = judge_result.unfilled_oscs or []
+        judge_final_msg = judge_result.record["messages"][-1]["content"] if judge_result.record else ""
         with open(judge_output_file, "w") as jf:
-            json.dump(judge_output_payload, jf)
+            jf.write(judge_final_msg)
             jf.write("\n")
 
         write_agent_manifest(
@@ -904,17 +875,13 @@ def build_record(
             "description": f"Select best oscillator combination (up to 3) from pool of {len(pool)} candidates",
             "prompt": _judge_dispatch_prompt,
             "name": f"judge-{rounds_used}",
+            "run_in_background": True,
         }))
         messages.append({
             "role": "tool_response",
             "content": json.dumps({
-                "agentId": judge_agent_id,
-                "subagentType": "wavetable_judge",
                 "status": "completed",
                 "outputFile": str(judge_output_file),
-                "manifestFile": str(judge_manifest_file),
-                "createdAt": f"build-time:{judge_agent_id}",
-                "startedAt": f"build-time:{judge_agent_id}",
             }, ensure_ascii=False),
         })
 
@@ -981,7 +948,7 @@ def build_record(
         osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
         render_cmd = _wrap_as_bash(build_render_tuple_snippet(
             osc_names=osc_names, out_path=str(tuple_wav),
-            midi_path=_trans_output_file,
+            midi_path=_trans_notes_file,
         ))
         render_cumulative_audio(
             _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
@@ -1014,7 +981,7 @@ def build_record(
         osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
         render_cmd = _wrap_as_bash(build_render_tuple_snippet(
             osc_names=osc_names, out_path=str(tuple_wav),
-            midi_path=_trans_output_file,
+            midi_path=_trans_notes_file,
         ))
         render_cumulative_audio(
             _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
