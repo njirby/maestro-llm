@@ -780,15 +780,6 @@ def build_judge_record(
     )
     final_reasoning = _extract_final_reasoning(stage2_response)
 
-    # Assistant narration: the whole deliberation
-    messages.append({
-        "role": "assistant",
-        "content": (
-            f"Listening to the target alongside all {len(pool)} pool candidates at once.\n\n"
-            f"{stage2_response}"
-        ),
-    })
-
     # Persist output file to disk (build-time) so the main agent's `cat` works.
     # The sub-agent conversation does NOT include a file-write — the framework
     # captures the agent's result automatically.
@@ -808,7 +799,7 @@ def build_judge_record(
         json.dump(judge_output, f)
         f.write("\n")
 
-    # Closing assistant turn — the framework captures this as the agent's output
+    # Build closing text based on verdict
     if verdict == _VERDICT_GOOD:
         tuple_str = ", ".join(repr(n) for n in selected_tuple)
         closing = (
@@ -832,9 +823,15 @@ def build_judge_record(
             f"the {missing_character} of the target. Recommending re-dispatch "
             f"search across unexplored library regions."
         )
+
+    # Single assistant turn: deliberation + closing (avoids adjacent assistant messages)
     messages.append({
         "role": "assistant",
-        "content": closing,
+        "content": (
+            f"Listening to the target alongside all {len(pool)} pool candidates at once.\n\n"
+            f"{stage2_response}\n\n"
+            f"{closing}"
+        ),
     })
 
     # Judge correctness: did the selection match the GTs present in the pool

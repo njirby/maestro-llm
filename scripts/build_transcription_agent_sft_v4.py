@@ -135,7 +135,7 @@ def build_insert_cmd(
     notes_literal = json.dumps(notes, ensure_ascii=False)
     snippet = (
         _REAPY_HELPER
-        f"notes = {notes_literal}\n"
+        + f"notes = {notes_literal}\n"
         f"with reapy.inside_reaper():\n"
         f"    track = RPR.GetTrack(0, {track_idx})\n"
         f"    item = RPR.CreateNewMIDIItemInProj(track, 0.0, {item_end}, False)[0]\n"
