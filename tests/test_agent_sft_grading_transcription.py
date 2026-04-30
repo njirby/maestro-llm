@@ -15,8 +15,6 @@ def _make_transcription_record(
     oracle_notes: list[dict] | None = None,
     emitted_n_notes: int | None = None,
     has_reapy_insert: bool = True,
-    has_output_write: bool = True,
-    output_has_notes_schema: bool = True,
     has_audio_in_user: bool = True,
     last_role_assistant: bool = True,
     inject_snake_case: bool = False,
@@ -70,27 +68,8 @@ def _make_transcription_record(
             "content": json.dumps({"status": "ok", "notes_inserted": emitted_n_notes}),
         })
 
-    # Output write (optional)
-    if has_output_write:
-        messages.append({"role": "assistant", "content": "Writing the transcription output."})
-        if output_has_notes_schema:
-            write_cmd = (
-                "python - <<'PY'\n"
-                "import json\n"
-                f'payload = {{"notes": {json.dumps(oracle_notes)}, "n_notes": {emitted_n_notes}, "duration_s": {duration_s}}}\n'
-                "with open('/tmp/x.json','w') as f: json.dump(payload, f)\n"
-                "PY"
-            )
-        else:
-            write_cmd = "python - <<'PY'\nprint('no schema')\nPY"
-        messages.append({
-            "role": "tool_call",
-            "content": json.dumps({"name": "Bash", "arguments": {"command": write_cmd}}),
-        })
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({"status": "ok", "file": "/tmp/x.json"}),
-        })
+    # (Sub-agents no longer write output files — the framework captures results.
+    #  The MIDI insert tool_response already carries notes_inserted.)
 
     if last_role_assistant:
         messages.append({
@@ -127,7 +106,7 @@ def test_transcription_happy_path():
     record = _make_transcription_record()
     scores = score_transcription_record(record)
     assert scores["has_midi_insert"] == 1.0
-    assert scores["output_file_written"] == 1.0
+    assert scores["result_communicated"] == 1.0
     assert scores["note_count_match"] == 1.0
     assert scores["pitch_coverage"] == 1.0
     assert scores["has_render_listen"] == 1.0
@@ -144,22 +123,16 @@ def test_transcription_missing_reapy_insert_dings():
     assert scores["overall"] < 1.0
 
 
-def test_transcription_missing_output_write_dings():
-    record = _make_transcription_record(has_output_write=False)
+def test_transcription_missing_midi_insert_dings_result():
+    record = _make_transcription_record(has_reapy_insert=False)
     scores = score_transcription_record(record)
-    assert scores["output_file_written"] == 0.0
+    assert scores["result_communicated"] == 0.0
 
 
 def test_transcription_note_count_mismatch():
     record = _make_transcription_record(emitted_n_notes=2)  # oracle has 3
     scores = score_transcription_record(record)
     assert scores["note_count_match"] == 0.0
-
-
-def test_transcription_output_missing_schema_dings():
-    record = _make_transcription_record(output_has_notes_schema=False)
-    scores = score_transcription_record(record)
-    assert scores["output_file_written"] == 0.0
 
 
 def test_transcription_no_audio_in_user_dings():

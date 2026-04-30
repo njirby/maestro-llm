@@ -693,13 +693,9 @@ def build_search_record(
         final_text = f"{pending_notes}\n\n{final_text}"
         pending_notes = None
 
-    # Write shortlist output file. This is the claw-code-style file-based handoff —
-    # the dispatcher (main agent) will `cat` this file to consume the result.
-    #
-    # The write is BOTH persisted to disk (for real, so the main agent's SFT builder
-    # can reference it at inference time) AND emitted as an explicit bash tool_call
-    # in the conversation transcript, so the model learns the full protocol: "do the
-    # work, then write the result to the file my dispatcher reads."
+    # Persist shortlist to disk (build-time) so the main agent's `cat` works.
+    # The sub-agent conversation does NOT include a file-write tool_call — in
+    # claw-code the framework captures the agent's result automatically.
     shortlist_path: str | None = None
     if shortlist_dir is not None:
         from scripts.agent_sft_common import make_agent_id  # type: ignore
@@ -714,49 +710,20 @@ def build_search_record(
             "shortlist": selected_so_far,
             "nBatches": len(all_ordered),
         }
-        # Persist to disk (so the file actually exists at the path the transcript references)
         with open(shortlist_path, "w") as f:
             json.dump(payload, f)
             f.write("\n")
 
-        # Merge the final narration and the "writing file" intro into ONE assistant
-        # turn, then emit the visible tool_call + tool_response + closing assistant.
-        # Two back-to-back assistant turns would fail the validator.
-        messages.append({
-            "role": "assistant",
-            "content": (
-                f"{final_text}\n\n"
-                f"Writing the final shortlist to the output file for the dispatcher "
-                f"to consume."
-            ),
-        })
-        write_cmd = (
-            f"python - <<'PY'\n"
-            f"import json\n"
-            f"from pathlib import Path\n"
-            f"p = Path({json.dumps(shortlist_path)})\n"
-            f"p.parent.mkdir(parents=True, exist_ok=True)\n"
-            f"with open(p, 'w') as f:\n"
-            f"    json.dump({json.dumps(payload, ensure_ascii=False)}, f)\n"
-            f"    f.write('\\n')\n"
-            f"print(json.dumps({{'status': 'ok', 'file': str(p)}}))\n"
-            f"PY"
-        )
-        messages.append(_tool_call("Bash", {"command": write_cmd}))
-        _write_stdout = json.dumps({"status": "ok", "file": shortlist_path}) + "\n"
-        messages.append(_bash_tool_response(_write_stdout))
-        # Closing assistant turn — keeps the validator's last-message-is-assistant
-        # invariant, and signals task completion explicitly.
-        messages.append({
-            "role": "assistant",
-            "content": (
-                f"Shortlist written. {len(selected_so_far)} candidate(s) flagged for "
-                f"the judge agent."
-            ),
-        })
-    else:
-        # No shortlist_dir — single final assistant turn with the narration only.
-        messages.append({"role": "assistant", "content": final_text})
+    # Final assistant turn — summarize result (the framework captures this as output)
+    shortlist_str = ", ".join(f'"{n}"' for n in selected_so_far)
+    messages.append({
+        "role": "assistant",
+        "content": (
+            f"{final_text}\n\n"
+            f"Shortlist: [{shortlist_str}]. {len(selected_so_far)} candidate(s) "
+            f"flagged for the judge agent."
+        ),
+    })
 
     record = {
         "id": f"{sample_id}_search",

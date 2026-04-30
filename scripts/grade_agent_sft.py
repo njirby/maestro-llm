@@ -2292,7 +2292,7 @@ def score_search_v2_record(
 
     Dimensions:
       gt_recovery                    (35% conditional) — fraction of GTs in the shard that made it onto the shortlist. Only assessable when gt_in_shard is non-empty.
-      shortlist_file_written         (20%)             — last bash tool_call writes the shortlist JSON, tool_response confirms.
+      result_communicated            (20%)             — final assistant message mentions shortlist/candidates.
       llm_candidates_audio_grounded  (15% conditional) — mean single-audio Omni grounding check across all (candidate, description) pairs. Catches batch-call audio-position confusion. Requires --llm-judge-server.
       has_render_probes              (10%)             — ≥1 bash tool_call renders wavetable probes (inline chunk manipulation or legacy render_probes.py).
       shortlist_nonempty             (10%)             — final shortlist has ≥1 name.
@@ -2312,35 +2312,14 @@ def score_search_v2_record(
     else:
         gt_recovery = None  # not assessable
 
-    # Shortlist file write: the LAST bash tool_call should write a *_search_*.json
-    # and its matching tool_response should return {"status": "ok", "file": ...}.
-    shortlist_file_written: float = 0.0
-    last_bash_idx = -1
-    for i, m in enumerate(messages):
-        if m.get("role") == "tool_call":
-            try:
-                tc = json.loads(m.get("content", ""))
-                if tc.get("name") in ("bash", "Bash"):
-                    last_bash_idx = i
-            except Exception:
-                pass
-    if last_bash_idx >= 0:
-        try:
-            tc = json.loads(messages[last_bash_idx]["content"])
-            cmd = tc.get("arguments", {}).get("command", "")
-            if "shortlist" in cmd and ".json" in cmd:
-                nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
-                if nxt and nxt.get("role") == "tool_response":
-                    try:
-                        resp = json.loads(nxt.get("content", ""))
-                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
-                        inner = json.loads(stdout) if stdout.strip() else resp
-                        if inner.get("status") == "ok" and inner.get("file"):
-                            shortlist_file_written = 1.0
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    # Result communicated: the final assistant message should mention the
+    # shortlist candidates. (Sub-agents no longer write output files — the
+    # framework captures the agent's result from its final message.)
+    result_communicated: float = 0.0
+    if messages and messages[-1].get("role") == "assistant":
+        final_text = messages[-1].get("content", "")
+        if "shortlist" in final_text.lower() or "candidate" in final_text.lower():
+            result_communicated = 1.0
 
     # Closing assistant
     closing_assistant: float = 1.0 if messages and messages[-1].get("role") == "assistant" else 0.0
@@ -2389,7 +2368,7 @@ def score_search_v2_record(
 
     weights: dict[str, float] = {
         "gt_recovery": 0.30,
-        "shortlist_file_written": 0.20,
+        "result_communicated": 0.20,
         "llm_candidates_audio_grounded": 0.15,
         "has_render_probes": 0.10,
         "shortlist_nonempty": 0.10,
@@ -2402,7 +2381,7 @@ def score_search_v2_record(
         weights["code_mistake_recovery"] = 0.05
     raw: dict[str, Any] = {
         "gt_recovery": gt_recovery,
-        "shortlist_file_written": shortlist_file_written,
+        "result_communicated": result_communicated,
         "llm_candidates_audio_grounded": audio_grounded_mean,
         "has_render_probes": has_render_probes,
         "shortlist_nonempty": shortlist_nonempty,
@@ -2444,8 +2423,8 @@ def score_judge_v3_record(
 
     Dimensions:
       verdict_correct                (25%)            — judge's emitted verdict matches the oracle (gt ⊆ pool).
-      output_file_written            (15%)            — final bash writes judge JSON; tool_response ok.
-      output_schema_valid            (5%)             — embedded write_cmd JSON has all required keys.
+      result_communicated            (15%)            — final assistant contains verdict/tuple keywords.
+      output_schema_valid            (5%)             — deliberation text mentions key fields (tuple, verdict).
       judge_correct                  (15% cond:good)  — meta.judge_correct: tuple matches GTs in pool.
       tuple_size_correct             (5%  cond:good)  — len(selected_tuple) == n_osc_slots.
       tuple_names_in_pool            (5%  cond:good)  — every selected name is from the pool.
@@ -2512,61 +2491,23 @@ def score_judge_v3_record(
         missing_character_nonempty = None
         no_match_narration_present = None
 
-    # Output file written + schema valid
-    output_file_written: float = 0.0
+    # Result communicated: the final assistant message should contain the
+    # verdict (tuple selection, partial_match, or no_match). Sub-agents no
+    # longer write output files — the framework captures the result.
+    result_communicated: float = 0.0
     output_schema_valid: float = 0.0
-    last_bash_idx = -1
-    for i, m in enumerate(messages):
-        if m.get("role") == "tool_call":
-            try:
-                tc = json.loads(m.get("content", ""))
-                if tc.get("name") in ("bash", "Bash"):
-                    last_bash_idx = i
-            except Exception:
-                pass
-    if last_bash_idx >= 0:
-        try:
-            tc = json.loads(messages[last_bash_idx]["content"])
-            cmd = tc.get("arguments", {}).get("command", "")
-            # Loosened heuristic: must reference n_osc_slots + reasoning. The "tuple"
-            # check is omitted because tuple may be null on no_match records, but
-            # the literal "tuple" key is still present so we keep that as a soft check.
-            if "n_osc_slots" in cmd and "reasoning" in cmd and "tuple" in cmd:
-                nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
-                if nxt and nxt.get("role") == "tool_response":
-                    try:
-                        resp = json.loads(nxt.get("content", ""))
-                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
-                        inner = json.loads(stdout) if stdout.strip() else resp
-                        if inner.get("status") == "ok" and inner.get("file"):
-                            output_file_written = 1.0
-                    except Exception:
-                        pass
-            # Schema-valid: parse the embedded JSON literal in the heredoc and
-            # verify the new keys are present. Lenient — for back-compat with
-            # records lacking verdict/missing_character we only require the
-            # legacy {tuple, n_osc_slots, reasoning} keys.
-            required_legacy = {"tuple", "n_osc_slots", "reasoning"}
-            required_new = required_legacy | {"verdict", "missing_character"}
-            try:
-                # Find the largest brace-balanced JSON-looking substring
-                _braces = re.findall(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", cmd, re.DOTALL)
-                _payload_keys: set[str] = set()
-                for blob in _braces:
-                    try:
-                        _parsed = json.loads(blob)
-                        if isinstance(_parsed, dict) and required_legacy.issubset(_parsed.keys()):
-                            _payload_keys = set(_parsed.keys())
-                            break
-                    except Exception:
-                        continue
-                target_keys = required_new if (verdict and verdict in ("good", "partial_match", "no_match")) else required_legacy
-                if target_keys.issubset(_payload_keys):
-                    output_schema_valid = 1.0
-            except Exception:
-                pass
-        except Exception:
-            pass
+    if messages and messages[-1].get("role") == "assistant":
+        final_text = messages[-1].get("content", "")
+        if any(kw in final_text for kw in ("tuple", "PARTIAL_MATCH", "NO_MATCH")):
+            result_communicated = 1.0
+            # Schema check: the prior assistant deliberation turn should contain
+            # the key judge fields (tuple mention, verdict reasoning).
+            all_assistant_text = " ".join(assistant_turns)
+            if ("tuple" in all_assistant_text
+                    and any(kw in all_assistant_text for kw in ("PARTIAL_MATCH", "NO_MATCH", "slot"))):
+                output_schema_valid = 1.0
+            elif "tuple" in final_text:
+                output_schema_valid = 1.0
 
     # Pool candidates discussed in deliberation
     if pool and assistant_turns:
@@ -2607,7 +2548,7 @@ def score_judge_v3_record(
 
     weights: dict[str, float] = {
         "verdict_correct": 0.25,
-        "output_file_written": 0.15,
+        "result_communicated": 0.15,
         "output_schema_valid": 0.05,
         "judge_correct": 0.15,
         "tuple_size_correct": 0.05,
@@ -2624,7 +2565,7 @@ def score_judge_v3_record(
     raw: dict[str, Any] = {
         "verdict": verdict,
         "verdict_correct": verdict_correct,
-        "output_file_written": output_file_written,
+        "result_communicated": result_communicated,
         "output_schema_valid": output_schema_valid,
         "judge_correct": judge_correct,
         "tuple_size_correct": tuple_size_correct,
@@ -2664,9 +2605,9 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
     Dimensions:
       has_midi_insert  (20%) — ≥1 bash tool_call contains MIDI_InsertNote
                                     (or RPR_MIDI_InsertNote).
-      output_file_written    (25%) — final bash writes transcription.json with
-                                    notes/n_notes/duration_s + ok tool_response.
-      note_count_match       (20%) — n notes in payload matches meta.n_notes
+      result_communicated    (25%) — tool_response from MIDI insert reports
+                                    notes_inserted > 0 with status ok.
+      note_count_match       (20%) — n notes inserted matches meta.n_notes
                                     (oracle count).
       pitch_coverage         (10%) — fraction of oracle pitches that appear in
                                     deliberation or insert command.
@@ -2707,42 +2648,23 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
-    # output_file_written: final bash tool_call writes transcription JSON with
-    # the expected shape + matching ok tool_response.
-    output_file_written: float = 0.0
+    # Result communicated: a tool_response from the MIDI insert bash call should
+    # report notes_inserted. (Sub-agents no longer write separate output files —
+    # the framework captures the result.)
+    result_communicated: float = 0.0
     note_count_match: float = 0.0
-    last_bash_idx = -1
     for i, m in enumerate(messages):
-        if m.get("role") == "tool_call":
-            try:
-                tc = json.loads(m.get("content", ""))
-                if tc.get("name") in ("bash", "Bash"):
-                    last_bash_idx = i
-            except Exception:
-                pass
-    if last_bash_idx >= 0:
+        if m.get("role") != "tool_response":
+            continue
         try:
-            tc = json.loads(messages[last_bash_idx]["content"])
-            cmd = tc.get("arguments", {}).get("command", "") or ""
-            # require n_notes + notes + duration_s schema in the heredoc
-            has_schema = all(tok in cmd for tok in ('"n_notes"', '"notes"', '"duration_s"'))
-            if has_schema and ".json" in cmd:
-                nxt = messages[last_bash_idx + 1] if last_bash_idx + 1 < len(messages) else None
-                if nxt and nxt.get("role") == "tool_response":
-                    try:
-                        resp = json.loads(nxt.get("content", ""))
-                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
-                        inner = json.loads(stdout) if stdout.strip() else resp
-                        if inner.get("status") == "ok" and inner.get("file"):
-                            output_file_written = 1.0
-                    except Exception:
-                        pass
-                # note count match: parse n_notes from the heredoc payload string
-                m_count = re.search(r'"n_notes"\s*:\s*(\d+)', cmd)
-                if m_count:
-                    emitted_n = int(m_count.group(1))
-                    if oracle_n > 0 and emitted_n == oracle_n:
-                        note_count_match = 1.0
+            resp = json.loads(m.get("content", ""))
+            stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
+            inner = json.loads(stdout) if stdout.strip() else resp
+            inserted = inner.get("notes_inserted", 0)
+            if inner.get("status") == "ok" and inserted > 0:
+                result_communicated = 1.0
+                if oracle_n > 0 and inserted == oracle_n:
+                    note_count_match = 1.0
         except Exception:
             pass
 
@@ -2777,7 +2699,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
 
     weights: dict[str, float] = {
         "has_midi_insert": 0.20,
-        "output_file_written": 0.25,
+        "result_communicated": 0.25,
         "note_count_match": 0.20,
         "pitch_coverage": 0.10,
         "has_render_listen": 0.10,
@@ -2787,7 +2709,7 @@ def score_transcription_record(record: dict[str, Any]) -> dict[str, Any]:
     }
     raw: dict[str, Any] = {
         "has_midi_insert": has_midi_insert,
-        "output_file_written": output_file_written,
+        "result_communicated": result_communicated,
         "note_count_match": note_count_match,
         "pitch_coverage": pitch_coverage,
         "has_render_listen": has_render_listen,
@@ -2874,36 +2796,22 @@ def score_transcription_v4_record(record: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
-    # output_file_written: last bash that writes JSON with the schema
-    output_file_written: float = 0.0
+    # Result communicated: a tool_response from the MIDI insert reports
+    # notes_inserted. Sub-agents no longer write separate output files.
+    result_communicated: float = 0.0
     note_count_match: float = 0.0
-    for i in range(len(messages) - 1, -1, -1):
-        m = messages[i]
-        if m.get("role") != "tool_call":
+    for i, m in enumerate(messages):
+        if m.get("role") != "tool_response":
             continue
         try:
-            tc = json.loads(m.get("content", ""))
-            if tc.get("name") not in ("bash", "Bash"):
-                continue
-            cmd = tc.get("arguments", {}).get("command", "") or ""
-            has_schema = all(tok in cmd for tok in ('"n_notes"', '"notes"', '"duration_s"'))
-            if has_schema and ".json" in cmd:
-                nxt = messages[i + 1] if i + 1 < len(messages) else None
-                if nxt and nxt.get("role") == "tool_response":
-                    try:
-                        resp = json.loads(nxt.get("content", ""))
-                        stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
-                        inner = json.loads(stdout) if stdout.strip() else resp
-                        if inner.get("status") == "ok" and inner.get("file"):
-                            output_file_written = 1.0
-                    except Exception:
-                        pass
-                m_count = re.search(r'"n_notes"\s*:\s*(\d+)', cmd)
-                if m_count:
-                    emitted_n = int(m_count.group(1))
-                    if oracle_n > 0 and emitted_n == oracle_n:
-                        note_count_match = 1.0
-                break
+            resp = json.loads(m.get("content", ""))
+            stdout = resp.get("stdout", "") if isinstance(resp, dict) else ""
+            inner = json.loads(stdout) if stdout.strip() else resp
+            inserted = inner.get("notes_inserted", 0)
+            if inner.get("status") == "ok" and inserted > 0:
+                result_communicated = 1.0
+                if oracle_n > 0 and inserted == oracle_n:
+                    note_count_match = 1.0
         except Exception:
             pass
 
@@ -2978,7 +2886,7 @@ def score_transcription_v4_record(record: dict[str, Any]) -> dict[str, Any]:
 
     weights: dict[str, float] = {
         "has_midi_insert": 0.15,
-        "output_file_written": 0.15,
+        "result_communicated": 0.15,
         "note_count_match": 0.15,
         "has_verify_cycle": 0.15,
         "has_render_listen": 0.10,
@@ -2991,7 +2899,7 @@ def score_transcription_v4_record(record: dict[str, Any]) -> dict[str, Any]:
     }
     raw: dict[str, Any] = {
         "has_midi_insert": has_midi_insert,
-        "output_file_written": output_file_written,
+        "result_communicated": result_communicated,
         "note_count_match": note_count_match,
         "has_verify_cycle": has_verify_cycle,
         "has_render_listen": has_render_listen,

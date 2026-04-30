@@ -53,27 +53,21 @@ def _make_search_v2(
     if inject_bold:
         middle += "\n**PLAN:** final."
     messages.append({"role": "assistant", "content": middle})
-    if has_final_write:
-        messages.append({
-            "role": "assistant",
-            "content": "Final narration. Writing shortlist to output file.",
-        })
-        messages.append({
-            "role": "tool_call",
-            "content": json.dumps({
-                "name": "bash",
-                "arguments": {"command": "python -c 'import json; json.dump({\"shortlist\":[\"A\",\"B\"]}, open(\"/tmp/agents/s1_search_1.json\",\"w\"))'"},
-            }),
-        })
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({"status": "ok", "file": "/tmp/agents/s1_search_1.json"}),
-        })
     if last_role_assistant:
-        messages.append({
-            "role": "assistant",
-            "content": f"Shortlist written. {len(final_shortlist)} candidate(s) flagged.",
-        })
+        if has_final_write:
+            shortlist_str = ", ".join(f'"{n}"' for n in final_shortlist)
+            messages.append({
+                "role": "assistant",
+                "content": (
+                    f"Final narration.\n\nShortlist: [{shortlist_str}]. "
+                    f"{len(final_shortlist)} candidate(s) flagged for the judge agent."
+                ),
+            })
+        else:
+            messages.append({
+                "role": "assistant",
+                "content": "Done evaluating this shard.",
+            })
 
     return {
         "id": "s1_search",
@@ -106,7 +100,7 @@ def test_search_v2_happy_path_full_gt_recovery():
     )
     scores = score_search_v2_record(record)
     assert scores["gt_recovery"] == 1.0
-    assert scores["shortlist_file_written"] == 1.0
+    assert scores["result_communicated"] == 1.0
     assert scores["closing_assistant"] == 1.0
     assert scores["has_render_probes"] == 1.0
     assert scores["shortlist_nonempty"] == 1.0
@@ -135,7 +129,7 @@ def test_search_v2_gt_recovery_none_when_no_gts_in_shard():
 def test_search_v2_missing_final_write_is_penalised():
     record = _make_search_v2(has_final_write=False)
     scores = score_search_v2_record(record)
-    assert scores["shortlist_file_written"] == 0.0
+    assert scores["result_communicated"] == 0.0
     assert scores["overall"] < 0.9
 
 
@@ -152,7 +146,7 @@ def test_search_v2_missing_render_probes_is_penalised():
 
 
 def test_search_v2_empty_shortlist_is_penalised():
-    record = _make_search_v2(final_shortlist=[])
+    record = _make_search_v2(gt_in_shard=["GT1"], final_shortlist=[])
     scores = score_search_v2_record(record)
     assert scores["shortlist_nonempty"] == 0.0
 
@@ -213,23 +207,18 @@ def _make_judge_v3(
             deliberation += f"\n'{n}': Candidate evaluated."
     deliberation += f"\n\nSELECTED: [{', '.join(repr(n) for n in selected_tuple)}]: rationale."
     messages.append({"role": "assistant", "content": deliberation})
-    if has_output_write:
-        messages.append({
-            "role": "tool_call",
-            "content": json.dumps({
-                "name": "bash",
-                "arguments": {"command": "python -c 'import json; json.dump({\"tuple\":[\"A\",\"B\"], \"n_osc_slots\": 2, \"reasoning\": \"ok\"}, open(\"/tmp/judge/judge_s1.json\",\"w\"))'"},
-            }),
-        })
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({"status": "ok", "file": "/tmp/judge/judge_s1.json"}),
-        })
     if last_role_assistant:
-        messages.append({
-            "role": "assistant",
-            "content": f"Selection written. Final tuple: {selected_tuple}.",
-        })
+        tuple_str = ", ".join(repr(n) for n in selected_tuple)
+        if has_output_write:
+            messages.append({
+                "role": "assistant",
+                "content": f"Final tuple: [{tuple_str}]. The main agent can now apply the chosen wavetables.",
+            })
+        else:
+            messages.append({
+                "role": "assistant",
+                "content": "Done evaluating pool.",
+            })
 
     return {
         "id": "s1_judge",
@@ -259,7 +248,7 @@ def test_judge_v3_happy_path():
     assert scores["judge_correct"] == 1.0
     assert scores["tuple_size_correct"] == 1.0
     assert scores["tuple_names_in_pool"] == 1.0
-    assert scores["output_file_written"] == 1.0
+    assert scores["result_communicated"] == 1.0
     assert scores["pool_candidates_discussed"] == 1.0
     assert scores["has_render_probes"] == 1.0
     assert scores["closing_assistant"] == 1.0
@@ -291,7 +280,7 @@ def test_judge_v3_hallucinated_tuple_name():
 def test_judge_v3_missing_output_write_is_penalised():
     record = _make_judge_v3(has_output_write=False)
     scores = score_judge_v3_record(record)
-    assert scores["output_file_written"] == 0.0
+    assert scores["result_communicated"] == 0.0
 
 
 def test_judge_v3_pool_discussion_partial():

@@ -462,9 +462,8 @@ def build_record(
             _dispatch_prompt = (
                 f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
                 f"(reapy → MIDI_InsertNote) that inserts the MIDI "
-                f"notes on that track, and save the final note list as JSON to "
-                f"{_trans_output_file} with shape "
-                f'{{"notes": [...], "n_notes": N, "duration_s": X}}.'
+                f"notes on that track. After inserting, render and listen to verify "
+                f"it matches the target melody."
             )
             write_agent_manifest(
                 agent_id=_trans_agent_id,
@@ -861,8 +860,9 @@ def build_record(
             f"The target may use up to 3 active oscillators. Swap each candidate "
             f"wavetable into the synth via chunk manipulation, render, and listen "
             f"alongside the target, then select the candidates (1 to 3) that "
-            f"together best capture the target. Write a JSON file with `tuple` (list "
-            f"of names), `n_osc_slots` (how many you chose), and `reasoning`."
+            f"together best capture the target. Return your selection as JSON with "
+            f"keys: tuple (list of chosen names), n_osc_slots (how many you chose), "
+            f"reasoning."
             f"{_locked_prompt_section}"
         )
         # Write judge output file on disk for the cat (always overwrite —

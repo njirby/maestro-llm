@@ -629,7 +629,8 @@ def build_judge_record(
     judge_output_file = judge_output_dir / f"{judge_agent_id}.json"
     judge_output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # User prompt — mirrors what the main agent's Agent tool_call sends
+    # User prompt — mirrors what the main agent's Agent tool_call sends.
+    # No file path — the framework captures the agent's result automatically.
     messages.append({
         "role": "user",
         "content": (
@@ -638,8 +639,8 @@ def build_judge_record(
             f"The target may use up to 3 active oscillators. Render probes for each "
             f"candidate, listen alongside the target, and select the candidates (1 to 3) "
             f"that together best capture the target's character. "
-            f"Write your selection to {judge_output_file} as JSON: "
-            f'{{"tuple": [...], "n_osc_slots": <how many you chose>, "reasoning": "..."}}.'
+            f"Return your selection as JSON with keys: "
+            f"tuple (list of chosen names), n_osc_slots (how many you chose), reasoning."
         ),
     })
 
@@ -780,20 +781,17 @@ def build_judge_record(
     final_reasoning = _extract_final_reasoning(stage2_response)
 
     # Assistant narration: the whole deliberation
-    if verdict == _VERDICT_GOOD:
-        narration_outro = "Writing selection to output file."
-    else:
-        narration_outro = "Writing audit verdict to output file."
     messages.append({
         "role": "assistant",
         "content": (
             f"Listening to the target alongside all {len(pool)} pool candidates at once.\n\n"
-            f"{stage2_response}\n\n"
-            f"{narration_outro}"
+            f"{stage2_response}"
         ),
     })
 
-    # Write output file both on disk (for real) and via bash snippet (for conversation)
+    # Persist output file to disk (build-time) so the main agent's `cat` works.
+    # The sub-agent conversation does NOT include a file-write — the framework
+    # captures the agent's result automatically.
     judge_output: dict = {
         "status": "completed",
         "agentId": judge_agent_id,
@@ -810,50 +808,29 @@ def build_judge_record(
         json.dump(judge_output, f)
         f.write("\n")
 
-    # Use a simple heredoc bash command to write the output file — matches the style
-    # of the main agent's inline python tool-call snippets (portable across harness).
-    write_cmd = (
-        f"python - <<'PY'\n"
-        f"import json\n"
-        f"from pathlib import Path\n"
-        f"p = Path({json.dumps(str(judge_output_file))})\n"
-        f"p.parent.mkdir(parents=True, exist_ok=True)\n"
-        f"with open(p, 'w') as f:\n"
-        f"    json.dump({json.dumps(judge_output, ensure_ascii=False)}, f)\n"
-        f"    f.write('\\n')\n"
-        f"print(json.dumps({{'status': 'ok', 'file': str(p)}}))\n"
-        f"PY"
-    )
-    messages.append(_tool_call("Bash", {"command": write_cmd}))
-    _write_stdout = json.dumps({"status": "ok", "file": str(judge_output_file)}) + "\n"
-    messages.append(_bash_tool_response(_write_stdout))
-    # Closing assistant turn — confirms the verdict and signals the main agent
-    # what to do next (apply tuple / re-search for remaining / full re-search).
+    # Closing assistant turn — the framework captures this as the agent's output
     if verdict == _VERDICT_GOOD:
         tuple_str = ", ".join(repr(n) for n in selected_tuple)
         closing = (
-            f"Selection written. Final tuple: [{tuple_str}]. The main agent can now read "
-            f"{judge_output_file} and apply the chosen wavetables."
+            f"Final tuple: [{tuple_str}]. The main agent can now apply the "
+            f"chosen wavetables."
         )
     elif verdict == _VERDICT_PARTIAL:
         locked_str = ", ".join(repr(n) for n in locked_slots.values())
         n_unfilled = len(unfilled_oscs)
         closing = (
-            f"Pool audit complete. PARTIAL_MATCH — [{locked_str}] confirmed for "
+            f"PARTIAL_MATCH — [{locked_str}] confirmed for "
             f"{len(locked_slots)} of {n_osc_slots} slots, but {n_unfilled} "
             f"slot{'s' if n_unfilled > 1 else ''} still "
             f"{'need' if n_unfilled > 1 else 'needs'} a wavetable with the "
-            f"{missing_character} of the target. Recommending the main agent keep "
-            f"current selections locked and re-dispatch search for the remaining "
-            f"slot{'s' if n_unfilled > 1 else ''}. Verdict written to "
-            f"{judge_output_file}."
+            f"{missing_character} of the target. Recommending re-dispatch search "
+            f"for the remaining slot{'s' if n_unfilled > 1 else ''}."
         )
     else:
         closing = (
-            f"Pool audit complete. NO_MATCH — none of these {len(pool)} candidates carries "
-            f"the {missing_character} of the target. Recommending the main agent re-dispatch "
-            f"search across unexplored library regions. Audit verdict written to "
-            f"{judge_output_file}."
+            f"NO_MATCH — none of these {len(pool)} candidates carries "
+            f"the {missing_character} of the target. Recommending re-dispatch "
+            f"search across unexplored library regions."
         )
     messages.append({
         "role": "assistant",

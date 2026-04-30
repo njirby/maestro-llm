@@ -120,9 +120,8 @@ def load_notes_from_midi(midi_path: str | Path) -> list[dict]:
     return notes
 
 
-def build_insert_and_write_cmd(
+def build_insert_cmd(
     notes: list[dict],
-    output_path: str | Path,
     *,
     track_idx: int = 0,
 ) -> str:
@@ -133,16 +132,9 @@ def build_insert_and_write_cmd(
     item_end = round(
         max((n["start_s"] + n["dur_s"] for n in notes), default=1.0) + 0.25, 4,
     )
-    output_path_s = str(output_path)
-    output_dir_s = str(Path(output_path).parent)
     notes_literal = json.dumps(notes, ensure_ascii=False)
-    payload_json = json.dumps(
-        {"notes": notes, "n_notes": n_notes, "duration_s": duration_s},
-        ensure_ascii=False,
-    )
     snippet = (
         _REAPY_HELPER
-        + "from pathlib import Path\n"
         f"notes = {notes_literal}\n"
         f"with reapy.inside_reaper():\n"
         f"    track = RPR.GetTrack(0, {track_idx})\n"
@@ -155,10 +147,8 @@ def build_insert_and_write_cmd(
         f"        end_ppq = int((n['start_s'] + n['dur_s']) * (bpm / 60.0) * ppb)\n"
         f"        RPR.MIDI_InsertNote(take, False, False, start_ppq, end_ppq, 0, n['pitch'], n['velocity'], True)\n"
         f"    RPR.MIDI_Sort(take)\n"
-        f"Path({output_dir_s!r}).mkdir(parents=True, exist_ok=True)\n"
-        f"Path({output_path_s!r}).write_text({payload_json!r} + '\\n')\n"
         f"print(json.dumps({{'status': 'ok', 'notes_inserted': {n_notes}, "
-        f"'file': {output_path_s!r}, 'duration_s': {duration_s}}}))\n"
+        f"'duration_s': {duration_s}}}))\n"
     )
     return _wrap_as_bash(snippet)
 
@@ -236,9 +226,7 @@ def build_transcription_record_v4(
             f"<audio>\n"
             f"Transcribe this melody into MIDI notes on REAPER track {track_idx} "
             f"(the main agent just created the track). Write Python code "
-            f"(reapy → MIDI_InsertNote) that inserts the "
-            f"notes, and write the final note list as JSON to {output_file} "
-            f"with shape {{'notes': [...], 'n_notes': N, 'duration_s': X}}. "
+            f"(reapy → MIDI_InsertNote) that inserts the notes. "
             f"After inserting, render your output through the default Vital "
             f"preset and listen to verify it matches the target melody. "
             f"If it doesn't match, re-transcribe from scratch."
@@ -283,8 +271,8 @@ def build_transcription_record_v4(
             attempt_output = Path(output_dir) / sample_id / f"{attempt_agent_id}.json"
 
         # ── Insert MIDI notes ──
-        cmd = build_insert_and_write_cmd(
-            attempt_notes, attempt_output, track_idx=track_idx,
+        cmd = build_insert_cmd(
+            attempt_notes, track_idx=track_idx,
         )
         messages.append(_tool_call("Bash", {"command": cmd}))
 
@@ -301,7 +289,6 @@ def build_transcription_record_v4(
         insert_stdout = json.dumps({
             "status": "ok",
             "notes_inserted": attempt_n_notes,
-            "file": str(attempt_output),
             "duration_s": attempt_duration_s,
         }) + "\n"
         messages.append(_bash_tool_response(insert_stdout))
