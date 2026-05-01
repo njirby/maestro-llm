@@ -57,6 +57,6 @@ def build_vital_chunk(preset_json: dict) -> bytes:
 
 This eliminates the old read→decode→parse→modify→re-encode round-trip. For wavetable swaps: take the preset dict, swap `preset["settings"]["wavetables"][osc_idx]`, call `build_vital_chunk()`, base64 encode, and apply via reapy's `RPR.TrackFX_SetNamedConfigParm(track, 0, "vst3_chunk", encoded)`. No chunk read step at all.
 
-**Gotcha**: `synth_version` must be `"1.6.0"` (or whatever version the running Vital reports). The bundled `init_preset.json` had `"99999.9.9"` which causes Vital to silently reject the chunk.
+**Gotcha**: `synth_version` must be `"1.6.0"` (or whatever version the running Vital reports). Vital silently rejects chunks with unrecognized versions — `SetNamedConfigParm` returns success but the data is ignored. See [vital-reaper-gotchas.md](vital-reaper-gotchas.md) for the full story and other pitfalls.
 
-Verified 2026-04-22 against Vital 1.6.0 (Windows VST2 via yabridge) in REAPER on Linux.
+Verified 2026-04-30 against Vital 1.6.0 (native Linux VST3) in REAPER on Linux.

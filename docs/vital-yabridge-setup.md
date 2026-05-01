@@ -2,9 +2,9 @@
 
 [← Back to README](../README.md)
 
-**Vital's Linux-native builds (VST2/VST3/CLAP, all versions through 1.6.0) crash REAPER** when loading preset state containing any real wavetable. The crash fires inside Vital's own state deserializer — it's not a transport issue and can't be worked around via chunked writes or file-handoff. Any `VitalController.set_preset()` call with a non-trivial wavetable will segfault REAPER.
+> **Update (2026-04-30):** Native Linux Vital works correctly for chunk loading. The earlier crashes were caused by `synth_version: "99999.9.9"` in generated presets — Vital's deserializer rejected the version and the resulting state was undefined. See [vital-reaper-gotchas.md](vital-reaper-gotchas.md) for details. yabridge is no longer required but these setup instructions are preserved in case you need it.
 
-**Workaround:** run Vital as a Windows plugin bridged through [yabridge](https://github.com/robbert-vdh/yabridge) + WINE. This is a **hard dependency** for live-exec grading (`scripts/grade_agent_sft.py --live-exec-check`) and for any agent rollout that applies wavetables to a live REAPER session.
+yabridge runs Windows Vital via WINE as a fallback. It works but has tradeoffs vs native: 2986 reported params (vs 756 native), param names return as index numbers, and higher per-call overhead.
 
 ```bash
 # 1. WINE staging
