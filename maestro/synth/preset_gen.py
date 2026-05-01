@@ -981,7 +981,7 @@ def generate_preset(
         "preset_name": preset_name,
         "preset_style": archetype.capitalize(),
         "settings": settings,
-        "synth_version": "99999.9.9",
+        "synth_version": "1.6.0",
     }
 
 

@@ -162,7 +162,7 @@ def get_default_wavetable() -> dict:
                                     "type": "Wave Source"}]}],
         "name": "Init",
         "remove_all_dc": True,
-        "version": "99999.9.9",
+        "version": "1.6.0",
     }
 
 
