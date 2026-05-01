@@ -1431,8 +1431,96 @@ def build_record(
         },
     }
 
+    # Extended metadata for production tracking
+    n_turns = len(messages)
+    n_tool_calls = sum(1 for m in messages if m.get("role") == "tool_call")
+    n_audio_clips = len(audio_assets)
+    n_batches_applied = len(batch_labels)
+    n_search_rounds = rounds_used
+    wall_time_s = round(_time.monotonic() - _t0, 2)
+    gt_wt_names = gt_names_list
+    applied_wt_names = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
+
+    record["meta"].update({
+        "n_turns": n_turns,
+        "n_tool_calls": n_tool_calls,
+        "n_audio_clips": n_audio_clips,
+        "n_batches_applied": n_batches_applied,
+        "n_correction_turns": total_correction_turns,
+        "n_search_rounds": n_search_rounds,
+        "wall_time_s": wall_time_s,
+        "gt_wavetable_names": gt_wt_names,
+        "applied_wavetable_names": applied_wt_names,
+    })
+
     assert_valid_ms_swift_multiturn_record(record)
     return record, search_records, judge_records, transcription_records
+
+
+# ---------------------------------------------------------------------------
+# Setup context (importable by run_sft_production.py)
+# ---------------------------------------------------------------------------
+
+
+def setup_build_context(
+    *,
+    manifest_path: Path,
+    index_npy: Path = Path("outputs/wt_retrieval_baseline/wt_index.npz"),
+    index_meta: Path = Path("outputs/wt_retrieval_baseline/wt_index_meta.json"),
+    wavetable_lib_path: Path = Path("data/wavetable_lib.json"),
+    probe_dir: Path = Path("outputs/agent_sft/candidate_probes"),
+    clap_device: str = "cpu",
+    max_samples: int | None = None,
+) -> dict:
+    """Load all shared resources needed by build_record().
+
+    Returns a dict with keys that can be unpacked into build_record() calls:
+      entries, embedder, shortlist_data, selected_by_name, wavetable_lib,
+      index_rows, notes
+    """
+    entries = load_manifest_entries(manifest_path, max_samples=max_samples or 999_999_999)
+    index_rows = load_index_rows(index_meta)
+    selected_by_name = select_probe_rows_by_name(index_rows)
+    wavetable_lib = load_wavetable_lib(wavetable_lib_path)
+    embedder = ClapEmbedder.create(clap_device)
+    shortlist_data = build_clap_shortlist_data(index_npy, index_rows)
+
+    _notes = make_probe_notes("lead", clip_duration_s=10.0)
+
+    clap_paths: list[Path] = []
+    for e in entries:
+        for k in ("gt_wav", "gt_probe_wav", "default_wav"):
+            if e.get(k):
+                clap_paths.append(Path(e[k]))
+    if probe_dir.exists():
+        for pp in sorted(probe_dir.glob("*.wav")):
+            clap_paths.append(pp)
+    clap_paths = list(dict.fromkeys(clap_paths))
+    print(f"Pre-computing CLAP embeddings for {len(clap_paths)} audio files...", flush=True)
+    for p in clap_paths:
+        if p.exists():
+            try:
+                embedder.embed_audio_path(p)
+            except Exception as exc:
+                print(f"  WARNING: CLAP embed failed for {p.name}: {exc}")
+    print(f"CLAP pre-computation done ({len(embedder._cache)} cached).", flush=True)
+    if clap_device != "cpu":
+        try:
+            embedder.model = embedder.model.to("cpu")
+            embedder.device = "cpu"
+            print("CLAP moved to CPU for worker-thread safety.", flush=True)
+        except Exception as exc:
+            print(f"WARNING: could not move CLAP to CPU: {exc}")
+
+    return {
+        "entries": entries,
+        "embedder": embedder,
+        "shortlist_data": shortlist_data,
+        "selected_by_name": selected_by_name,
+        "wavetable_lib": wavetable_lib,
+        "index_rows": index_rows,
+        "notes": _notes,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1500,41 +1588,22 @@ def main() -> None:
     import time as _wall_time
     _wall_t0 = _wall_time.monotonic()
 
-    entries = load_manifest_entries(Path(args.manifest), max_samples=args.max_samples)
-    index_rows = load_index_rows(args.index_meta)
-    selected_by_name = select_probe_rows_by_name(index_rows)
-    wavetable_lib = load_wavetable_lib(args.wavetable_lib)
-    embedder = ClapEmbedder.create(args.clap_device)
-    shortlist_data = build_clap_shortlist_data(args.index_npy, index_rows)
-
-    _notes = make_probe_notes("lead", clip_duration_s=10.0)
-
-    # Pre-populate CLAP embedding cache
-    clap_paths: list[Path] = []
-    for e in entries:
-        for k in ("gt_wav", "gt_probe_wav", "default_wav"):
-            if e.get(k):
-                clap_paths.append(Path(e[k]))
-    probe_dir = Path(args.probe_dir)
-    if probe_dir.exists():
-        for pp in sorted(probe_dir.glob("*.wav")):
-            clap_paths.append(pp)
-    clap_paths = list(dict.fromkeys(clap_paths))
-    print(f"Pre-computing CLAP embeddings for {len(clap_paths)} audio files...", flush=True)
-    for p in clap_paths:
-        if p.exists():
-            try:
-                embedder.embed_audio_path(p)
-            except Exception as exc:
-                print(f"  WARNING: CLAP embed failed for {p.name}: {exc}")
-    print(f"CLAP pre-computation done ({len(embedder._cache)} cached).", flush=True)
-    if args.clap_device != "cpu":
-        try:
-            embedder.model = embedder.model.to("cpu")
-            embedder.device = "cpu"
-            print("CLAP moved to CPU for worker-thread safety.", flush=True)
-        except Exception as exc:
-            print(f"WARNING: could not move CLAP to CPU: {exc}")
+    ctx = setup_build_context(
+        manifest_path=Path(args.manifest),
+        index_npy=args.index_npy,
+        index_meta=args.index_meta,
+        wavetable_lib_path=args.wavetable_lib,
+        probe_dir=args.probe_dir,
+        clap_device=args.clap_device,
+        max_samples=args.max_samples,
+    )
+    entries = ctx["entries"]
+    embedder = ctx["embedder"]
+    shortlist_data = ctx["shortlist_data"]
+    selected_by_name = ctx["selected_by_name"]
+    wavetable_lib = ctx["wavetable_lib"]
+    index_rows = ctx["index_rows"]
+    _notes = ctx["notes"]
 
     candidate_audio: dict[str, Path] = {}
     serial_lock = threading.Lock()
