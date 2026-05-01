@@ -49,9 +49,13 @@ BASH_RESPONSE_FIELDS = {"stdout", "stderr", "interrupted"}
 # Output file discovery
 # ---------------------------------------------------------------------------
 
-_OUTPUT_DIR = Path(__file__).parent.parent / "outputs" / "smoke_v3"
+_OUTPUT_DIRS = [
+    Path(__file__).parent.parent / "outputs" / "smoke_v4",
+    Path(__file__).parent.parent / "outputs" / "smoke_v3",
+]
 
 _OUTPUT_SUFFIXES = [
+    "v65",
     "v61_no_slot_leak",
     "v60_grep_shortlist",
     "v59_specs_fix",
@@ -61,11 +65,12 @@ _OUTPUT_SUFFIXES = [
 
 
 def _find_output_file(agent: str) -> Path | None:
-    for suffix in _OUTPUT_SUFFIXES:
-        for n in (8, 4):
-            p = _OUTPUT_DIR / f"{agent}_final{n}_{suffix}.jsonl"
-            if p.exists():
-                return p
+    for _OUTPUT_DIR in _OUTPUT_DIRS:
+        for suffix in _OUTPUT_SUFFIXES:
+            for n in (8, 4):
+                p = _OUTPUT_DIR / f"{agent}_final{n}_{suffix}.jsonl"
+                if p.exists():
+                    return p
     return None
 
 
@@ -107,7 +112,7 @@ _V3_SPECS_PARSED = _parse_tool_specs()
 def _skip_if_no_records(agent: str):
     return pytest.mark.skipif(
         _AGENT_PATHS[agent] is None,
-        reason=f"No {agent} output file found in {_OUTPUT_DIR}",
+        reason=f"No {agent} output file found in {_OUTPUT_DIRS}",
     )
 
 
