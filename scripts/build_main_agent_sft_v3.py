@@ -1979,12 +1979,25 @@ def build_record(
             f"{osc_assignments}."
         )
 
+    batches = build_batches_from_diff(target_preset, init_preset)
+    batches = batches[:int(args.max_batches)]
+
     apply_assignments = repr(
         [(oi, gt_tuple[oi]) for oi in active_oscs if gt_tuple[oi]]
     )
     target_mods_literal = repr(
         target_modulations
     )
+    _tmp_batch_params = set()
+    for b in batches:
+        _tmp_batch_params.update(b.params.keys())
+    base_scalar_overrides = {}
+    for name, val in target_preset.get("settings", {}).items():
+        if isinstance(val, (int, float)) and name not in _tmp_batch_params:
+            init_val = init_preset.get("settings", {}).get(name)
+            if init_val != val:
+                base_scalar_overrides[name] = val
+    overrides_literal = repr(base_scalar_overrides)
     apply_snippet = (
         _REAPY_HELPER
         + _BUILD_CHUNK_HELPER
@@ -1996,6 +2009,8 @@ def build_record(
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
         f"preset['settings']['modulations'] = {target_mods_literal}\n"
+        f"for _k, _v in {overrides_literal}.items():\n"
+        "    preset['settings'][_k] = _v\n"
         "chunk = build_vital_chunk(preset)\n"
         "encoded = base64.b64encode(chunk).decode('ascii')\n"
         "with reapy.inside_reaper():\n"
@@ -2030,9 +2045,6 @@ def build_record(
 
     _diagnosis_text = diagnosis_text
 
-    # ---- SUBSYSTEM BATCHES (diff-based) ----
-    batches = build_batches_from_diff(target_preset, init_preset)
-    batches = batches[:int(args.max_batches)]
     path_complete = True  # diff-based always applies everything within max_batches
 
     # Wavetables + sample + lfos + modulation routes come from target.
@@ -2040,6 +2052,12 @@ def build_record(
     for key in ("wavetables", "sample", "lfos", "modulations"):
         if key in target_preset.get("settings", {}):
             cumulative["settings"][key] = copy.deepcopy(target_preset["settings"][key])
+    batch_param_names = set()
+    for b in batches:
+        batch_param_names.update(b.params.keys())
+    for name, val in target_preset.get("settings", {}).items():
+        if isinstance(val, (int, float)) and name not in batch_param_names:
+            cumulative["settings"][name] = val
 
     # Inject mistakes (per-param independent rolls, seeded by sample_id).
     import random as _random
