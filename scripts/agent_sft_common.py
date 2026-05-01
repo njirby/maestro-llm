@@ -946,7 +946,7 @@ def build_reaper_render_snippet(
         "    RPR.GetSetProjectInfo_String(proj, 'RENDER_FILE', os.path.dirname(out_path), True)\n"
         "    RPR.GetSetProjectInfo_String(proj, 'RENDER_PATTERN', "
         "os.path.splitext(os.path.basename(out_path))[0], True)\n"
-        "    RPR.Main_OnCommand(42, 0)\n"
+        "    RPR.Main_OnCommand(42230, 0)\n"
         "print(json.dumps({'listen_probe': {'path': out_path, 'exists': os.path.isfile(out_path)}}))\n"
     )
 
