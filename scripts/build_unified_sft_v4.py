@@ -220,6 +220,32 @@ def build_record(
             render_cumulative_audio(init_preset, notes, _random_init_wav)
             default_audio_path = _random_init_wav
 
+    # Partial init: pre-apply 1-4 random GT subsystems so the model
+    # sees variable-length rollouts (not always all 7 subsystems).
+    pre_applied_subsystems: list[str] = []
+    _partial_init_rate = float(getattr(args, "partial_init_rate", 0.0))
+    if not use_random_init and _partial_init_rate > 0.0:
+        _partial_rng = random.Random(int(args.seed) + sid_seed + 9999)
+        if _partial_rng.random() < _partial_init_rate:
+            n_pre = _partial_rng.randint(1, 4)
+            all_subs = [label for label, _ in SUBSYSTEM_ORDER]
+            pre_applied_subsystems = _partial_rng.sample(all_subs, min(n_pre, len(all_subs)))
+            truth_map = build_diagnosis_subsystem_truth(target_preset, init_preset)
+            for sub in pre_applied_subsystems:
+                for param_name in truth_map.get(sub, []):
+                    val = target_preset["settings"].get(param_name)
+                    if val is not None and isinstance(val, (int, float)):
+                        init_preset["settings"][param_name] = val
+            if "oscillator" in pre_applied_subsystems:
+                init_preset["settings"]["wavetables"] = copy.deepcopy(
+                    target_preset["settings"]["wavetables"])
+            if "modulation" in pre_applied_subsystems:
+                init_preset["settings"]["modulations"] = copy.deepcopy(
+                    target_preset["settings"]["modulations"])
+            if "lfo" in pre_applied_subsystems:
+                init_preset["settings"]["lfos"] = copy.deepcopy(
+                    target_preset["settings"]["lfos"])
+
     # ---- WT search setup ----
     gt_names_list = list(extract_gt_wavetable_names(Path(target_preset_path)))
     if not gt_names_list:
@@ -1114,7 +1140,7 @@ def build_record(
     _per_param_rate = getattr(args, "per_param_mistake_rate", None)
     if _per_param_rate is None:
         _per_param_rate = getattr(args, "mistake_rate", 0.10)
-    all_injected_mistakes = inject_mistakes(
+    all_injected_mistakes, max_mistakes_drawn = inject_mistakes(
         batches, mistake_rng,
         per_param_rate=_per_param_rate,
         init_preset_settings=init_preset.get("settings", {}),
@@ -1441,13 +1467,17 @@ def build_record(
     gt_wt_names = gt_names_list
     applied_wt_names = [gt_tuple[oi] for oi in active_oscs if gt_tuple[oi]]
 
+    n_subsystem_batches = sum(1 for l in batch_labels if not l.get("is_correction"))
     record["meta"].update({
         "n_turns": n_turns,
         "n_tool_calls": n_tool_calls,
         "n_audio_clips": n_audio_clips,
         "n_batches_applied": n_batches_applied,
+        "n_subsystem_batches": n_subsystem_batches,
         "n_correction_turns": total_correction_turns,
         "n_search_rounds": n_search_rounds,
+        "max_mistakes_drawn": max_mistakes_drawn,
+        "pre_applied_subsystems": pre_applied_subsystems,
         "wall_time_s": wall_time_s,
         "gt_wavetable_names": gt_wt_names,
         "applied_wavetable_names": applied_wt_names,
@@ -1470,6 +1500,7 @@ def setup_build_context(
     wavetable_lib_path: Path = Path("data/wavetable_lib.json"),
     probe_dir: Path = Path("outputs/agent_sft/candidate_probes"),
     clap_device: str = "cpu",
+    clap_cache_path: Path | None = None,
     max_samples: int | None = None,
 ) -> dict:
     """Load all shared resources needed by build_record().
@@ -1482,10 +1513,13 @@ def setup_build_context(
     index_rows = load_index_rows(index_meta)
     selected_by_name = select_probe_rows_by_name(index_rows)
     wavetable_lib = load_wavetable_lib(wavetable_lib_path)
-    embedder = ClapEmbedder.create(clap_device)
+    embedder = ClapEmbedder.create(clap_device, cache_path=clap_cache_path)
     shortlist_data = build_clap_shortlist_data(index_npy, index_rows)
 
     _notes = make_probe_notes("lead", clip_duration_s=10.0)
+
+    if clap_cache_path and len(embedder._cache) > 0:
+        print(f"Loaded {len(embedder._cache)} pre-computed CLAP embeddings from {clap_cache_path}", flush=True)
 
     clap_paths: list[Path] = []
     for e in entries:
@@ -1496,14 +1530,20 @@ def setup_build_context(
         for pp in sorted(probe_dir.glob("*.wav")):
             clap_paths.append(pp)
     clap_paths = list(dict.fromkeys(clap_paths))
-    print(f"Pre-computing CLAP embeddings for {len(clap_paths)} audio files...", flush=True)
-    for p in clap_paths:
-        if p.exists():
-            try:
-                embedder.embed_audio_path(p)
-            except Exception as exc:
-                print(f"  WARNING: CLAP embed failed for {p.name}: {exc}")
-    print(f"CLAP pre-computation done ({len(embedder._cache)} cached).", flush=True)
+    uncached = [p for p in clap_paths if str(p.resolve()) not in embedder._cache]
+    if uncached:
+        print(f"Computing CLAP embeddings for {len(uncached)} uncached audio files "
+              f"(skipping {len(clap_paths) - len(uncached)} already cached)...", flush=True)
+        for p in uncached:
+            if p.exists():
+                try:
+                    embedder.embed_audio_path(p)
+                except Exception as exc:
+                    print(f"  WARNING: CLAP embed failed for {p.name}: {exc}")
+        print(f"CLAP pre-computation done ({len(embedder._cache)} cached).", flush=True)
+    else:
+        print(f"All {len(clap_paths)} audio files already in CLAP cache.", flush=True)
+
     if clap_device != "cpu":
         try:
             embedder.model = embedder.model.to("cpu")
@@ -1562,8 +1602,12 @@ def main() -> None:
     ap.add_argument("--transcription-mistake-rate", type=float, default=0.15)
     ap.add_argument("--random-init-rate", type=float, default=0.0,
         help="Fraction of samples starting from a random same-archetype preset instead of factory default.")
+    ap.add_argument("--partial-init-rate", type=float, default=0.0,
+        help="Fraction of samples starting with 1-4 GT subsystems pre-applied.")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
+    ap.add_argument("--clap-cache", type=Path, default=None,
+                    help="Pre-computed CLAP cache .npz (from precompute_clap_cache.py)")
     ap.add_argument("--omni-server", default="")
     ap.add_argument("--omni-model", default="Qwen/Qwen3-Omni-30B-A3B-Instruct")
     ap.add_argument("--stage2-server", default="")
@@ -1595,6 +1639,7 @@ def main() -> None:
         wavetable_lib_path=args.wavetable_lib,
         probe_dir=args.probe_dir,
         clap_device=args.clap_device,
+        clap_cache_path=args.clap_cache,
         max_samples=args.max_samples,
     )
     entries = ctx["entries"]

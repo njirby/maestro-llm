@@ -369,6 +369,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--probe-dir", type=Path,
                    default=Path("outputs/agent_sft/candidate_probes"))
     p.add_argument("--clap-device", default="cpu")
+    p.add_argument("--clap-cache", type=Path, default=None,
+                   help="Pre-computed CLAP cache .npz (from precompute_clap_cache.py)")
 
     # Builder params (passed through to build_record via args namespace)
     p.add_argument("--max-batches", type=int, default=16)
@@ -383,6 +385,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-correction-turns", type=int, default=3)
     p.add_argument("--transcription-mistake-rate", type=float, default=0.15)
     p.add_argument("--random-init-rate", type=float, default=0.0)
+    p.add_argument("--partial-init-rate", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=1337)
 
     # LLM servers
@@ -423,6 +426,7 @@ def main() -> None:
         wavetable_lib_path=args.wavetable_lib,
         probe_dir=args.probe_dir,
         clap_device=args.clap_device,
+        clap_cache_path=args.clap_cache,
     )
     all_entries = ctx.pop("entries")
     print(f"Loaded {len(all_entries)} manifest entries.", flush=True)
