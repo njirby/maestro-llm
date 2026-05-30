@@ -620,12 +620,18 @@ def build_vital_chunk(preset_json):
 _READ_CHUNK_HELPER = """\
 import base64 as _b64
 
+def _get_fx_chunk(track, fx_idx, param_name):
+    result = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, param_name, '', 2*1024*1024)
+    ok = result[0]
+    raw = result[2] if len(result) > 2 else ''
+    return ok, raw
+
 def read_vital_preset(track_idx=0, fx_idx=0):
     with reapy.inside_reaper():
         track = RPR.GetTrack(0, track_idx)
-        ok, _, raw = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, 'vst3_chunk', '', 2*1024*1024)
+        ok, raw = _get_fx_chunk(track, fx_idx, 'vst3_chunk')
         if not ok or not raw:
-            ok, _, raw = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, 'vst_chunk', '', 2*1024*1024)
+            ok, raw = _get_fx_chunk(track, fx_idx, 'vst_chunk')
         chunk = _b64.b64decode(raw)
     start = chunk.index(b'{')
     end = chunk.rindex(b'}') + 1
@@ -698,6 +704,7 @@ def build_list_wavetables_total_snippet() -> str:
         "    for _vt in sorted(glob.glob(os.path.join(_vd, '**', '*.vitaltable'), recursive=True)):\n"
         "        try:\n"
         "            _w = json.load(open(_vt)); _n = _w.get('name','')\n"
+        "            if not isinstance(_n, str): _n = ''\n"
         "            if _n and _n not in _seen and 'groups' in _w: _seen.add(_n); _count += 1\n"
         "        except: pass\n"
         "    for _vp in sorted(glob.glob(os.path.join(_vd, '**', '*.vital'), recursive=True)):\n"
@@ -722,6 +729,7 @@ def build_list_wavetables_slice_snippet(start: int, end: int) -> str:
         "    for _vt in sorted(glob.glob(os.path.join(_vd, '**', '*.vitaltable'), recursive=True)):\n"
         "        try:\n"
         "            _w = json.load(open(_vt)); _n = _w.get('name','')\n"
+        "            if not isinstance(_n, str): _n = ''\n"
         "            if _n and _n not in _seen and 'groups' in _w: _seen.add(_n); _names.append(_n)\n"
         "        except: pass\n"
         "    for _vp in sorted(glob.glob(os.path.join(_vd, '**', '*.vital'), recursive=True)):\n"
@@ -748,6 +756,7 @@ _WT_DISCOVER_SNIPPET = (
     "    for _vt in sorted(_glob.glob(os.path.join(_vd, '**', '*.vitaltable'), recursive=True)):\n"
     "        try:\n"
     "            _w = json.load(open(_vt)); _n = _w.get('name','')\n"
+    "            if not isinstance(_n, str): _n = ''\n"
     "            if _n and _n not in _seen_wt and 'groups' in _w: _seen_wt.add(_n); lib.append(_w)\n"
     "        except: pass\n"
     "    for _vp in sorted(_glob.glob(os.path.join(_vd, '**', '*.vital'), recursive=True)):\n"
