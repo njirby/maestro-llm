@@ -160,7 +160,8 @@ def _embed_clap(audio_44k: np.ndarray, model: Any, processor: Any, device: str) 
 
     inputs = processor(audio=mono_48k, sampling_rate=CLAP_SAMPLE_RATE, return_tensors="pt").to(device)
     with torch.no_grad():
-        emb = model.get_audio_features(**inputs)
+        out = model.get_audio_features(**inputs)
+    emb = out.pooler_output if hasattr(out, "pooler_output") else out
     return emb.squeeze(0).cpu().numpy().astype(np.float32)
 
 
