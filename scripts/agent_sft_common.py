@@ -617,6 +617,21 @@ def build_vital_chunk(preset_json):
     return bytes(prefix) + json_bytes + suffix
 """
 
+_READ_CHUNK_HELPER = """\
+import base64 as _b64
+
+def read_vital_preset(track_idx=0, fx_idx=0):
+    with reapy.inside_reaper():
+        track = RPR.GetTrack(0, track_idx)
+        ok, _, raw = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, 'vst3_chunk', '', 2*1024*1024)
+        if not ok or not raw:
+            ok, _, raw = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, 'vst_chunk', '', 2*1024*1024)
+        chunk = _b64.b64decode(raw)
+    start = chunk.index(b'{')
+    end = chunk.rindex(b'}') + 1
+    return json.loads(chunk[start:end])
+"""
+
 
 # ---------------------------------------------------------------------------
 # claw-code tool response helpers
@@ -813,7 +828,9 @@ def build_render_probes_snippet(
     out_dir_json = json.dumps(out_dir)
 
     return (
-        _DAWDREAMER_RENDER_HELPER
+        _REAPY_HELPER
+        + _READ_CHUNK_HELPER
+        + _DAWDREAMER_RENDER_HELPER
         + f"midi_notes = load_midi_notes({midi_path_literal})\n"
         + f"OUT_DIR = {out_dir_json}\n"
         "os.makedirs(OUT_DIR, exist_ok=True)\n"
@@ -821,7 +838,7 @@ def build_render_probes_snippet(
         + "all_names = [wt.get('name','') for wt in lib]\n"
         + assignments_code
         + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
-        'base_preset = json.load(open("skills/vital/data/init_preset.json"))\n'
+        "base_preset = read_vital_preset()\n"
         "rendered = []\n"
         "for idx, wt_name in enumerate(probe_names):\n"
         "    if wt_name not in name_to_wt: continue\n"
@@ -855,12 +872,14 @@ def build_render_tuple_snippet(
     midi_path_literal = repr(midi_path)
 
     return (
-        _DAWDREAMER_RENDER_HELPER
+        _REAPY_HELPER
+        + _READ_CHUNK_HELPER
+        + _DAWDREAMER_RENDER_HELPER
         + f"midi_notes = load_midi_notes({midi_path_literal})\n"
         + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
         + _WT_DISCOVER_SNIPPET
         + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
-        + 'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
+        + "preset = read_vital_preset()\n"
         f"for osc_idx, wt_name in {assignments_literal}:\n"
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
@@ -888,10 +907,12 @@ def build_render_verify_snippet(
         midi_line = f"midi_notes = load_midi_notes({repr(midi_path)})\n"
 
     return (
-        _DAWDREAMER_RENDER_HELPER
+        _REAPY_HELPER
+        + _READ_CHUNK_HELPER
+        + _DAWDREAMER_RENDER_HELPER
         + midi_line
         + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
-        'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
+        "preset = read_vital_preset()\n"
         f"render_vital_preset(preset, {out_path_json}, midi_notes)\n"
         f"print(json.dumps({{'listen_probe': {{'path': {out_path_json}, 'exists': True}}}}))"
     )
@@ -917,12 +938,14 @@ def build_render_cumulative_snippet(
     params_literal = repr(cumulative_params)
 
     return (
-        _DAWDREAMER_RENDER_HELPER
+        _REAPY_HELPER
+        + _READ_CHUNK_HELPER
+        + _DAWDREAMER_RENDER_HELPER
         + midi_line
         + f"os.makedirs({json.dumps(out_dir)}, exist_ok=True)\n"
         + _WT_DISCOVER_SNIPPET
         + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
-        + 'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
+        + "preset = read_vital_preset()\n"
         f"for osc_idx, wt_name in {assignments_literal}:\n"
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"

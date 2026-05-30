@@ -60,6 +60,7 @@ from scripts.agent_sft_common import (
     write_agent_manifest,
     _bash_tool_response,
     _BUILD_CHUNK_HELPER,
+    _READ_CHUNK_HELPER,
     _emit_listen_sequence,
     _read_tool_response_audio,
     _REAPY_HELPER,
@@ -1078,11 +1079,12 @@ def build_record(
     overrides_literal = repr(base_scalar_overrides)
     apply_snippet = (
         _REAPY_HELPER
+        + _READ_CHUNK_HELPER
         + _BUILD_CHUNK_HELPER
         + "import base64\n"
         + _WT_DISCOVER_SNIPPET
         + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
-        'preset = json.load(open("skills/vital/data/init_preset.json"))\n'
+        "preset = read_vital_preset()\n"
         f"for osc_idx, wt_name in {apply_assignments}:\n"
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
