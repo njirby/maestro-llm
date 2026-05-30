@@ -623,7 +623,7 @@ import base64 as _b64
 def _get_fx_chunk(track, fx_idx, param_name):
     result = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, param_name, '', 2*1024*1024)
     ok = result[0]
-    raw = result[2] if len(result) > 2 else ''
+    raw = result[3] if len(result) > 3 else ''
     return ok, raw
 
 def read_vital_preset(track_idx=0, fx_idx=0):
