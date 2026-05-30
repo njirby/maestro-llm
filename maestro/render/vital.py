@@ -3,12 +3,14 @@ Library for rendering single-track WAV files using the Vital synthesizer
 via the Vita Python bindings (direct C++ engine, no VST3/REAPER required).
 """
 
+import json
 import random
 import warnings
 from pathlib import Path
 
 import numpy as np
 import pretty_midi
+import soundfile as sf
 import vita as _vita
 
 SAMPLE_RATE = 44100
@@ -102,6 +104,44 @@ def _load_vital() -> _vita.Synth:
     if _VITAL_SYNTH_SINGLETON is None:
         _VITAL_SYNTH_SINGLETON = _vita.Synth()
     return _VITAL_SYNTH_SINGLETON
+
+
+def _to_pretty_midi_notes(notes: list) -> list:
+    """Convert DawDreamer (pitch, vel, start, dur) tuples to pretty_midi.Note objects."""
+    if not notes:
+        return []
+    if isinstance(notes[0], tuple):
+        return [
+            pretty_midi.Note(
+                pitch=int(n[0]), velocity=int(n[1]),
+                start=float(n[2]), end=float(n[2]) + float(n[3]),
+            )
+            for n in notes
+        ]
+    return notes
+
+
+def render_preset_audio_vita(
+    preset_dict: dict,
+    notes: list,
+    out_path: "str | Path",
+    tail_s: float = 1.0,
+) -> np.ndarray:
+    """Render a preset dict through the vita singleton. Applies full state
+    (wavetables, modulations, LFO shapes) via load_json, unlike DawDreamer
+    which only sets scalar params.
+
+    NOT thread-safe — caller must hold a lock if used from multiple threads.
+    Returns trimmed stereo float32 array of shape (2, N).
+    """
+    synth = _load_vital()
+    synth.load_json(json.dumps(preset_dict))
+    pm_notes = _to_pretty_midi_notes(notes)
+    audio = _render_note_list(synth, pm_notes, SAMPLE_RATE, tail_s)
+    trimmed = trim_silence(audio, SAMPLE_RATE, min_duration_s=0.5)
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    sf.write(str(out_path), trimmed.T, SAMPLE_RATE)
+    return trimmed
 
 
 def apply_preset(synth: _vita.Synth, preset_path: str) -> None:

@@ -331,22 +331,29 @@ def build_batches_from_diff(
     return batches
 
 
+_MISTAKE_POISSON_WEIGHTS = [0.08, 0.21, 0.26, 0.22, 0.13, 0.06, 0.04]
+
+
 def inject_mistakes(
     batches: list[SubsystemBatch],
     rng: "random.Random",
     per_param_rate: float = 0.10,
     max_mistakes_per_batch: int = 3,
-    max_mistakes_total: int = 4,
+    max_mistakes_total: int | None = None,
     init_preset_settings: dict | None = None,
-) -> list[MistakeInfo]:
+) -> tuple[list[MistakeInfo], int]:
     """Independently roll each param in each batch for a mistake.
 
     Mistake types: overshoot, undershoot, omission, spurious addition.
     Mutates ``batch.params_applied`` and ``batch.mistakes`` in place.
-    Returns flat list of all MistakeInfo across all batches.
+    Returns (flat list of all MistakeInfo, drawn max_mistakes_total).
     """
-    if not batches:
-        return []
+    if max_mistakes_total is None:
+        max_mistakes_total = min(6, rng.choices(
+            range(len(_MISTAKE_POISSON_WEIGHTS)),
+            weights=_MISTAKE_POISSON_WEIGHTS, k=1)[0])
+    if not batches or max_mistakes_total == 0:
+        return [], max_mistakes_total
     init_s = init_preset_settings or {}
     all_batch_params: set[str] = set()
     for b in batches:
@@ -451,7 +458,7 @@ def inject_mistakes(
             b.mistakes = batch_mistakes
             all_mistakes.extend(batch_mistakes)
 
-    return all_mistakes
+    return all_mistakes, max_mistakes_total
 
 
 def inject_mistake(
@@ -462,7 +469,7 @@ def inject_mistake(
     """Deprecated: use inject_mistakes(). Kept for backward compatibility."""
     import warnings
     warnings.warn("inject_mistake() is deprecated, use inject_mistakes()", DeprecationWarning, stacklevel=2)
-    results = inject_mistakes(batches, rng, per_param_rate=mistake_rate, max_mistakes_total=1)
+    results, _ = inject_mistakes(batches, rng, per_param_rate=mistake_rate, max_mistakes_total=1)
     if not results:
         return None
     m = results[0]
@@ -488,14 +495,23 @@ from maestro.render.vital import SAMPLE_RATE
 from maestro.render.dawdreamer import render_preset_audio, make_probe_notes, notes_from_dicts
 
 
+_vita_render_lock = threading.Lock()
+
+
 def render_cumulative_audio(
     cumulative_preset: dict,
     notes: list,
     out_path: Path,
     tail_s: float = 1.0,
 ) -> Path:
-    """Render audio for a cumulative preset state via DawDreamer and write to ``out_path``."""
-    render_preset_audio(cumulative_preset, notes, out_path=out_path, tail_s=tail_s)
+    """Render audio for a cumulative preset state via vita.
+
+    Uses vita's load_json() which applies the full preset including wavetables,
+    modulation routing, and LFO shapes — unlike DawDreamer which only sets scalars.
+    """
+    from maestro.render.vital import render_preset_audio_vita
+    with _vita_render_lock:
+        render_preset_audio_vita(cumulative_preset, notes, out_path, tail_s=tail_s)
     return out_path
 
 
@@ -2066,7 +2082,7 @@ def build_record(
     _per_param_rate = getattr(args, "per_param_mistake_rate", None)
     if _per_param_rate is None:
         _per_param_rate = getattr(args, "mistake_rate", 0.10)
-    all_injected_mistakes = inject_mistakes(
+    all_injected_mistakes, _ = inject_mistakes(
         batches, mistake_rng,
         per_param_rate=_per_param_rate,
         init_preset_settings=init_preset.get("settings", {}),
