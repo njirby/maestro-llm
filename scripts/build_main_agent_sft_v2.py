@@ -785,9 +785,60 @@ class _LlmPostStats:
 
 llm_post_stats = _LlmPostStats()
 
+_llm_router = None
+_llm_router_lock = _llm_threading.Lock()
+
+
+def init_llm_router(server_urls: list[str], model: str) -> None:
+    """Initialize a litellm Router for load-balancing across multiple endpoints."""
+    global _llm_router
+    with _llm_router_lock:
+        if _llm_router is not None:
+            return
+        from litellm import Router
+        import litellm
+        litellm.suppress_debug_info = True
+        deployments = []
+        for url in server_urls:
+            base = url.rstrip("/")
+            if not base.endswith("/v1"):
+                base += "/v1"
+            deployments.append({
+                "model_name": "omni",
+                "litellm_params": {
+                    "model": f"openai/{model}",
+                    "api_base": base,
+                    "api_key": "dummy",
+                },
+            })
+        _llm_router = Router(
+            model_list=deployments,
+            routing_strategy="least-busy",
+            num_retries=3,
+            timeout=180.0,
+            retry_after=5,
+        )
+        print(f"litellm Router initialized: {len(server_urls)} endpoint(s), "
+              f"model={model}, strategy=least-busy", flush=True)
+
 
 def _llm_post(server_url: str, payload: dict, timeout: float = 120.0, max_retries: int = 3) -> dict:
     """POST to an OpenAI-compatible completions endpoint with retry on timeout/5xx/connect errors."""
+    if _llm_router is not None:
+        try:
+            resp = _llm_router.completion(
+                model="omni",
+                messages=payload["messages"],
+                max_tokens=payload.get("max_tokens", 512),
+                temperature=payload.get("temperature", 0.4),
+                timeout=timeout,
+            )
+            llm_post_stats.record_success()
+            return resp.model_dump()
+        except Exception as exc:
+            llm_post_stats.record_failure()
+            raise
+
     import httpx, time
     last_exc: Exception | None = None
     for attempt in range(max_retries):

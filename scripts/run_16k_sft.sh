@@ -31,7 +31,7 @@ python scripts/run_sft_production.py \
     --out-dir outputs/sft_16k/rollouts \
     --batch-size 200 \
     --workers 24 \
-    --omni-server http://localhost:8000 \
+    --omni-server "${OMNI_SERVERS:-http://localhost:8000}" \
     --clap-device cpu \
     --clap-cache outputs/sft_16k/clap_cache.npz \
     --max-batches 16 \

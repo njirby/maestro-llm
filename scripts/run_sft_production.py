@@ -410,12 +410,18 @@ def main() -> None:
         sys.exit(1)
 
     from scripts.build_unified_sft_v4 import setup_build_context
-    from scripts.build_main_agent_sft_v2 import _check_server_reachable, llm_post_stats
+    from scripts.build_main_agent_sft_v2 import _check_server_reachable, llm_post_stats, init_llm_router
 
     if args.omni_server:
-        _check_server_reachable(args.omni_server, "Omni")
-        stage2 = args.stage2_server or args.omni_server
-        if stage2 and stage2 != args.omni_server:
+        omni_urls = [u.strip() for u in args.omni_server.split(",") if u.strip()]
+        if len(omni_urls) > 1:
+            init_llm_router(omni_urls, args.omni_model)
+            for u in omni_urls:
+                _check_server_reachable(u, f"Omni({u})")
+        else:
+            _check_server_reachable(omni_urls[0], "Omni")
+        stage2 = args.stage2_server or omni_urls[0]
+        if stage2 and stage2 != omni_urls[0]:
             _check_server_reachable(stage2, "Stage2")
 
     print(f"Loading build context...", flush=True)

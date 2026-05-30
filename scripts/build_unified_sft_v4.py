@@ -1625,8 +1625,15 @@ def main() -> None:
     stage2_model = args.stage2_model or args.omni_model
 
     if args.omni_server:
-        _check_server_reachable(args.omni_server, "Omni")
-        if stage2_server and stage2_server != args.omni_server:
+        omni_urls = [u.strip() for u in args.omni_server.split(",") if u.strip()]
+        if len(omni_urls) > 1:
+            from scripts.build_main_agent_sft_v2 import init_llm_router
+            init_llm_router(omni_urls, args.omni_model)
+            for u in omni_urls:
+                _check_server_reachable(u, f"Omni({u})")
+        else:
+            _check_server_reachable(omni_urls[0], "Omni")
+        if stage2_server and stage2_server != omni_urls[0]:
             _check_server_reachable(stage2_server, "Stage2")
 
     import time as _wall_time
