@@ -2033,8 +2033,8 @@ def build_record(
         "encoded = base64.b64encode(chunk).decode('ascii')\n"
         "with reapy.inside_reaper():\n"
         "    track = RPR.GetTrack(0, 0)\n"
-        "    if not RPR.TrackFX_SetNamedConfigParm(track, 0, 'vst3_chunk', encoded):\n"
-        "        RPR.TrackFX_SetNamedConfigParm(track, 0, 'vst_chunk', encoded)\n"
+        "    if not RPR.TrackFX_SetNamedConfigParm(track, 0, 'vst_chunk', encoded):\n"
+        "        RPR.TrackFX_SetNamedConfigParm(track, 0, 'vst3_chunk', encoded)\n"
         f"print(json.dumps({{'status': 'ok', 'applied': {json.dumps(apply_names)}}}))"
     )
     messages.append({"role": "assistant", "content": selection_text})

@@ -621,17 +621,17 @@ _READ_CHUNK_HELPER = """\
 import base64 as _b64
 
 def _get_fx_chunk(track, fx_idx, param_name):
-    result = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, param_name, '', 2*1024*1024)
+    result = RPR.TrackFX_GetNamedConfigParm(track, fx_idx, param_name, '', 4*1024*1024)
     ok = result[0]
-    raw = result[3] if len(result) > 3 else ''
+    raw = result[-2]
     return ok, raw
 
 def read_vital_preset(track_idx=0, fx_idx=0):
     with reapy.inside_reaper():
         track = RPR.GetTrack(0, track_idx)
-        ok, raw = _get_fx_chunk(track, fx_idx, 'vst3_chunk')
+        ok, raw = _get_fx_chunk(track, fx_idx, 'vst_chunk')
         if not ok or not raw:
-            ok, raw = _get_fx_chunk(track, fx_idx, 'vst_chunk')
+            ok, raw = _get_fx_chunk(track, fx_idx, 'vst3_chunk')
         chunk = _b64.b64decode(raw)
     start = chunk.index(b'{')
     end = chunk.rindex(b'}') + 1
