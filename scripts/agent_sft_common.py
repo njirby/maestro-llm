@@ -164,9 +164,12 @@ class ClapEmbedder:
     _cache: dict[str, np.ndarray]
 
     @classmethod
-    def create(cls, device: str) -> "ClapEmbedder":
+    def create(cls, device: str, cache_path: Path | None = None) -> "ClapEmbedder":
         model, processor = _load_clap(device)
-        return cls(device=device, model=model, processor=processor, _cache={})
+        inst = cls(device=device, model=model, processor=processor, _cache={})
+        if cache_path:
+            inst.load_cache(cache_path)
+        return inst
 
     def embed_audio_path(self, path: Path) -> np.ndarray:
         key = str(path.resolve())
@@ -184,6 +187,24 @@ class ClapEmbedder:
         an = np.linalg.norm(ea) + 1e-12
         bn = np.linalg.norm(eb) + 1e-12
         return float(np.dot(ea, eb) / (an * bn))
+
+    def save_cache(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(str(path), keys=list(self._cache.keys()),
+                            **{f"emb_{i}": v for i, v in enumerate(self._cache.values())})
+
+    def load_cache(self, path: Path) -> int:
+        if not path.exists():
+            return 0
+        data = np.load(str(path), allow_pickle=False)
+        keys = list(data["keys"])
+        loaded = 0
+        for i, k in enumerate(keys):
+            emb_key = f"emb_{i}"
+            if emb_key in data:
+                self._cache[str(k)] = data[emb_key]
+                loaded += 1
+        return loaded
 
 
 def ensure_candidate_probes_for_names(
