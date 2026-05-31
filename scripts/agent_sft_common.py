@@ -740,9 +740,9 @@ def build_list_wavetables_slice_snippet(start: int, end: int) -> str:
         "        except: pass\n"
         "_names.sort()\n"
         f"_start, _end = {start}, min({end}, len(_names))\n"
-        "_rows = [{{'idx': i, 'name': _names[i]}} for i in range(_start, _end)]\n"
-        "print(json.dumps({{'wavetables': _rows, 'start': _start, 'end': _end, "
-        "'count': len(_rows), 'total': len(_names)}}))\n"
+        "_rows = [{'idx': i, 'name': _names[i]} for i in range(_start, _end)]\n"
+        "print(json.dumps({'wavetables': _rows, 'start': _start, 'end': _end, "
+        "'count': len(_rows), 'total': len(_names)}))\n"
     )
 
 

@@ -124,6 +124,8 @@ def build_insert_cmd(
     notes: list[dict],
     *,
     track_idx: int = 0,
+    sample_id: str | None = None,
+    output_dir: str = "/tmp/agents",
 ) -> str:
     n_notes = len(notes)
     duration_s = round(
@@ -133,10 +135,20 @@ def build_insert_cmd(
         max((n["start_s"] + n["dur_s"] for n in notes), default=1.0) + 0.25, 4,
     )
     notes_literal = json.dumps(notes, ensure_ascii=False)
+    notes_file_line = ""
+    if sample_id:
+        notes_path = f"{output_dir}/{sample_id}/{sample_id}_notes.json"
+        notes_file_line = (
+            f"import os\n"
+            f"os.makedirs({json.dumps(str(Path(notes_path).parent))}, exist_ok=True)\n"
+            f"with open({json.dumps(notes_path)}, 'w') as _nf:\n"
+            f"    json.dump({{'notes': notes}}, _nf)\n"
+        )
     snippet = (
         _REAPY_HELPER
         + f"notes = {notes_literal}\n"
-        f"with reapy.inside_reaper():\n"
+        + notes_file_line
+        + f"with reapy.inside_reaper():\n"
         f"    track = RPR.GetTrack(0, {track_idx})\n"
         f"    item = RPR.CreateNewMIDIItemInProj(track, 0.0, {item_end}, False)[0]\n"
         f"    take = RPR.GetActiveTake(item)\n"
@@ -273,6 +285,7 @@ def build_transcription_record_v4(
         # ── Insert MIDI notes ──
         cmd = build_insert_cmd(
             attempt_notes, track_idx=track_idx,
+            sample_id=sample_id, output_dir=output_dir,
         )
         messages.append(_tool_call("Bash", {"command": cmd}))
 
