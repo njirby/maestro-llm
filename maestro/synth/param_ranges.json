@@ -79,7 +79,7 @@
   },
   "chorus_voices": {
     "min": 1.0,
-    "max": 4.0,
+    "max": 3.0,
     "default": 4.0,
     "discrete": true
   },
@@ -217,7 +217,7 @@
   },
   "delay_aux_tempo": {
     "min": 4.0,
-    "max": 12.0,
+    "max": 8.0,
     "default": 9.0,
     "discrete": true
   },
@@ -271,7 +271,7 @@
   },
   "delay_tempo": {
     "min": 4.0,
-    "max": 12.0,
+    "max": 8.0,
     "default": 9.0,
     "discrete": true
   },
@@ -823,7 +823,7 @@
   },
   "filter_1_style": {
     "min": 0.0,
-    "max": 9.0,
+    "max": 8.0,
     "default": 0.0,
     "discrete": true
   },
@@ -919,7 +919,7 @@
   },
   "filter_2_style": {
     "min": 0.0,
-    "max": 9.0,
+    "max": 8.0,
     "default": 0.0,
     "discrete": true
   },
@@ -997,7 +997,7 @@
   },
   "filter_fx_on": {
     "min": 0.0,
-    "max": 1.0,
+    "max": 7.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1009,7 +1009,7 @@
   },
   "filter_fx_style": {
     "min": 0.0,
-    "max": 9.0,
+    "max": 8.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1093,7 +1093,7 @@
   },
   "lfo_1_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1135,7 +1135,7 @@
   },
   "lfo_1_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1165,7 +1165,7 @@
   },
   "lfo_2_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1207,7 +1207,7 @@
   },
   "lfo_2_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1237,7 +1237,7 @@
   },
   "lfo_3_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1279,7 +1279,7 @@
   },
   "lfo_3_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1309,7 +1309,7 @@
   },
   "lfo_4_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1351,7 +1351,7 @@
   },
   "lfo_4_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1381,7 +1381,7 @@
   },
   "lfo_5_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1423,7 +1423,7 @@
   },
   "lfo_5_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1453,7 +1453,7 @@
   },
   "lfo_6_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1495,7 +1495,7 @@
   },
   "lfo_6_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1525,7 +1525,7 @@
   },
   "lfo_7_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1567,7 +1567,7 @@
   },
   "lfo_7_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -1597,7 +1597,7 @@
   },
   "lfo_8_keytrack_transpose": {
     "min": -60.0,
-    "max": 36.0,
+    "max": 96.0,
     "default": -12.0,
     "discrete": true
   },
@@ -1639,7 +1639,7 @@
   },
   "lfo_8_sync_type": {
     "min": 0.0,
-    "max": 5.0,
+    "max": 6.0,
     "default": 0.0,
     "discrete": true
   },
@@ -3709,7 +3709,7 @@
   },
   "osc_1_spectral_morph_type": {
     "min": 0.0,
-    "max": 11.0,
+    "max": 16.0,
     "default": 0.0,
     "discrete": true
   },
@@ -3721,7 +3721,7 @@
   },
   "osc_1_stack_style": {
     "min": 0.0,
-    "max": 10.0,
+    "max": 12.0,
     "default": 0.0,
     "discrete": true
   },
@@ -3733,7 +3733,7 @@
   },
   "osc_1_transpose": {
     "min": -48.0,
-    "max": 48.0,
+    "max": 96.0,
     "default": 0.0,
     "discrete": true
   },
@@ -3763,13 +3763,13 @@
   },
   "osc_1_unison_stack_type": {
     "min": 0.0,
-    "max": 7.0,
+    "max": 12.0,
     "default": 0.0,
     "discrete": true
   },
   "osc_1_unison_voices": {
     "min": 1.0,
-    "max": 16.0,
+    "max": 15.0,
     "default": 1.0,
     "discrete": true
   },
@@ -3889,7 +3889,7 @@
   },
   "osc_2_spectral_morph_type": {
     "min": 0.0,
-    "max": 11.0,
+    "max": 16.0,
     "default": 0.0,
     "discrete": true
   },
@@ -3901,7 +3901,7 @@
   },
   "osc_2_stack_style": {
     "min": 0.0,
-    "max": 10.0,
+    "max": 12.0,
     "default": 0.0,
     "discrete": true
   },
@@ -3913,7 +3913,7 @@
   },
   "osc_2_transpose": {
     "min": -48.0,
-    "max": 48.0,
+    "max": 96.0,
     "default": 0.0,
     "discrete": true
   },
@@ -3943,13 +3943,13 @@
   },
   "osc_2_unison_stack_type": {
     "min": 0.0,
-    "max": 7.0,
+    "max": 12.0,
     "default": 0.0,
     "discrete": true
   },
   "osc_2_unison_voices": {
     "min": 1.0,
-    "max": 16.0,
+    "max": 15.0,
     "default": 1.0,
     "discrete": true
   },
@@ -4069,7 +4069,7 @@
   },
   "osc_3_spectral_morph_type": {
     "min": 0.0,
-    "max": 11.0,
+    "max": 16.0,
     "default": 0.0,
     "discrete": true
   },
@@ -4081,7 +4081,7 @@
   },
   "osc_3_stack_style": {
     "min": 0.0,
-    "max": 10.0,
+    "max": 12.0,
     "default": 0.0,
     "discrete": true
   },
@@ -4093,7 +4093,7 @@
   },
   "osc_3_transpose": {
     "min": -48.0,
-    "max": 48.0,
+    "max": 96.0,
     "default": 0.0,
     "discrete": true
   },
@@ -4123,13 +4123,13 @@
   },
   "osc_3_unison_stack_type": {
     "min": 0.0,
-    "max": 7.0,
+    "max": 12.0,
     "default": 0.0,
     "discrete": true
   },
   "osc_3_unison_voices": {
     "min": 1.0,
-    "max": 16.0,
+    "max": 15.0,
     "default": 1.0,
     "discrete": true
   },
@@ -4225,7 +4225,7 @@
   },
   "polyphony": {
     "min": 1.0,
-    "max": 32.0,
+    "max": 31.0,
     "default": 8.0,
     "discrete": true
   },
@@ -4579,7 +4579,7 @@
   },
   "sample_transpose": {
     "min": -48.0,
-    "max": 48.0,
+    "max": 96.0,
     "default": 0.0,
     "discrete": true
   },
@@ -4639,7 +4639,7 @@
   },
   "voice_transpose": {
     "min": -48.0,
-    "max": 48.0,
+    "max": 96.0,
     "default": 0.0,
     "discrete": true
   },

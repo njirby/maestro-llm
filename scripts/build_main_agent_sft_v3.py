@@ -579,25 +579,33 @@ def format_subsystem_diff_summary(truth: dict[str, list[str]]) -> str:
 
 
 def build_batch_action_snippet(
-    params_by_idx: dict[int, float],
+    params_native: dict[str, float],
     track_idx: int = 0,
     fx_idx: int = 0,
 ) -> str:
-    """Emit a Python+reapy snippet that sets plugin params by REAPER index.
+    """Emit a Python+reapy snippet that sets plugin params via chunk API.
 
-    params_by_idx — {reaper_param_index: normalized_0_to_1_value}.
+    params_native — {vital_json_key: native_value} (denormalized).
+    Reads the current Vital preset, modifies the settings, and writes
+    the chunk back — no TrackFX_SetParam normalization issues.
     """
-    params_literal = ", ".join(
-        f"{k}: {round(float(v), 6)}" for k, v in sorted(params_by_idx.items())
-    )
+    params_literal = repr(params_native)
     snippet = (
         _REAPY_HELPER
-        + f"params = {{{params_literal}}}\n"
+        + _READ_CHUNK_HELPER
+        + _BUILD_CHUNK_HELPER
+        + "import base64\n"
+        f"params = {params_literal}\n"
+        "preset = read_vital_preset()\n"
+        "for k, v in params.items():\n"
+        "    preset['settings'][k] = v\n"
+        "chunk = build_vital_chunk(preset)\n"
+        "encoded = base64.b64encode(chunk).decode('ascii')\n"
         f"with reapy.inside_reaper():\n"
         f"    track = RPR.GetTrack(0, {track_idx})\n"
-        f"    for idx, val in params.items():\n"
-        f"        RPR.TrackFX_SetParam(track, {fx_idx}, idx, val)\n"
-        f"print(json.dumps({{'status': 'ok', 'applied': {len(params_by_idx)}}}))\n"
+        f"    if not RPR.TrackFX_SetNamedConfigParm(track, {fx_idx}, 'vst_chunk', encoded):\n"
+        f"        RPR.TrackFX_SetNamedConfigParm(track, {fx_idx}, 'vst3_chunk', encoded)\n"
+        f"print(json.dumps({{'status': 'ok', 'applied': {len(params_native)}}}))\n"
     )
     return _wrap_as_bash(snippet)
 
@@ -2128,12 +2136,11 @@ def build_record(
                 clap_after = None
 
         b.audio_wav = batch_wav
-        params_by_idx = {
-            _JSON_KEY_TO_REAPER[n]["idx"]: float(v)
+        params_native = {
+            n: _denormalize(n, v)
             for n, v in b.params_applied.items()
-            if n in _JSON_KEY_TO_REAPER
         }
-        action_snippet = build_batch_action_snippet(params_by_idx)
+        action_snippet = build_batch_action_snippet(params_native)
 
         # ---- SEARCH before action: model discovers param indices ----
         search_queries = _batch_search_queries(
@@ -2167,7 +2174,7 @@ def build_record(
         # ---- ACTION: set params by index ----
         messages.append({"role": "assistant", "content": f"Applying {b.subsystem} changes."})
         messages.append(_tool_call("Bash", {"command": action_snippet}))
-        _action_stdout = json.dumps({"status": "ok", "applied": len(params_by_idx)}) + "\n"
+        _action_stdout = json.dumps({"status": "ok", "applied": len(params_native)}) + "\n"
         messages.append(_bash_tool_response(_action_stdout))
 
         # Track current REAPER values for subsequent searches
@@ -2278,16 +2285,13 @@ def build_record(
                     corr_intro = f"{corr_prefix}That doesn't sound right in {b.subsystem} — I'll adjust {fix_desc}."
                 messages.append({"role": "assistant", "content": corr_intro})
 
-                corr_by_idx: dict[int, float] = {}
+                corr_native: dict[str, float] = {}
                 for m in fixing_now:
-                    corr_idx = _JSON_KEY_TO_REAPER.get(m.param, {}).get("idx")
-                    if corr_idx is not None:
-                        corr_by_idx[corr_idx] = float(m.true_value)
-                        current_reaper_values[corr_idx] = float(m.true_value)
+                    corr_native[m.param] = _denormalize(m.param, m.true_value)
 
-                if corr_by_idx:
-                    messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_by_idx)}))
-                    _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_by_idx)}) + "\n"
+                if corr_native:
+                    messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_native)}))
+                    _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_native)}) + "\n"
                     messages.append(_bash_tool_response(_corr_stdout))
                 else:
                     messages.append(_tool_call("Bash", {"command": "echo 'no matching REAPER param'"}))

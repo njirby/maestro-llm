@@ -1183,12 +1183,11 @@ def build_record(
                 clap_after = None
 
         b.audio_wav = batch_wav
-        params_by_idx = {
-            _JSON_KEY_TO_REAPER[n]["idx"]: float(v)
+        params_native = {
+            n: _denormalize(n, v)
             for n, v in b.params_applied.items()
-            if n in _JSON_KEY_TO_REAPER
         }
-        action_snippet = build_batch_action_snippet(params_by_idx)
+        action_snippet = build_batch_action_snippet(params_native)
 
         search_queries = _batch_search_queries(
             b.subsystem, list(b.params_applied.keys()), _JSON_KEY_TO_REAPER,
@@ -1219,7 +1218,7 @@ def build_record(
 
         messages.append({"role": "assistant", "content": f"Applying {b.subsystem} changes."})
         messages.append(_tool_call("Bash", {"command": action_snippet}))
-        _action_stdout = json.dumps({"status": "ok", "applied": len(params_by_idx)}) + "\n"
+        _action_stdout = json.dumps({"status": "ok", "applied": len(params_native)}) + "\n"
         messages.append(_bash_tool_response(_action_stdout))
 
         for name, norm in b.params_applied.items():
@@ -1324,16 +1323,13 @@ def build_record(
                     corr_intro = f"{corr_prefix}Noticed issues in {b.subsystem} — correcting {fix_desc}."
                 messages.append({"role": "assistant", "content": corr_intro})
 
-                corr_by_idx: dict[int, float] = {}
+                corr_native: dict[str, float] = {}
                 for m in fixing_now:
-                    corr_idx = _JSON_KEY_TO_REAPER.get(m.param, {}).get("idx")
-                    if corr_idx is not None:
-                        corr_by_idx[corr_idx] = float(m.true_value)
-                        current_reaper_values[corr_idx] = float(m.true_value)
+                    corr_native[m.param] = _denormalize(m.param, m.true_value)
 
-                if corr_by_idx:
-                    messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_by_idx)}))
-                    _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_by_idx)}) + "\n"
+                if corr_native:
+                    messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_native)}))
+                    _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_native)}) + "\n"
                     messages.append(_bash_tool_response(_corr_stdout))
                 else:
                     messages.append(_tool_call("Bash", {"command": "echo 'no matching REAPER param'"}))
