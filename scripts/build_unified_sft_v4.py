@@ -203,7 +203,7 @@ def build_record(
     ]
 
     init_preset = _init_preset()
-    factory_init_settings = init_preset.get("settings", {})
+    factory_init_settings = dict(init_preset.get("settings", {}))
 
     sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
     sample_rng = random.Random(int(args.seed) + sid_seed)
