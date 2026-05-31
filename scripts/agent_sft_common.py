@@ -696,8 +696,7 @@ def build_list_wavetables_total_snippet() -> str:
     """Inline Python that scans Vital's data dirs and prints wavetable count."""
     return (
         "import json, os, glob\n"
-        "_VITAL_DIRS = [os.path.expanduser('~/.local/share/vital'), "
-        "os.path.expanduser('~/Library/Application Support/Vital')]\n"
+        "_VITAL_DIRS = os.environ.get('VITAL_DATA_DIRS', os.path.expanduser('~/.local/share/vital')).split(':')\n"
         "_seen, _count = set(), 0\n"
         "for _vd in _VITAL_DIRS:\n"
         "    if not os.path.isdir(_vd): continue\n"
@@ -721,8 +720,7 @@ def build_list_wavetables_slice_snippet(start: int, end: int) -> str:
     """Inline Python that scans Vital's data dirs and prints wavetable names in a range."""
     return (
         "import json, os, glob\n"
-        "_VITAL_DIRS = [os.path.expanduser('~/.local/share/vital'), "
-        "os.path.expanduser('~/Library/Application Support/Vital')]\n"
+        "_VITAL_DIRS = os.environ.get('VITAL_DATA_DIRS', os.path.expanduser('~/.local/share/vital')).split(':')\n"
         "_seen, _names = set(), []\n"
         "for _vd in _VITAL_DIRS:\n"
         "    if not os.path.isdir(_vd): continue\n"
@@ -748,8 +746,7 @@ def build_list_wavetables_slice_snippet(start: int, end: int) -> str:
 
 _WT_DISCOVER_SNIPPET = (
     "import os, glob as _glob\n"
-    "_VITAL_DIRS = [os.path.expanduser('~/.local/share/vital'), "
-    "os.path.expanduser('~/Library/Application Support/Vital')]\n"
+    "_VITAL_DIRS = os.environ.get('VITAL_DATA_DIRS', os.path.expanduser('~/.local/share/vital')).split(':')\n"
     "_seen_wt, lib = set(), []\n"
     "for _vd in _VITAL_DIRS:\n"
     "    if not os.path.isdir(_vd): continue\n"
