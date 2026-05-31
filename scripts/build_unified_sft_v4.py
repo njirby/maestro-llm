@@ -203,6 +203,7 @@ def build_record(
     ]
 
     init_preset = _init_preset()
+    factory_init_settings = init_preset.get("settings", {})
 
     sid_seed = int(hashlib.sha1(sample_id.encode()).hexdigest()[:8], 16)
     sample_rng = random.Random(int(args.seed) + sid_seed)
@@ -1073,8 +1074,8 @@ def build_record(
     base_scalar_overrides = {}
     for name, val in target_preset.get("settings", {}).items():
         if isinstance(val, (int, float)) and name not in _tmp_batch_params:
-            init_val = init_preset.get("settings", {}).get(name)
-            if init_val != val:
+            factory_val = factory_init_settings.get(name)
+            if factory_val != val:
                 base_scalar_overrides[name] = val
     overrides_literal = repr(base_scalar_overrides)
     apply_snippet = (
