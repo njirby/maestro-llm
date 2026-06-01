@@ -336,11 +336,6 @@ def build_transcription_record_v4(
         _emit_listen_sequence(
             messages, audio_assets, verify_wav,
             probe_stdout=probe_stdout,
-            listen_text=(
-                "Listening to the verification render."
-                if attempt_idx == 0
-                else "Listening to the corrected transcription."
-            ),
         )
 
         # ── Verdict ──
