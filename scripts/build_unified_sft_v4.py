@@ -1392,10 +1392,13 @@ def build_record(
             _retrans_output_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.md"
             _retrans_manifest_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.manifest.json"
 
+            _retrans_prefix = f"{pending_check}\n\n" if pending_check else ""
+            pending_check = None
             messages.append({
                 "role": "assistant",
                 "content": (
-                    "Listening closely, some of the MIDI notes don't match the target melody — "
+                    _retrans_prefix
+                    + "Listening closely, some of the MIDI notes don't match the target melody — "
                     "the transcription sounds off now that effects are applied. Re-transcribing."
                 ),
             })
@@ -1462,11 +1465,7 @@ def build_record(
                 listen_text="Listening after re-transcription — the melody should match now.",
             )
             last_batch_audio = _retrans_wav
-
-            messages.append({
-                "role": "assistant",
-                "content": "Re-transcription confirmed — the melody now matches the target. Continuing with parameter tuning.",
-            })
+            pending_check = "Re-transcription confirmed — the melody now matches the target. Continuing with parameter tuning."
 
     if _diagnosis_text:
         messages.append({"role": "assistant", "content": _diagnosis_text})
