@@ -633,7 +633,7 @@ def read_vital_preset(track_idx=0, fx_idx=0):
         if not ok or not raw:
             ok, raw = _get_fx_chunk(track, fx_idx, 'vst3_chunk')
         chunk = _b64.b64decode(raw)
-    start = chunk.index(b'{')
+    start = chunk.index(b'{"')
     end = chunk.rindex(b'}') + 1
     return json.loads(chunk[start:end])
 """
