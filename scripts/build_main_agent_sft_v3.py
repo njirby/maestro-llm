@@ -589,7 +589,7 @@ def build_batch_action_snippet(
     Reads the current Vital preset, modifies the settings, and writes
     the chunk back — no TrackFX_SetParam normalization issues.
     """
-    params_rounded = {k: (round(v) if isinstance(v, float) and v == round(v) else round(v, 6) if isinstance(v, float) else v) for k, v in params_native.items()}
+    params_rounded = {k: (round(v) if isinstance(v, float) and v == round(v) else round(v, 4) if isinstance(v, float) else v) for k, v in params_native.items()}
     params_literal = repr(params_rounded)
     snippet = (
         _REAPY_HELPER
