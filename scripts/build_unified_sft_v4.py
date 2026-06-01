@@ -1159,6 +1159,30 @@ def build_record(
 
     batch_audio_dir = Path(args.out_dir) / "batch_audio" / sample_id
     batch_audio_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mid-conversation re-transcription decision
+    _retranscribe_rate = float(getattr(args, "retranscribe_rate", 0.0))
+    retranscribe_after_batch: int | None = None
+    _correct_notes = None
+    _correct_notes_dicts = None
+    if _retranscribe_rate > 0 and len(batches) >= 3 and mistake_rng.random() < _retranscribe_rate:
+        retranscribe_after_batch = mistake_rng.randint(1, len(batches) - 2)
+        # Mutate the current notes so early batches render with wrong MIDI
+        _correct_notes = notes  # save correct DawDreamer-format notes
+        _correct_notes_dicts = _trans_notes if '_trans_notes' in dir() else None
+        from scripts.agent_sft_common import apply_transcription_mutations
+        _retrans_rng = random.Random(int(args.seed) + sid_seed + 5555)
+        _mut_result = apply_transcription_mutations(
+            load_notes_from_midi(source_midi_path) if source_midi_path else [],
+            _retrans_rng,
+        )
+        if _mut_result is not None:
+            _wrong_notes_dicts, _mut_infos, _mut_narration = _mut_result
+            notes = notes_from_dicts(_wrong_notes_dicts)
+            _log(f"retranscribe after batch {retranscribe_after_batch} ({len(_mut_infos)} mutations)")
+        else:
+            retranscribe_after_batch = None
+
     _log(f"batch loop start — {len(batches)} batches")
 
     for bi, b in enumerate(batches):
@@ -1361,6 +1385,89 @@ def build_record(
                     "is_correction": True,
                 })
 
+        # ---- MID-CONVERSATION RE-TRANSCRIPTION ----
+        if retranscribe_after_batch is not None and bi == retranscribe_after_batch:
+            _retrans_agent_id = make_agent_id(sample_id, "melody_retranscription")
+            _retrans_agent_dir = f"/tmp/agents/{sample_id}"
+            _retrans_output_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.md"
+            _retrans_manifest_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.manifest.json"
+
+            messages.append({
+                "role": "assistant",
+                "content": (
+                    "Listening closely, some of the MIDI notes don't match the target melody — "
+                    "the transcription sounds off now that effects are applied. Re-transcribing."
+                ),
+            })
+
+            _retrans_prompt = (
+                f"Target: {target_audio_path}. Track: 0. The previous transcription has "
+                f"errors — re-listen and write corrected MIDI notes."
+            )
+            write_agent_manifest(
+                agent_id=_retrans_agent_id,
+                subagent_type="melody_transcription",
+                output_file=_retrans_output_file,
+                manifest_file=_retrans_manifest_file,
+                prompt=_retrans_prompt,
+            )
+            messages.append(_tool_call("Agent", {
+                "subagent_type": "melody_transcription",
+                "description": "Re-transcribe target melody — previous transcription has errors",
+                "prompt": _retrans_prompt,
+                "name": f"retranscribe-{sample_id}",
+                "run_in_background": True,
+            }))
+            messages.append({
+                "role": "tool_response",
+                "content": json.dumps({
+                    "status": "completed",
+                    "outputFile": _retrans_output_file,
+                }),
+            })
+
+            retrans_result = build_transcription_record_v4(
+                sample_id=sample_id,
+                archetype=archetype,
+                target_audio_path=target_audio_path,
+                source_midi_path=source_midi_path,
+                output_dir=Path("/tmp/agents"),
+                track_idx=0,
+                mistake_rate=0.0,
+                seed=int(args.seed) + 6666,
+            )
+            if retrans_result.record:
+                retrans_result.record["id"] = f"{sample_id}_retranscription"
+                transcription_records.append(retrans_result.record)
+
+            retrans_final_msg = (
+                retrans_result.record["messages"][-1]["content"]
+                if retrans_result.record
+                else "Re-transcription complete."
+            )
+            with open(_retrans_output_file, "w") as _rtf:
+                _rtf.write(retrans_final_msg)
+                _rtf.write("\n")
+
+            # Restore correct notes for remaining batches
+            notes = _correct_notes
+            _log(f"  re-transcription complete, restored correct notes")
+
+            # Re-render current cumulative with corrected notes
+            _retrans_wav = batch_audio_dir / f"batch_{bi}_retranscribed.wav"
+            render_cumulative_audio(cumulative, notes, _retrans_wav)
+            audio_assets.append(str(_retrans_wav))
+            _emit_listen_sequence(
+                messages, audio_assets, _retrans_wav,
+                listen_text="Listening after re-transcription — the melody should match now.",
+            )
+            last_batch_audio = _retrans_wav
+
+            messages.append({
+                "role": "assistant",
+                "content": "Re-transcription confirmed — the melody now matches the target. Continuing with parameter tuning.",
+            })
+
     if _diagnosis_text:
         messages.append({"role": "assistant", "content": _diagnosis_text})
 
@@ -1477,6 +1584,7 @@ def build_record(
         "n_search_rounds": n_search_rounds,
         "max_mistakes_drawn": max_mistakes_drawn,
         "pre_applied_subsystems": pre_applied_subsystems,
+        "retranscribe_after_batch": retranscribe_after_batch,
         "wall_time_s": wall_time_s,
         "gt_wavetable_names": gt_wt_names,
         "applied_wavetable_names": applied_wt_names,
@@ -1599,6 +1707,8 @@ def main() -> None:
     ap.add_argument("--max-correction-turns", type=int, default=3,
         help="Max correction iterations per mistaken batch (default 3).")
     ap.add_argument("--transcription-mistake-rate", type=float, default=0.15)
+    ap.add_argument("--retranscribe-rate", type=float, default=0.0,
+        help="Fraction of samples where transcription is re-done mid-conversation after hearing wrong notes with effects.")
     ap.add_argument("--random-init-rate", type=float, default=0.0,
         help="Fraction of samples starting from a random same-archetype preset instead of factory default.")
     ap.add_argument("--partial-init-rate", type=float, default=0.0,

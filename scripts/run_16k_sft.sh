@@ -41,6 +41,7 @@ python scripts/run_sft_production.py \
     --force-research-rate 0.20 \
     --no-audio-rate 0.05 \
     --partial-init-rate 0.40 \
+    --retranscribe-rate 0.15 \
     --seed 1337 \
     --suffix v1 \
     --resume

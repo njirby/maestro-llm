@@ -384,6 +384,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--per-param-mistake-rate", type=float, default=0.10)
     p.add_argument("--max-correction-turns", type=int, default=3)
     p.add_argument("--transcription-mistake-rate", type=float, default=0.15)
+    p.add_argument("--retranscribe-rate", type=float, default=0.0)
     p.add_argument("--random-init-rate", type=float, default=0.0)
     p.add_argument("--partial-init-rate", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=1337)
