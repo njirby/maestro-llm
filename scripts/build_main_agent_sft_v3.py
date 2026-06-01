@@ -589,7 +589,8 @@ def build_batch_action_snippet(
     Reads the current Vital preset, modifies the settings, and writes
     the chunk back — no TrackFX_SetParam normalization issues.
     """
-    params_literal = repr(params_native)
+    params_rounded = {k: (round(v) if isinstance(v, float) and v == round(v) else round(v, 6) if isinstance(v, float) else v) for k, v in params_native.items()}
+    params_literal = repr(params_rounded)
     snippet = (
         _REAPY_HELPER
         + _READ_CHUNK_HELPER
@@ -1948,7 +1949,7 @@ def build_record(
         _emit_listen_sequence(
             messages, audio_assets, tuple_wav,
             probe_stdout=_tuple_stdout,
-            listen_text="Tuple rendered. Listening.",
+
         )
         # Verdict was good → done with search, exit loop.
         break
@@ -1987,7 +1988,7 @@ def build_record(
         _emit_listen_sequence(
             messages, audio_assets, tuple_wav,
             probe_stdout=_fb_tuple_stdout,
-            listen_text="Fallback tuple rendered. Listening.",
+
         )
 
     gt_tuple = cur_tuple
@@ -2189,10 +2190,7 @@ def build_record(
             out_path=str(batch_wav),
         ))
         messages.append(_tool_call("Bash", {"command": _batch_render_cmd}))
-        _emit_listen_sequence(
-            messages, audio_assets, batch_wav,
-            listen_text=f"Listening to {b.subsystem} batch.",
-        )
+        _emit_listen_sequence(messages, audio_assets, batch_wav)
         last_batch_audio = batch_wav
 
         # Remaining-gap check
@@ -2305,7 +2303,7 @@ def build_record(
                 messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
                 _emit_listen_sequence(
                     messages, audio_assets, corr_wav,
-                    listen_text="Listening to the corrected preset.",
+        
                 )
                 last_batch_audio = corr_wav
 

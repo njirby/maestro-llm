@@ -1001,7 +1001,7 @@ def build_record(
         _emit_listen_sequence(
             messages, audio_assets, tuple_wav,
             probe_stdout=_tuple_stdout,
-            listen_text="Tuple rendered. Listening.",
+
         )
         break
 
@@ -1044,7 +1044,7 @@ def build_record(
         _emit_listen_sequence(
             messages, audio_assets, tuple_wav,
             probe_stdout=_fb_tuple_stdout,
-            listen_text="Fallback tuple rendered. Listening.",
+
         )
 
     gt_tuple = cur_tuple
@@ -1253,10 +1253,7 @@ def build_record(
         messages.append({"role": "assistant", "content": f"Listening after {b.subsystem} batch."})
         _batch_render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(batch_wav)))
         messages.append(_tool_call("Bash", {"command": _batch_render_cmd}))
-        _emit_listen_sequence(
-            messages, audio_assets, batch_wav,
-            listen_text=f"Reading {b.subsystem} batch audio.",
-        )
+        _emit_listen_sequence(messages, audio_assets, batch_wav)
         last_batch_audio = batch_wav
 
         gap = _step_remaining_gap(target_preset, {"cumulative_preset": cumulative})
@@ -1365,7 +1362,7 @@ def build_record(
                 messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
                 _emit_listen_sequence(
                     messages, audio_assets, corr_wav,
-                    listen_text="Listening to the corrected preset.",
+        
                 )
                 last_batch_audio = corr_wav
 
@@ -1462,7 +1459,7 @@ def build_record(
             audio_assets.append(str(_retrans_wav))
             _emit_listen_sequence(
                 messages, audio_assets, _retrans_wav,
-                listen_text="Listening after re-transcription — the melody should match now.",
+    
             )
             last_batch_audio = _retrans_wav
             pending_check = "Re-transcription confirmed — the melody now matches the target. Continuing with parameter tuning."

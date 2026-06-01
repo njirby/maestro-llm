@@ -665,13 +665,13 @@ def _emit_listen_sequence(
     audio_assets: list[str],
     audio_path: str | Path,
     probe_stdout: str | None = None,
-    listen_text: str = "Listening.",
 ) -> None:
-    """Append the BashCommandOutput → assistant → read → audio sequence.
+    """Append the BashCommandOutput → Read → audio sequence.
 
-    Call AFTER appending the bash probe/render tool_call.
-    ``audio_path`` must already be in ``audio_assets`` before calling this.
-    If ``probe_stdout`` is None, a default listen_probe JSON is synthesized.
+    Call AFTER appending the assistant text and bash render tool_call.
+    The Read tool_call follows immediately (same assistant turn, no
+    intermediate assistant message). ``audio_path`` must already be in
+    ``audio_assets`` before calling this.
     """
     path_str = str(audio_path)
     if probe_stdout is None:
@@ -683,7 +683,6 @@ def _emit_listen_sequence(
             pass
         probe_stdout = json.dumps(probe_out, ensure_ascii=False) + "\n"
     messages.append(_bash_tool_response(probe_stdout))
-    messages.append({"role": "assistant", "content": listen_text})
     messages.append(_tool_call("Read", {"file_path": path_str}))
     messages.append(_read_tool_response_audio())
 
