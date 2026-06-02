@@ -1028,8 +1028,27 @@ def build_param_search_snippet(
         f"        if all(kw in name.strip().lower() for kw in keywords):\n"
         f"            val, _, _, _, mn, mx = RPR.TrackFX_GetParam(track, {fx_idx}, i, 0.0, 0.0)\n"
         f"            _, _, _, _, disp, _ = RPR.TrackFX_GetFormattedParamValue(track, {fx_idx}, i, '', 2048)\n"
-        f"            results.append({{'idx': i, 'name': name.strip(), 'value': round(float(val), 6),\n"
-        f"                           'display': disp.strip(), 'min': round(float(mn), 6), 'max': round(float(mx), 6)}})\n"
+        f"            step_result = RPR.TrackFX_GetParameterStepSizes(track, {fx_idx}, i, 0, 0, 0, 0)\n"
+        f"            step = step_result[4] if len(step_result) > 4 else 0\n"
+        f"            entry = {{'idx': i, 'name': name.strip(), 'display': disp.strip()}}\n"
+        f"            if step > 0:\n"
+        f"                n_options = round(1/step) + 1\n"
+        f"                options = []\n"
+        f"                for oi in range(n_options):\n"
+        f"                    ov = oi / max(1, n_options - 1)\n"
+        f"                    RPR.TrackFX_SetParam(track, {fx_idx}, i, ov)\n"
+        f"                    _, _, _, _, od, _ = RPR.TrackFX_GetFormattedParamValue(track, {fx_idx}, i, '', 2048)\n"
+        f"                    options.append(od.strip())\n"
+        f"                RPR.TrackFX_SetParam(track, {fx_idx}, i, float(val))\n"
+        f"                entry['type'] = 'discrete'\n"
+        f"                entry['options'] = options\n"
+        f"                entry['current_index'] = round(float(val) * max(1, n_options - 1))\n"
+        f"            else:\n"
+        f"                entry['type'] = 'continuous'\n"
+        f"                entry['value'] = round(float(val), 6)\n"
+        f"                entry['min'] = round(float(mn), 6)\n"
+        f"                entry['max'] = round(float(mx), 6)\n"
+        f"            results.append(entry)\n"
         "print(json.dumps({'query': query, 'count': len(results), 'params': results}, indent=2))\n"
     )
 
@@ -1043,8 +1062,9 @@ def simulate_param_search(
     """Simulate a keyword search against the static REAPER param dump.
 
     Build-time only — produces the same JSON the inline reapy snippet would
-    return from a live REAPER session.  *value_overrides* patches in current
-    [0,1] values for params already modified in earlier batches.
+    return from a live REAPER session. The dump now includes type info
+    (discrete with options list, or continuous with value/min/max).
+    *value_overrides* patches in current [0,1] values for continuous params.
     """
     keywords = query.lower().split()
     results: list[dict] = []
@@ -1052,7 +1072,13 @@ def simulate_param_search(
         if all(kw in p["name"].lower() for kw in keywords):
             entry = dict(p)
             if value_overrides and p["idx"] in value_overrides:
-                entry["value"] = round(value_overrides[p["idx"]], 6)
+                ov = value_overrides[p["idx"]]
+                if entry.get("type") == "discrete" and "options" in entry:
+                    n_opts = len(entry["options"])
+                    entry["current_index"] = round(ov * max(1, n_opts - 1))
+                    entry["display"] = entry["options"][min(entry["current_index"], n_opts - 1)]
+                elif entry.get("type") == "continuous":
+                    entry["value"] = round(ov, 6)
             results.append(entry)
     return results[:max_results]
 
