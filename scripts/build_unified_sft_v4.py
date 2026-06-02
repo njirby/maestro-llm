@@ -237,10 +237,11 @@ def _build_steer_turns(
         steer_wav = batch_audio_dir / f"steer_{turn_i}.wav"
         render_cumulative_audio(cumulative, notes, steer_wav)
         audio_assets.append(str(steer_wav))
-        messages.append({"role": "assistant", "content": f"Rendering after the adjustment."})
+        messages.append({"role": "assistant", "content": "Rendering after the adjustment."})
         _render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(steer_wav)))
         messages.append(_tool_call("Bash", {"command": _render_cmd}))
         _emit_listen_sequence(messages, audio_assets, steer_wav)
+        messages.append({"role": "assistant", "content": "Done — the adjustment has been applied."})
 
 
 # ---------------------------------------------------------------------------
