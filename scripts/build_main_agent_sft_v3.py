@@ -1044,30 +1044,41 @@ def stage2_verdict(
     archetype: str = "",
     stage2_server: str = "",
     stage2_model: str = "",
+    final_clap_score: float | None = None,
 ) -> str:
     """Stage 2: write FINAL ASSESSMENT grounded in a perceptual residual-delta summary.
 
-    The residual summary lists the top 5 concrete differences between the target
-    preset and the final cumulative preset, in perceptual language (no numbers,
-    no param names). The prompt forbids generic 'envelope N' pattern-matching
-    and requires the model to cite one of the specific residuals.
+    When the final CLAP score is high (>=0.95), the verdict is a single
+    positive sentence. Otherwise, it includes what still differs.
     """
-    prompt = (
-        f"You are a music production AI writing the final assessment of a "
-        f"synth recreation.\n\n"
-        f"Perceptual review of the recreation:\n{perceptual_obs}\n\n"
-        f"Actual residual differences (what still differs between target and final, "
-        f"sorted by magnitude):\n{residual_delta_summary}\n\n"
-        f"Write a single line beginning with 'FINAL ASSESSMENT: ' followed "
-        f"by exactly 2 short sentences.\n"
-        f"  Sentence 1: what the recreation captures well about the target's character.\n"
-        f"  Sentence 2: the most important remaining difference — MUST cite one of the "
-        f"specific residuals from the list above in perceptual terms (e.g. 'attack is still "
-        f"too plucky', 'filter should be darker', 'needs more unison detune'). Do NOT "
-        f"default to generic pattern-matching like 'envelope 6' — describe the actual "
-        f"audible problem.\n"
-        f"Rules: no snake_case tokens, no **bold**, no kHz numbers, no parameter names."
-    )
+    close_match = final_clap_score is not None and final_clap_score >= 0.95
+    if close_match:
+        prompt = (
+            f"You are a music production AI writing the final assessment of a "
+            f"synth recreation that closely matches the target.\n\n"
+            f"Perceptual review of the recreation:\n{perceptual_obs}\n\n"
+            f"Write a single line beginning with 'FINAL ASSESSMENT: ' followed "
+            f"by 1 short sentence confirming the recreation closely matches "
+            f"the target's character. Be specific about what makes it a good match.\n"
+            f"Rules: no snake_case tokens, no **bold**, no kHz numbers, no parameter names."
+        )
+    else:
+        prompt = (
+            f"You are a music production AI writing the final assessment of a "
+            f"synth recreation.\n\n"
+            f"Perceptual review of the recreation:\n{perceptual_obs}\n\n"
+            f"Actual residual differences (what still differs between target and final, "
+            f"sorted by magnitude):\n{residual_delta_summary}\n\n"
+            f"Write a single line beginning with 'FINAL ASSESSMENT: ' followed "
+            f"by exactly 2 short sentences.\n"
+            f"  Sentence 1: what the recreation captures well about the target's character.\n"
+            f"  Sentence 2: the most important remaining difference — MUST cite one of the "
+            f"specific residuals from the list above in perceptual terms (e.g. 'attack is still "
+            f"too plucky', 'filter should be darker', 'needs more unison detune'). Do NOT "
+            f"default to generic pattern-matching like 'envelope 6' — describe the actual "
+            f"audible problem.\n"
+            f"Rules: no snake_case tokens, no **bold**, no kHz numbers, no parameter names."
+        )
     try:
         r = _llm_post(
             f"{stage2_server}/v1/chat/completions",
@@ -2357,6 +2368,11 @@ def build_record(
     residual_delta_summary = summarize_residual_delta_perceptual(target_preset, cumulative)
 
     _vt = _time.monotonic()
+    _final_clap = None
+    if batch_labels:
+        _last_clap = [l.get("clap_score_after_batch") for l in batch_labels if l.get("clap_score_after_batch") is not None]
+        if _last_clap:
+            _final_clap = _last_clap[-1]
     verdict_text = stage2_verdict(
         perceptual_obs=verdict_obs,
         residual_delta_summary=residual_delta_summary,
@@ -2364,6 +2380,7 @@ def build_record(
         archetype=archetype,
         stage2_server=stage2_server,
         stage2_model=stage2_model,
+        final_clap_score=_final_clap,
     )
     _log(f"verdict omni {_time.monotonic()-_vt:.1f}s")
     if pending_check:

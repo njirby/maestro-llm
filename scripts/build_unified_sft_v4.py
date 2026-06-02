@@ -1597,6 +1597,11 @@ def build_record(
     residual_delta_summary = summarize_residual_delta_perceptual(target_preset, cumulative)
 
     _vt = _time.monotonic()
+    _final_clap = None
+    if batch_labels:
+        _last_clap = [l.get("clap_score_after_batch") for l in batch_labels if l.get("clap_score_after_batch") is not None]
+        if _last_clap:
+            _final_clap = _last_clap[-1]
     verdict_text = stage2_verdict(
         perceptual_obs=verdict_obs,
         residual_delta_summary=residual_delta_summary,
@@ -1604,6 +1609,7 @@ def build_record(
         archetype=archetype,
         stage2_server=stage2_server,
         stage2_model=stage2_model,
+        final_clap_score=_final_clap,
     )
     _log(f"verdict omni {_time.monotonic()-_vt:.1f}s")
     if pending_check:
