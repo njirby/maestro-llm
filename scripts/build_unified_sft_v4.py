@@ -134,6 +134,116 @@ from scripts.preset_perceptual_summary import summarize_residual_delta_perceptua
 
 
 # ---------------------------------------------------------------------------
+# User steer catalog — perceptual directions for post-verdict tweaks
+# ---------------------------------------------------------------------------
+
+STEER_CATALOG = [
+    {"prompts": ["Make it darker", "Can you darken the tone?", "It's too bright, tone it down"],
+     "response": "Darkening the tone by pulling the filter down and reducing high-end presence.",
+     "params": {"filter_1_cutoff": ("subtract", 15.0), "eq_high_gain": ("subtract", 2.0)}, "tags": ["tone"]},
+    {"prompts": ["Make it brighter", "Open it up more", "I want more presence"],
+     "response": "Opening up the filter and boosting the highs for more brightness.",
+     "params": {"filter_1_cutoff": ("add", 15.0), "eq_high_gain": ("add", 2.0)}, "tags": ["tone"]},
+    {"prompts": ["Add more reverb", "Make it more spacious", "I want it to sound like it's in a big room"],
+     "response": "Adding space with more reverb and a longer decay tail.",
+     "params": {"reverb_dry_wet": ("add", 0.2), "reverb_decay_time": ("add", 0.15), "reverb_on": ("set", 1.0)}, "tags": ["fx"]},
+    {"prompts": ["Make the attack snappier", "It needs more punch", "Tighten up the attack"],
+     "response": "Tightening the attack for a snappier transient.",
+     "params": {"env_1_attack": ("multiply", 0.3)}, "tags": ["envelope"]},
+    {"prompts": ["Soften the attack", "Make it more pad-like", "I want a slower fade-in"],
+     "response": "Softening the attack for a gentler fade-in.",
+     "params": {"env_1_attack": ("multiply", 2.5)}, "tags": ["envelope"]},
+    {"prompts": ["Widen the stereo", "Make it wider", "Spread it out more"],
+     "response": "Widening the stereo field with more unison detune and chorus.",
+     "params": {"osc_1_unison_detune": ("add", 0.15), "chorus_dry_wet": ("add", 0.15)}, "tags": ["stereo"]},
+    {"prompts": ["Make it more aggressive", "Add some grit", "Dirty it up"],
+     "response": "Adding grit with more distortion drive.",
+     "params": {"distortion_drive": ("add", 0.3), "distortion_on": ("set", 1.0)}, "tags": ["fx"]},
+    {"prompts": ["Less reverb", "Make it drier", "Too much space, pull it back"],
+     "response": "Pulling back the reverb for a drier sound.",
+     "params": {"reverb_dry_wet": ("subtract", 0.2)}, "tags": ["fx"]},
+    {"prompts": ["Add more movement", "It's too static, make it evolve", "Can you add some modulation?"],
+     "response": "Adding more movement by increasing the modulation depth.",
+     "params": {"lfo_1_frequency": ("multiply", 1.5)}, "tags": ["modulation"]},
+    {"prompts": ["Turn down the resonance", "The filter is too ringy"],
+     "response": "Reducing the filter resonance to tame the ringing.",
+     "params": {"filter_1_resonance": ("subtract", 0.15)}, "tags": ["filter"]},
+    {"prompts": ["Make the release longer", "Let it ring out more"],
+     "response": "Extending the release for a longer tail.",
+     "params": {"env_1_release": ("multiply", 2.0)}, "tags": ["envelope"]},
+    {"prompts": ["Shorten the release", "Cut it off quicker"],
+     "response": "Tightening the release for a cleaner cutoff.",
+     "params": {"env_1_release": ("multiply", 0.4)}, "tags": ["envelope"]},
+]
+
+from maestro.synth.path_gen import PARAM_RANGES as _STEER_RANGES
+
+
+def _apply_steer_op(current: float, op: str, value: float, name: str) -> float:
+    r = _STEER_RANGES.get(name, {})
+    lo, hi = r.get("min", 0.0), r.get("max", 1.0)
+    if op == "add":
+        result = current + value
+    elif op == "subtract":
+        result = current - value
+    elif op == "multiply":
+        result = current * value
+    elif op == "set":
+        result = value
+    else:
+        result = current
+    return max(lo, min(hi, result))
+
+
+def _build_steer_turns(
+    cumulative: dict,
+    notes: list,
+    messages: list[dict],
+    audio_assets: list[str],
+    batch_audio_dir: Path,
+    rng: "random.Random",
+    sample_id: str,
+) -> None:
+    """Append 1-2 user steer turns to the conversation."""
+    n_turns = rng.choice([1, 1, 1, 2])
+    used_tags: set[str] = set()
+    available = list(STEER_CATALOG)
+
+    for turn_i in range(n_turns):
+        candidates = [d for d in available if not (set(d["tags"]) & used_tags)]
+        if not candidates:
+            break
+        direction = rng.choice(candidates)
+        available.remove(direction)
+        used_tags.update(direction["tags"])
+
+        user_text = rng.choice(direction["prompts"])
+        messages.append({"role": "user", "content": user_text})
+
+        steer_params: dict[str, float] = {}
+        settings = cumulative.get("settings", {})
+        for param_name, (op, value) in direction["params"].items():
+            current = float(settings.get(param_name, 0.0))
+            new_val = _apply_steer_op(current, op, value, param_name)
+            steer_params[param_name] = round(new_val, 4) if not isinstance(new_val, int) else new_val
+            settings[param_name] = new_val
+
+        messages.append({"role": "assistant", "content": direction["response"]})
+        action_snippet = build_batch_action_snippet(steer_params)
+        messages.append(_tool_call("Bash", {"command": action_snippet}))
+        _action_stdout = json.dumps({"status": "ok", "applied": len(steer_params)}) + "\n"
+        messages.append(_bash_tool_response(_action_stdout))
+
+        steer_wav = batch_audio_dir / f"steer_{turn_i}.wav"
+        render_cumulative_audio(cumulative, notes, steer_wav)
+        audio_assets.append(str(steer_wav))
+        messages.append({"role": "assistant", "content": f"Rendering after the adjustment."})
+        _render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(steer_wav)))
+        messages.append(_tool_call("Bash", {"command": _render_cmd}))
+        _emit_listen_sequence(messages, audio_assets, steer_wav)
+
+
+# ---------------------------------------------------------------------------
 # Main builder — modified to call real subagent builders
 # ---------------------------------------------------------------------------
 
@@ -1499,6 +1609,22 @@ def build_record(
         verdict_text = f"{pending_check}\n\n{verdict_text}"
     messages.append({"role": "assistant", "content": verdict_text})
 
+    # ---- USER STEER TURNS (optional post-verdict tweaks) ----
+    _steer_rate = float(getattr(args, "steer_rate", 0.0))
+    steer_applied = False
+    if _steer_rate > 0 and sample_rng.random() < _steer_rate:
+        _steer_rng = random.Random(int(args.seed) + sid_seed + 3333)
+        _build_steer_turns(
+            cumulative=cumulative,
+            notes=notes,
+            messages=messages,
+            audio_assets=audio_assets,
+            batch_audio_dir=batch_audio_dir,
+            rng=_steer_rng,
+            sample_id=sample_id,
+        )
+        steer_applied = True
+
     # ---- Record assembly ----
     diagnosis_subs_mentioned = extract_diagnosis_subsystems_mentioned(diagnosis_text)
     mistake_caught = bool(all_injected_mistakes)
@@ -1581,6 +1707,7 @@ def build_record(
         "max_mistakes_drawn": max_mistakes_drawn,
         "pre_applied_subsystems": pre_applied_subsystems,
         "retranscribe_after_batch": retranscribe_after_batch,
+        "steer_applied": steer_applied,
         "wall_time_s": wall_time_s,
         "gt_wavetable_names": gt_wt_names,
         "applied_wavetable_names": applied_wt_names,
@@ -1705,6 +1832,8 @@ def main() -> None:
     ap.add_argument("--transcription-mistake-rate", type=float, default=0.15)
     ap.add_argument("--retranscribe-rate", type=float, default=0.0,
         help="Fraction of samples where transcription is re-done mid-conversation after hearing wrong notes with effects.")
+    ap.add_argument("--steer-rate", type=float, default=0.0,
+        help="Fraction of samples with 1-2 user steer turns after the verdict.")
     ap.add_argument("--random-init-rate", type=float, default=0.0,
         help="Fraction of samples starting from a random same-archetype preset instead of factory default.")
     ap.add_argument("--partial-init-rate", type=float, default=0.0,

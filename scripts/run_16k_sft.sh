@@ -42,6 +42,7 @@ python scripts/run_sft_production.py \
     --no-audio-rate 0.05 \
     --partial-init-rate 0.40 \
     --retranscribe-rate 0.15 \
+    --steer-rate 0.30 \
     --seed 1337 \
     --suffix v1 \
     --resume
