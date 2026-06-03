@@ -571,9 +571,8 @@ def build_search_record(
             continue
         out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify(name)}.wav"
         all_rendered_entries.append({"idx": idx, "name": name, "out": out_path})
-        if name in candidate_audio:
-            audio_assets.append(str(candidate_audio[name]))
-            name_to_audio_read_path[name] = str(candidate_audio[name])
+        audio_assets.append(out_path)
+        name_to_audio_read_path[name] = out_path
 
     messages.append({
         "role": "assistant",

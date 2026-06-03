@@ -651,16 +651,17 @@ def build_judge_record(
     })
     messages.append(_tool_call("Bash", {"command": render_cmd}))
 
+    import re as _re
+    def _slugify_j(s: str) -> str:
+        return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
+
     rendered_entries = []
     audio_read_paths: list[str] = []
-    for name in pool:
-        if name in candidate_audio:
-            audio_assets.append(str(candidate_audio[name]))
-            audio_read_paths.append(str(candidate_audio[name]))
-            rendered_entries.append({
-                "name": name,
-                "out": str(candidate_audio[name]),
-            })
+    for idx, name in enumerate(pool):
+        out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify_j(name)}.wav"
+        audio_assets.append(out_path)
+        audio_read_paths.append(out_path)
+        rendered_entries.append({"name": name, "out": out_path})
     _render_stdout = json.dumps({"status": "ok", "rendered": rendered_entries}) + "\n"
     messages.append(_bash_tool_response(_render_stdout))
 
