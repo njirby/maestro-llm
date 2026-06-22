@@ -253,8 +253,226 @@ def _install_bnb_tp_patch() -> None:
     trainer_base_mod.prepare_mcore_model = patched_prepare_mcore_model
 
 
+def _gpu_mem_mb() -> int:
+    try:
+        import torch
+        return torch.cuda.memory_allocated() // (1024 * 1024)
+    except Exception:
+        return -1
+
+
+def _log_ckpt(rank: int, tag: str) -> None:
+    if rank == 0:
+        import time
+        print(f"MAESTRO_CKPT [{tag}] gpu_mem={_gpu_mem_mb()}MB t={time.time():.1f}", flush=True)
+
+
+def _move_state_to_cpu(obj):
+    """Deep-copy a state dict tree, moving all tensors to CPU."""
+    import torch
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu()
+    if isinstance(obj, dict):
+        return {k: _move_state_to_cpu(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_move_state_to_cpu(x) for x in obj)
+    return obj
+
+
+def _move_state_to_device(obj, device):
+    """Move all tensors in a state dict tree to device, in place."""
+    import torch
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, torch.Tensor):
+                obj[k] = v.to(device)
+            elif isinstance(v, (dict, list)):
+                _move_state_to_device(v, device)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            if isinstance(v, torch.Tensor):
+                obj[i] = v.to(device)
+            elif isinstance(v, (dict, list)):
+                _move_state_to_device(v, device)
+
+
+def _install_checkpoint_fix() -> None:
+    """Bypass dist_checkpointing for LoRA optimizer state to avoid DCP crashes.
+
+    With TP>1 + LoRA, dist_checkpointing.save() either deadlocks on NCCL
+    (model shards) or hard-crashes the machine (optimizer ShardedTensors going
+    through DCP's pinned-memory + fork pipeline).
+
+    This patch splits checkpoint saving into two phases:
+      Phase 1: LoRA safetensors + tiny common.pt via the proven no_save_optim
+               path (same as v7 — no NCCL, no DCP ShardedTensors).
+      Phase 2: Optimizer + RNG + scheduler state saved per-rank via plain
+               torch.save() — no DCP, no NCCL, no pinned memory, no fork.
+    """
+    if not _env_flag("MAESTRO_SWIFT_CHECKPOINT_LORA_FIX"):
+        return
+
+    import torch
+    from swift.megatron.trainers.base import BaseMegatronTrainer
+
+    original_save_checkpoint = BaseMegatronTrainer.save_checkpoint
+
+    def patched_save_checkpoint(self):
+        args = self.args
+        if not (args.save_safetensors and args.tuner_type == "lora" and not args.merge_lora):
+            return original_save_checkpoint(self)
+
+        rank = _get_rank()
+        _log_ckpt(rank, "save_start")
+
+        # --- Phase 1: LoRA safetensors + tiny common.pt (same as v7) ---
+        orig_no_save_optim = args.no_save_optim
+        orig_no_save_rng = args.no_save_rng
+        args.no_save_optim = True
+        args.no_save_rng = True
+        try:
+            original_save_checkpoint(self)
+        finally:
+            args.no_save_optim = orig_no_save_optim
+            args.no_save_rng = orig_no_save_rng
+
+        _log_ckpt(rank, "phase1_done")
+
+        # --- Phase 2: optimizer + RNG state via torch.save ---
+        if orig_no_save_optim or self.optimizer is None:
+            _log_ckpt(rank, "skip_phase2_no_optim")
+            return
+
+        iteration = self.state.iteration
+        ckpt_dir = os.path.join(args.output_dir, f"checkpoint-{iteration}")
+        extra_path = os.path.join(ckpt_dir, f"maestro_extra_rank{rank}.pt")
+
+        extra = {}
+
+        if not orig_no_save_rng:
+            try:
+                from swift.megatron.utils.megatron_lm_utils import _get_rng_state
+                rng = _get_rng_state()
+                extra["rng_state"] = rng.data if hasattr(rng, "data") else rng
+            except Exception as exc:
+                if rank == 0:
+                    print(f"MAESTRO_CKPT: rng_state capture failed: {exc!r}", flush=True)
+
+        chained = getattr(self.optimizer, "chained_optimizers", [self.optimizer])
+
+        extra["opt_metadata"] = [opt.state_dict() for opt in chained]
+
+        inner_states = []
+        for opt in chained:
+            raw = opt.optimizer.state_dict()
+            inner_states.append(_move_state_to_cpu(raw))
+        extra["inner_opt_states"] = inner_states
+
+        if self.opt_param_scheduler is not None:
+            extra["opt_param_scheduler"] = self.opt_param_scheduler.state_dict()
+
+        _log_ckpt(rank, "phase2_cpu_done")
+
+        torch.save(extra, extra_path)
+        del extra
+
+        _log_ckpt(rank, "phase2_saved")
+
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        _log_ckpt(rank, "save_complete")
+
+    BaseMegatronTrainer.save_checkpoint = patched_save_checkpoint
+
+    # --- Load-side: restore adapter + optimizer/RNG from maestro checkpoint ---
+    original_load_checkpoint = BaseMegatronTrainer._load_checkpoint
+
+    def patched_load_checkpoint(self):
+        resume_dir = os.environ.get("MAESTRO_RESUME_FROM")
+        if not resume_dir:
+            return original_load_checkpoint(self)
+
+        args = self.args
+        rank = _get_rank()
+        extra_path = os.path.join(resume_dir, f"maestro_extra_rank{rank}.pt")
+
+        if not os.path.exists(extra_path):
+            _log_ckpt(rank, f"load_no_extra_at {resume_dir}")
+            return original_load_checkpoint(self)
+
+        _log_ckpt(rank, "load_resume_start")
+
+        # 1) Load adapter weights via bridge (safetensors, no DCP)
+        self.bridge.load_weights(
+            self.wrapped_models, resume_dir,
+            is_peft_format=True, adapter_name="default")
+        _log_ckpt(rank, "load_adapter_done")
+
+        # 2) Sync model params into optimizer buffers
+        if self.optimizer is not None:
+            self.optimizer.reload_model_params()
+
+        # 3) Load optimizer + RNG + scheduler from extra file
+        extra = torch.load(extra_path, map_location="cpu", weights_only=False)
+
+        if not args.no_load_optim and self.optimizer is not None and "inner_opt_states" in extra:
+            chained = getattr(self.optimizer, "chained_optimizers", [self.optimizer])
+            for opt, saved_inner in zip(chained, extra["inner_opt_states"]):
+                device = next(iter(opt.optimizer.param_groups[0]["params"])).device
+                _move_state_to_device(saved_inner, device)
+                opt.optimizer.load_state_dict(saved_inner)
+            _log_ckpt(rank, "load_inner_opt_done")
+
+        if not args.no_load_optim and self.opt_param_scheduler is not None:
+            if "opt_param_scheduler" in extra:
+                self.opt_param_scheduler.load_state_dict(extra["opt_param_scheduler"])
+                _log_ckpt(rank, "load_scheduler_done")
+
+        if not args.no_load_rng and "rng_state" in extra:
+            import random
+            import numpy as np
+            import megatron.core.tensor_parallel as tensor_parallel
+            from megatron.core import mpu
+
+            rng_state = extra["rng_state"]
+            if hasattr(rng_state, "data"):
+                rng_state = rng_state.data
+            if args.data_parallel_random_init:
+                rng_state = rng_state[mpu.get_data_parallel_rank()]
+            else:
+                rng_state = rng_state[0]
+            random.setstate(rng_state["random_rng_state"])
+            np.random.set_state(rng_state["np_rng_state"])
+            torch.set_rng_state(rng_state["torch_rng_state"])
+            torch.cuda.set_rng_state(rng_state["cuda_rng_state"])
+            tensor_parallel.get_cuda_rng_tracker().set_states(rng_state["rng_tracker_states"])
+            _log_ckpt(rank, "load_rng_done")
+
+        # 4) Restore iteration
+        tracker = os.path.join(resume_dir, "latest_checkpointed_iteration.txt")
+        if os.path.exists(tracker):
+            with open(tracker) as f:
+                self.state.iteration = int(f.read().strip())
+            _log_ckpt(rank, f"load_iteration={self.state.iteration}")
+
+        del extra
+
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        _log_ckpt(rank, "load_resume_complete")
+
+    BaseMegatronTrainer._load_checkpoint = patched_load_checkpoint
+
+
 def _install_patch() -> None:
+    argv0 = (sys.argv[0] if sys.argv else "") or ""
+    argv0_name = Path(argv0).name.lower()
+    if argv0_name in {"pip", "pip3", "python-pip"}:
+        return
     _install_bnb_tp_patch()
+    _install_checkpoint_fix()
     if not _env_flag("MAESTRO_SWIFT_MEGATRON_AUDIT"):
         return
 

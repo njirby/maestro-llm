@@ -92,6 +92,12 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         default=0.01,
         help="Minimum uint8 param fraction required for BNB runs before failing (0..1).",
     )
+    parser.add_argument("--save-optim", action="store_true",
+                        help="Save optimizer state in checkpoints (required for resume)")
+    parser.add_argument("--save-rng", action="store_true",
+                        help="Save RNG state in checkpoints (required for resume)")
+    parser.add_argument("--resume-from", type=str, default=None,
+                        help="Path to a checkpoint dir (e.g. .../checkpoint-4) to resume from")
     parser.add_argument("--enable-audio-output", type=int, choices=[0, 1], default=0)
     parser.add_argument("--dry-run", action="store_true")
     args, passthrough = parser.parse_known_args()
@@ -264,13 +270,13 @@ def _build_command(
         str(args.dataloader_num_workers),
         "--dataset_num_proc",
         str(args.dataset_num_proc),
-        "--no_save_optim",
-        "true",
-        "--no_save_rng",
-        "true",
         "--attention_backend",
         "flash",
     ]
+    if not args.save_optim:
+        cmd.extend(["--no_save_optim", "true"])
+    if not args.save_rng:
+        cmd.extend(["--no_save_rng", "true"])
     if args.tuner_type == "lora":
         cmd.extend([
             "--merge_lora",
@@ -529,6 +535,10 @@ def main() -> None:
         env["MAESTRO_SWIFT_MEGATRON_BNB_MIN_UINT8_RATIO"] = str(max(0.0, float(args.bnb_min_uint8_ratio)))
     if bnb_requested:
         env["MAESTRO_SWIFT_EXPECT_BNB_EFFECTIVE"] = "1"
+    if (args.save_optim or args.resume_from) and args.tuner_type == "lora":
+        env["MAESTRO_SWIFT_CHECKPOINT_LORA_FIX"] = "1"
+    if args.resume_from:
+        env["MAESTRO_RESUME_FROM"] = str(Path(args.resume_from).resolve())
 
     libs = _nvidia_lib_paths()
     if libs:
