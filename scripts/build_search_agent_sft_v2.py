@@ -39,6 +39,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.agent_sft_common import (
+    DawFarmRolloutCtx,
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_gt_similarity_pool,
@@ -456,6 +457,8 @@ def build_search_record(
     midi_path: str | None = None,
     code_mistake_rate: float = 0.0,
     seed: int = 1337,
+    probe_audio_dir: Path | None = None,
+    dawfarm: "DawFarmRolloutCtx | None" = None,
 ) -> SearchResult:
     """Build one search agent SFT record: render all probes upfront, then
     listen and assess in batches.
@@ -498,8 +501,17 @@ def build_search_record(
     audio_assets: list[str] = [str(target_audio_path)]
     all_batch_notes: list[str] = []
 
-    # Output directory for rendered probes (real path, reused at inference)
-    probe_out_dir = f"/tmp/search_probes/{sample_id}_agent{agent_idx}"
+    # Output directory for rendered probes. In daw-farm mode the snippet
+    # writes to the container rollout dir (what the model sees at inference)
+    # and rendered wavs are fetched back to *probe_out_dir* for `audios`.
+    if probe_audio_dir is not None:
+        probe_out_dir = str(probe_audio_dir / f"{sample_id}_agent{agent_idx}")
+    else:
+        probe_out_dir = f"/tmp/search_probes/{sample_id}_agent{agent_idx}"
+    display_probe_dir = (
+        dawfarm.cw("", f"search_probes_a{agent_idx}") if dawfarm is not None
+        else probe_out_dir
+    )
 
     _user_parts = [f"<audio>"]
     if midi_path:
@@ -526,13 +538,29 @@ def build_search_record(
         "content": f"Fetching candidate names at indices {shard_start}-{shard_end - 1}.",
     })
     messages.append(_tool_call("Bash", {"command": list_cmd}))
-    _list_stdout = json.dumps({
-        "wavetables": shard_entries,
-        "start": shard_start,
-        "end": shard_end,
-        "count": len(shard_entries),
-    }) + "\n"
-    messages.append(_bash_tool_response(_list_stdout))
+    if dawfarm is not None:
+        _lres = dawfarm.real_exec(list_cmd, f"wavetable slice {shard_start}-{shard_end}")
+        try:
+            _container_names = [w["name"] for w in json.loads(_lres.stdout)["wavetables"]]
+        except Exception as exc:
+            raise RuntimeError(f"unparseable slice listing: {exc}: {_lres.stdout[:300]}")
+        _host_names = [e["name"] for e in shard_entries]
+        if _container_names != _host_names:
+            # Library-order or sync divergence corrupts every idx-keyed step.
+            raise RuntimeError(
+                f"container wavetable slice {shard_start}-{shard_end} disagrees with host "
+                f"library (first diff at "
+                f"{next((i for i, (a, b) in enumerate(zip(_container_names, _host_names)) if a != b), 'len')})"
+            )
+        messages.append(_bash_tool_response(_lres.stdout))
+    else:
+        _list_stdout = json.dumps({
+            "wavetables": shard_entries,
+            "start": shard_start,
+            "end": shard_end,
+            "count": len(shard_entries),
+        }) + "\n"
+        messages.append(_bash_tool_response(_list_stdout))
 
     selected_so_far: list[str] = []  # CLAP-selected candidates, accumulated across batches
     pending_notes: str | None = None
@@ -558,21 +586,27 @@ def build_search_record(
 
     all_shard_idxs = [name_to_idx[n] for n in shard if n in name_to_idx]
     render_snippet = build_render_probes_snippet(
-        idxs=all_shard_idxs, out_dir=probe_out_dir,
+        idxs=all_shard_idxs, out_dir=display_probe_dir,
         midi_path=midi_path,
     )
     render_cmd = _wrap_as_bash(render_snippet)
 
+    # Conversation shows display paths (container in daw-farm mode); `audios`
+    # carries the host copies (fetched from the container after the render).
     all_rendered_entries = []
     name_to_audio_read_path: dict[str, str] = {}
+    name_to_audio_host_path: dict[str, str] = {}
     for name in shard:
         idx = name_to_idx.get(name)
         if idx is None:
             continue
-        out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify(name)}.wav"
-        all_rendered_entries.append({"idx": idx, "name": name, "out": out_path})
-        audio_assets.append(out_path)
-        name_to_audio_read_path[name] = out_path
+        fname = f"wt_{idx:04d}_{_slugify(name)}.wav"
+        display_path = f"{display_probe_dir}/{fname}"
+        host_path = f"{probe_out_dir}/{fname}"
+        all_rendered_entries.append({"idx": idx, "name": name, "out": display_path})
+        audio_assets.append(host_path)
+        name_to_audio_read_path[name] = display_path
+        name_to_audio_host_path[name] = host_path
 
     messages.append({
         "role": "assistant",
@@ -586,11 +620,15 @@ def build_search_record(
     _code_rng = _random.Random(seed + _sid_seed + 9999)
     if _code_rng.random() < code_mistake_rate:
         _mut_result = select_and_apply_mutation(
-            "probes", render_snippet, _code_rng, reaper_available=False,
+            "probes", render_snippet, _code_rng,
+            reaper_available=dawfarm is not None,
         )
         if _mut_result is not None:
             _mutation, _broken_code = _mut_result
-            _traceback = execute_for_traceback(_broken_code, cwd=str(ROOT))
+            _traceback = execute_for_traceback(
+                _broken_code, cwd=str(ROOT),
+                session=dawfarm.session if dawfarm is not None else None,
+            )
             if _traceback:
                 emit_code_mistake_sequence(
                     messages, _broken_code, render_snippet, _traceback, _mutation,
@@ -598,8 +636,26 @@ def build_search_record(
                 _code_mistake_info = {"mutation": _mutation.name, "category": _mutation.category, "target": "probes_render"}
 
     messages.append(_tool_call("Bash", {"command": render_cmd}))
-    _render_stdout = json.dumps({"status": "ok", "rendered": all_rendered_entries}) + "\n"
-    messages.append(_bash_tool_response(_render_stdout))
+    if dawfarm is not None:
+        # One exec renders the whole shard in a single DawDreamer engine spawn.
+        _rres = dawfarm.real_exec(render_cmd, f"probe render agent{agent_idx}",
+                                  timeout=max(dawfarm.exec_timeout, 600.0))
+        try:
+            _real_rendered = {e["name"] for e in json.loads(_rres.stdout)["rendered"]}
+        except Exception as exc:
+            raise RuntimeError(f"unparseable probe render stdout: {exc}: {_rres.stdout[:300]}")
+        _expected = {e["name"] for e in all_rendered_entries}
+        if _real_rendered != _expected:
+            raise RuntimeError(
+                f"probe render mismatch agent{agent_idx}: "
+                f"missing={sorted(_expected - _real_rendered)[:5]} "
+                f"extra={sorted(_real_rendered - _expected)[:5]}")
+        for name in name_to_audio_host_path:
+            dawfarm.fetch_wav(name_to_audio_read_path[name], name_to_audio_host_path[name])
+        messages.append(_bash_tool_response(_rres.stdout))
+    else:
+        _render_stdout = json.dumps({"status": "ok", "rendered": all_rendered_entries}) + "\n"
+        messages.append(_bash_tool_response(_render_stdout))
 
     # --- Per-batch: listen (Read) + analyze ---
     for bi, batch in enumerate(all_ordered):

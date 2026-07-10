@@ -392,6 +392,10 @@ def build_record(
             continue
         _seen_wt.add(wt["name"])
         _unique_wts.append(wt["name"])
+    # Sort by name: the emitted list/render snippets sort discovered
+    # wavetable names, so the host index must use the same order or every
+    # idx-keyed step (slices, probe filenames) disagrees with the live env.
+    _unique_wts.sort()
     idx_to_name_full: dict[int, str] = {i: n for i, n in enumerate(_unique_wts)}
     name_to_idx_full: dict[str, int] = {n: i for i, n in idx_to_name_full.items()}
     total_named = len(_unique_wts)
@@ -884,6 +888,7 @@ def build_record(
                 clap_threshold=0.97,
                 midi_path=_trans_notes_file,
                 probe_audio_dir=search_probe_dir,
+                dawfarm=ctx,
             )
             return ai, agent_id, sr
 
@@ -1010,6 +1015,8 @@ def build_record(
             stage2_model=stage2_model,
             judge_output_dir=Path(agent_out_dir),
             probe_audio_dir=judge_probe_dir,
+            midi_path=_trans_notes_file,
+            dawfarm=ctx,
         )
         if judge_result.record:
             judge_result.record["id"] = f"{sample_id}_r{rounds_used}_judge"

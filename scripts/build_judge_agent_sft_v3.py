@@ -49,6 +49,7 @@ if str(ROOT) not in sys.path:
 import numpy as np
 
 from scripts.agent_sft_common import (  # type: ignore
+    DawFarmRolloutCtx,
     assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_name_embedding_map,
@@ -609,6 +610,9 @@ def build_judge_record(
     stage2_server: str,
     stage2_model: str,
     judge_output_dir: Path,
+    probe_audio_dir: Path | None = None,
+    midi_path: str | None = None,
+    dawfarm: "DawFarmRolloutCtx | None" = None,
 ) -> JudgeResult:
     """Build one SFT judge record. Returns empty JudgeResult if the pool is empty."""
     if not pool:
@@ -618,7 +622,13 @@ def build_judge_record(
     audio_assets: list[str] = [str(target_audio_path)]
 
     n_osc_slots = len(active_oscs)
-    probe_out_dir = f"/tmp/judge_probes/{sample_id}"
+    if probe_audio_dir is not None:
+        probe_out_dir = str(probe_audio_dir / sample_id)
+    else:
+        probe_out_dir = f"/tmp/judge_probes/{sample_id}"
+    display_probe_dir = (
+        dawfarm.cw("", "judge_probes") if dawfarm is not None else probe_out_dir
+    )
 
     pool_str = ", ".join(f'"{n}"' for n in pool)
     from scripts.agent_sft_common import make_agent_id  # type: ignore
@@ -643,7 +653,8 @@ def build_judge_record(
 
     # Render probes for all pool candidates
     render_cmd = _wrap_as_bash(build_render_probes_snippet(
-        names=list(pool), out_dir=probe_out_dir,
+        names=list(pool), out_dir=display_probe_dir,
+        midi_path=midi_path,
     ))
     messages.append({
         "role": "assistant",
@@ -657,13 +668,31 @@ def build_judge_record(
 
     rendered_entries = []
     audio_read_paths: list[str] = []
+    audio_host_paths: list[str] = []
     for idx, name in enumerate(pool):
-        out_path = f"{probe_out_dir}/wt_{idx:04d}_{_slugify_j(name)}.wav"
-        audio_assets.append(out_path)
-        audio_read_paths.append(out_path)
-        rendered_entries.append({"name": name, "out": out_path})
-    _render_stdout = json.dumps({"status": "ok", "rendered": rendered_entries}) + "\n"
-    messages.append(_bash_tool_response(_render_stdout))
+        fname = f"wt_{idx:04d}_{_slugify_j(name)}.wav"
+        display_path = f"{display_probe_dir}/{fname}"
+        host_path = f"{probe_out_dir}/{fname}"
+        audio_assets.append(host_path)
+        audio_read_paths.append(display_path)
+        audio_host_paths.append(host_path)
+        rendered_entries.append({"name": name, "out": display_path})
+    if dawfarm is not None:
+        _rres = dawfarm.real_exec(render_cmd, "judge probe render",
+                                  timeout=max(dawfarm.exec_timeout, 600.0))
+        try:
+            _real_rendered = {e["name"] for e in json.loads(_rres.stdout)["rendered"]}
+        except Exception as exc:
+            raise RuntimeError(f"unparseable judge probe stdout: {exc}: {_rres.stdout[:300]}")
+        if _real_rendered != set(pool):
+            raise RuntimeError(
+                f"judge probe render mismatch: missing={sorted(set(pool) - _real_rendered)[:5]}")
+        for dp, hp in zip(audio_read_paths, audio_host_paths):
+            dawfarm.fetch_wav(dp, hp)
+        messages.append(_bash_tool_response(_rres.stdout))
+    else:
+        _render_stdout = json.dumps({"status": "ok", "rendered": rendered_entries}) + "\n"
+        messages.append(_bash_tool_response(_render_stdout))
 
     # Read each rendered probe — sequential read calls
     if audio_read_paths:
