@@ -892,6 +892,7 @@ def build_record(
                 probe_audio_dir=search_probe_dir,
                 dawfarm=ctx,
                 force_miss_names=_fm_names,
+                merged_stage2=bool(getattr(args, "merged_stage2", False)),
             )
             return ai, agent_id, sr
 
@@ -2064,6 +2065,9 @@ def main() -> None:
     ap.add_argument("--daw-farm-vital-data", default=str(ROOT / "data/prepared/wavetable_lib_vital_dir"),
         help="Host Vital data dir synced into each session (use the generation "
              "library from scripts/export_wavetable_lib_dir.py).")
+    ap.add_argument("--merged-stage2", action="store_true",
+        help="Search agents: single merged stage-2 call per batch instead of "
+             "synthesize+notes (throughput experiment; off by default).")
     ap.add_argument("--daw-farm-timeout", type=float, default=300.0,
         help="Per-snippet exec timeout in daw-farm mode (seconds).")
     args = ap.parse_args()

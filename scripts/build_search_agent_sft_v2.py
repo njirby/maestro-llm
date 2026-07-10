@@ -303,6 +303,66 @@ def synthesize_batch_observations(
         )
 
 
+def stage2_batch_notes_merged(
+    target_description: str,
+    candidate_descriptions: dict[str, str],
+    candidate_names: list[str],
+    selection_labels: dict[str, bool],
+    batch_number: int,
+    archetype: str,
+    stage2_server: str,
+    stage2_model: str,
+    gt_transform_description: str = "",
+) -> str:
+    """Single-call variant folding synthesize_batch_observations into the
+    notes prompt: raw describe texts go in directly and the model relates
+    them to the target while writing the label-aligned reasoning. Halves the
+    per-batch stage-2 call count (--merged-stage2)."""
+    cand_block = "\n".join(
+        f"  '{n}': {candidate_descriptions.get(n, 'Candidate wavetable.')} "
+        f"[{'Selected' if selection_labels.get(n, False) else 'Not selected'}]"
+        for n in candidate_names
+    )
+    gt_context_block = ""
+    if gt_transform_description:
+        gt_context_block = (
+            f"\nTarget processing chain (for grounding your reasoning about Selected "
+            f"candidates — DO NOT quote it verbatim, DO NOT mention 'GT' or identify "
+            f"any candidate as the correct answer):\n  {gt_transform_description}\n"
+        )
+    prompt = (
+        f"You are a sound design assistant evaluating wavetable candidates for a {archetype} target.\n\n"
+        f"Target timbre (from an isolated listen):\n  {target_description}\n\n"
+        f"Candidates, each with an isolated-listen description and a pre-determined "
+        f"selection status:\n{cand_block}\n{gt_context_block}\n"
+        f"Write EXACTLY {len(candidate_names)} lines, one per candidate, in the order above.\n"
+        f"Format: '<name>': <one sentence relating its raw timbre to the target and "
+        f"justifying the status>. Selected / Not selected.\n\n"
+        f"Rules:\n"
+        f"- Use the EXACT names above.\n"
+        f"- Selected: what raw quality makes it a plausible building block once filters, "
+        f"envelopes and effects are applied (reference one specific transform).\n"
+        f"- Not selected: what makes it incompatible.\n"
+        f"- DO NOT use 'GT', 'ground truth', 'oracle', or identify a known right answer.\n"
+        f"- Copy the Selected/Not selected label exactly as given.\n"
+        f"- Do not mention the note pattern or number of notes."
+    )
+    try:
+        r = _llm_post(
+            f"{stage2_server}/v1/chat/completions",
+            {"model": stage2_model, "messages": [{"role": "user", "content": prompt}],
+             "max_tokens": 500, "temperature": 0.4},
+            timeout=120.0,
+        )
+        return r["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return "\n".join(
+            f"'{n}': Candidate evaluated. "
+            f"{'Selected' if selection_labels.get(n, False) else 'Not selected'}."
+            for n in candidate_names
+        )
+
+
 def stage2_batch_notes(
     omni_observations: str,
     candidate_names: list[str],
@@ -486,6 +546,7 @@ def build_search_record(
     probe_audio_dir: Path | None = None,
     dawfarm: "DawFarmRolloutCtx | None" = None,
     force_miss_names: list[str] | None = None,
+    merged_stage2: bool = False,
 ) -> SearchResult:
     """Build one search agent SFT record: render all probes upfront, then
     listen and assess in batches.
@@ -726,7 +787,7 @@ def build_search_record(
         # isolation, then synthesize against the cached target description.
         if omni_server:
             valid_batch = [n for n in batch if n in candidate_audio]
-            cand_descs: dict[str, str] = {}
+            cand_descs = {}
             if valid_batch:
                 with ThreadPoolExecutor(max_workers=min(8, len(valid_batch))) as ex:
                     futures = {
@@ -743,28 +804,43 @@ def build_search_record(
                         cand_descs[futures[fut]] = fut.result()
             # Preserve batch order in the dict (Python 3.7+ dicts keep insertion order)
             ordered_descs = {n: cand_descs.get(n, "Candidate wavetable.") for n in valid_batch}
-            omni_obs = synthesize_batch_observations(
-                target_description=target_description,
-                candidate_descriptions=ordered_descs,
-                archetype=archetype,
-                stage2_server=stage2_server,
-                stage2_model=stage2_model,
-            )
+            if not merged_stage2:
+                omni_obs = synthesize_batch_observations(
+                    target_description=target_description,
+                    candidate_descriptions=ordered_descs,
+                    archetype=archetype,
+                    stage2_server=stage2_server,
+                    stage2_model=stage2_model,
+                )
         else:
+            ordered_descs = {}
             omni_obs = "\n".join(f'"{n}": Candidate evaluated.' for n in batch)
 
         # Stage 2: write reasoning ONLY (labels are pre-determined by CLAP).
-        batch_notes = stage2_batch_notes(
-            omni_observations=omni_obs,
-            candidate_names=batch,
-            selection_labels=selection_labels,
-            gt_names_in_batch=gt_in_batch,
-            batch_number=batch_num,
-            archetype=archetype,
-            stage2_server=stage2_server,
-            stage2_model=stage2_model,
-            gt_transform_description=gt_transform_desc,
-        )
+        if merged_stage2 and omni_server:
+            batch_notes = stage2_batch_notes_merged(
+                target_description=target_description,
+                candidate_descriptions=ordered_descs,
+                candidate_names=batch,
+                selection_labels=selection_labels,
+                batch_number=batch_num,
+                archetype=archetype,
+                stage2_server=stage2_server,
+                stage2_model=stage2_model,
+                gt_transform_description=gt_transform_desc,
+            )
+        else:
+            batch_notes = stage2_batch_notes(
+                omni_observations=omni_obs,
+                candidate_names=batch,
+                selection_labels=selection_labels,
+                gt_names_in_batch=gt_in_batch,
+                batch_number=batch_num,
+                archetype=archetype,
+                stage2_server=stage2_server,
+                stage2_model=stage2_model,
+                gt_transform_description=gt_transform_desc,
+            )
 
         all_batch_notes.append(batch_notes)
         pending_notes = batch_notes
