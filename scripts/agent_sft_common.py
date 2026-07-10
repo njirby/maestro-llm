@@ -777,10 +777,22 @@ class DawFarmRolloutCtx:
     def fetch_wav(self, container_path: str, host_path: str | Path) -> None:
         _t0 = _time_mod.monotonic()
         with self.lock:
-            if not self.session.wait_for_file(container_path, timeout=60):
-                raise RuntimeError(f"daw-farm render never appeared: {container_path}")
-            self.session.get(container_path, host_path)
+            # The render snippets wait for a stable output file before their
+            # exec returns, so try the direct copy first and only fall back
+            # to polling if it fails (each poll is a docker exec round trip).
+            try:
+                self.session.get(container_path, host_path)
+            except Exception:
+                if not self.session.wait_for_file(container_path, timeout=60):
+                    raise RuntimeError(f"daw-farm render never appeared: {container_path}")
+                self.session.get(container_path, host_path)
         record_timing("env_fetch", _time_mod.monotonic() - _t0)
+
+    def fetch_dir(self, container_dir: str, host_dir: str | Path) -> None:
+        _t0 = _time_mod.monotonic()
+        with self.lock:
+            self.session.get_dir(container_dir, host_dir)
+        record_timing("env_fetch_dir", _time_mod.monotonic() - _t0)
 
 
 # ---------------------------------------------------------------------------

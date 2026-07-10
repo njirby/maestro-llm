@@ -687,8 +687,10 @@ def build_judge_record(
         if _real_rendered != set(pool):
             raise RuntimeError(
                 f"judge probe render mismatch: missing={sorted(set(pool) - _real_rendered)[:5]}")
-        for dp, hp in zip(audio_read_paths, audio_host_paths):
-            dawfarm.fetch_wav(dp, hp)
+        dawfarm.fetch_dir(display_probe_dir, probe_out_dir)
+        _missing = [p for p in audio_host_paths if not Path(p).exists()]
+        if _missing:
+            raise RuntimeError(f"judge probe fetch incomplete: missing {len(_missing)}")
         messages.append(_bash_tool_response(_rres.stdout))
     else:
         _render_stdout = json.dumps({"status": "ok", "rendered": rendered_entries}) + "\n"

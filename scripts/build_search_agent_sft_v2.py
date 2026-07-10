@@ -211,13 +211,39 @@ def describe_target(
     )
 
 
+_CAND_DESC_CACHE: dict[str, str] = {}
+_CAND_DESC_LOCK = threading.Lock()
+
+
 def describe_candidate(
     candidate_name: str,
     candidate_wav: Path,
     omni_server: str,
     omni_model: str,
 ) -> str:
-    """One call: describe a candidate wavetable's timbre in isolation."""
+    """One call: describe a candidate wavetable's timbre in isolation.
+
+    Memoized process-globally by wav path: candidate descriptions are
+    target-independent and the shared probe wavs are identical across
+    samples, agents, and rounds — without the memo a full run re-describes
+    the same audio thousands of times and saturates the omni server.
+    """
+    _key = f"{candidate_wav}::{omni_model}"
+    with _CAND_DESC_LOCK:
+        if _key in _CAND_DESC_CACHE:
+            return _CAND_DESC_CACHE[_key]
+    _desc = _describe_candidate_uncached(candidate_name, candidate_wav, omni_server, omni_model)
+    with _CAND_DESC_LOCK:
+        _CAND_DESC_CACHE[_key] = _desc
+    return _desc
+
+
+def _describe_candidate_uncached(
+    candidate_name: str,
+    candidate_wav: Path,
+    omni_server: str,
+    omni_model: str,
+) -> str:
     return omni_describe_single_audio(
         audio_path=candidate_wav,
         prompt_text=(
@@ -651,8 +677,11 @@ def build_search_record(
                 f"probe render mismatch agent{agent_idx}: "
                 f"missing={sorted(_expected - _real_rendered)[:5]} "
                 f"extra={sorted(_real_rendered - _expected)[:5]}")
-        for name in name_to_audio_host_path:
-            dawfarm.fetch_wav(name_to_audio_read_path[name], name_to_audio_host_path[name])
+        dawfarm.fetch_dir(display_probe_dir, probe_out_dir)
+        _missing = [p for p in name_to_audio_host_path.values() if not Path(p).exists()]
+        if _missing:
+            raise RuntimeError(f"probe fetch incomplete agent{agent_idx}: missing {len(_missing)} "
+                               f"(first: {_missing[0]})")
         messages.append(_bash_tool_response(_rres.stdout))
     else:
         _render_stdout = json.dumps({"status": "ok", "rendered": all_rendered_entries}) + "\n"

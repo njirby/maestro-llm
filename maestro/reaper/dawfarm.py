@@ -127,6 +127,18 @@ class DawFarmSession:
             raise RuntimeError(f"{self.name}: cp from {container_path} failed: {proc.stderr}")
         return host_path
 
+    def get_dir(self, container_dir: str, host_dir: str | Path) -> Path:
+        """Fetch a whole directory's contents in one cp (per-file fetching of
+        large probe batches dominates wall time otherwise)."""
+        host_dir = Path(host_dir)
+        host_dir.mkdir(parents=True, exist_ok=True)
+        src = container_dir.rstrip("/") + ("/." if isinstance(self, DockerSession) else "")
+        proc = subprocess.run(self._cp_from(src, str(host_dir)),
+                              capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0:
+            raise RuntimeError(f"{self.name}: dir cp from {container_dir} failed: {proc.stderr}")
+        return host_dir
+
     def healthy(self, timeout: float = 30.0) -> bool:
         """Queue round-trip + reapy socket (mirrors daw-farm's reaper-ready)."""
         res = self.exec_argv(["reaper-ready"], timeout=timeout)
