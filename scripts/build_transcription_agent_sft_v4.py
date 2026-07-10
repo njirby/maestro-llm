@@ -49,6 +49,7 @@ import pretty_midi
 
 from maestro.render.dawdreamer import notes_from_dicts, render_preset_audio
 from scripts.agent_sft_common import (  # type: ignore
+    DawFarmRolloutCtx,
     apply_transcription_mutations,
     assert_valid_ms_swift_multiturn_record,
     build_render_verify_snippet,
@@ -150,16 +151,21 @@ def build_insert_cmd(
         + notes_file_line
         + f"with reapy.inside_reaper():\n"
         f"    track = RPR.GetTrack(0, {track_idx})\n"
-        f"    item = RPR.CreateNewMIDIItemInProj(track, 0.0, {item_end}, False)[0]\n"
+        f"    # replace any previous attempt: transcription owns this track's MIDI\n"
+        f"    for _i in range(RPR.GetTrackNumMediaItems(track) - 1, -1, -1):\n"
+        f"        RPR.DeleteTrackMediaItem(track, RPR.GetTrackMediaItem(track, _i))\n"
+        f"    RPR.CreateNewMIDIItemInProj(track, 0.0, {item_end}, False)\n"
+        f"    item = RPR.GetTrackMediaItem(track, RPR.GetTrackNumMediaItems(track) - 1)\n"
         f"    take = RPR.GetActiveTake(item)\n"
-        f"    bpm = 120\n"
-        f"    ppb = 960\n"
         f"    for n in notes:\n"
-        f"        start_ppq = int(n['start_s'] * (bpm / 60.0) * ppb)\n"
-        f"        end_ppq = int((n['start_s'] + n['dur_s']) * (bpm / 60.0) * ppb)\n"
+        f"        # tempo-aware: PPQ positions must come from the project, the\n"
+        f"        # tempo is whatever the user's session runs at\n"
+        f"        start_ppq = RPR.MIDI_GetPPQPosFromProjTime(take, n['start_s'])\n"
+        f"        end_ppq = RPR.MIDI_GetPPQPosFromProjTime(take, n['start_s'] + n['dur_s'])\n"
         f"        RPR.MIDI_InsertNote(take, False, False, start_ppq, end_ppq, 0, n['pitch'], n['velocity'], True)\n"
         f"    RPR.MIDI_Sort(take)\n"
-        f"print(json.dumps({{'status': 'ok', 'notes_inserted': {n_notes}, "
+        f"    n_in_take = RPR.MIDI_CountEvts(take, 0, 0, 0)[2]\n"
+        f"print(json.dumps({{'status': 'ok', 'notes_inserted': n_in_take, "
         f"'duration_s': {duration_s}}}))\n"
     )
     return _wrap_as_bash(snippet)
@@ -200,6 +206,7 @@ def build_transcription_record_v4(
     track_idx: int = 0,
     mistake_rate: float = 0.0,
     seed: int = 42,
+    dawfarm: "DawFarmRolloutCtx | None" = None,
 ) -> TranscriptionResult:
     notes = load_notes_from_midi(source_midi_path)
     if not notes:
@@ -283,19 +290,27 @@ def build_transcription_record_v4(
             attempt_output = Path(output_dir) / sample_id / f"{attempt_agent_id}.md"
 
         # ── Insert MIDI notes ──
+        # In daw-farm mode the snippet's notes-file path must be writable
+        # inside the container; /tmp/agents exists on both sides.
         cmd = build_insert_cmd(
             attempt_notes, track_idx=track_idx,
-            sample_id=sample_id, output_dir=output_dir,
+            sample_id=sample_id,
+            output_dir="/tmp/agents" if dawfarm is not None else output_dir,
         )
         messages.append(_tool_call("Bash", {"command": cmd}))
 
         attempt_output.parent.mkdir(parents=True, exist_ok=True)
 
-        insert_stdout = json.dumps({
-            "status": "ok",
-            "notes_inserted": attempt_n_notes,
-            "duration_s": attempt_duration_s,
-        }) + "\n"
+        if dawfarm is not None:
+            # Really inserts this attempt's notes (wrong ones included — the
+            # delete-preamble makes each attempt replace the last).
+            insert_stdout = dawfarm.real_exec(cmd, "transcription insert").stdout
+        else:
+            insert_stdout = json.dumps({
+                "status": "ok",
+                "notes_inserted": attempt_n_notes,
+                "duration_s": attempt_duration_s,
+            }) + "\n"
         messages.append(_bash_tool_response(insert_stdout))
 
         # ── Render verify ──
@@ -316,26 +331,37 @@ def build_transcription_record_v4(
             ),
         })
 
+        _verify_display = (
+            dawfarm.cw(verify_wav, "transcription") if dawfarm is not None else verify_wav
+        )
         verify_snippet = build_render_verify_snippet(
-            out_path=verify_wav, notes_override=note_tuples,
+            out_path=_verify_display, notes_override=note_tuples,
         )
         messages.append(_tool_call("Bash", {"command": _wrap_as_bash(verify_snippet)}))
 
-        # Render at build time
-        try:
-            Path(verify_wav).parent.mkdir(parents=True, exist_ok=True)
-            render_preset_audio(init_preset, note_tuples, out_path=verify_wav, tail_s=1.0)
-        except Exception as exc:
-            print(f"  WARNING: verify render failed for {sample_id} attempt {attempt_idx + 1}: {exc}")
+        Path(verify_wav).parent.mkdir(parents=True, exist_ok=True)
+        if dawfarm is not None:
+            # Real in-container render (DawDreamer reading the live preset).
+            _vres = dawfarm.real_exec(
+                _wrap_as_bash(verify_snippet), "transcription verify render",
+                timeout=max(dawfarm.exec_timeout, 600.0),
+            )
+            dawfarm.fetch_wav(_verify_display, verify_wav)
+            probe_stdout = _vres.stdout
+        else:
+            try:
+                render_preset_audio(init_preset, note_tuples, out_path=verify_wav, tail_s=1.0)
+            except Exception as exc:
+                print(f"  WARNING: verify render failed for {sample_id} attempt {attempt_idx + 1}: {exc}")
+            probe_stdout = json.dumps({
+                "listen_probe": {"path": verify_wav, "exists": True},
+            }) + "\n"
 
         audio_assets.append(verify_wav)
-
-        probe_stdout = json.dumps({
-            "listen_probe": {"path": verify_wav, "exists": True},
-        }) + "\n"
         _emit_listen_sequence(
             messages, audio_assets, verify_wav,
             probe_stdout=probe_stdout,
+            display_path=_verify_display,
         )
 
         # ── Verdict ──

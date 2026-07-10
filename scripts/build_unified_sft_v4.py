@@ -705,6 +705,7 @@ def build_record(
                 track_idx=_trans_track_idx,
                 mistake_rate=_trans_mistake_rate,
                 seed=int(args.seed),
+                dawfarm=ctx,
             )
             if trans_result.record:
                 transcription_records.append(trans_result.record)
@@ -721,11 +722,8 @@ def build_record(
                 _trf.write("\n")
             if ctx is not None:
                 dawfarm_session.put(_trans_output_file, _trans_output_file)
-                # Apply the transcription subagent's project-state effect for
-                # real so subsequent timeline renders are audible. (Stage 2
-                # moves this inside the sub-builder's own real execution.)
-                _dawfarm.insert_midi_notes(dawfarm_session, _trans_notes,
-                                           track_idx=_trans_track_idx)
+                # Project state (the MIDI item) was left by the transcription
+                # sub-builder's real final-attempt insert above.
 
             transcription_summary_text = (
                 f"Transcription verified — {_trans_n_notes} notes on track "
@@ -1426,6 +1424,10 @@ def build_record(
         if _mut_result is not None:
             _wrong_notes_dicts, _mut_infos, _mut_narration = _mut_result
             notes = notes_from_dicts(_wrong_notes_dicts)
+            if ctx is not None:
+                # Back-date the fiction: put the wrong notes on the real
+                # timeline so early batch renders are genuinely wrong.
+                _dawfarm.insert_midi_notes(dawfarm_session, _wrong_notes_dicts)
             _log(f"retranscribe after batch {retranscribe_after_batch} ({len(_mut_infos)} mutations)")
         else:
             retranscribe_after_batch = None
@@ -1665,7 +1667,10 @@ def build_record(
         # ---- MID-CONVERSATION RE-TRANSCRIPTION ----
         if retranscribe_after_batch is not None and bi == retranscribe_after_batch:
             _retrans_agent_id = make_agent_id(sample_id, "melody_retranscription")
-            _retrans_agent_dir = str(Path(args.out_dir) / "agent_workdir" / sample_id)
+            _retrans_agent_dir = (
+                f"/tmp/agents/{sample_id}" if dawfarm_session is not None
+                else str(Path(args.out_dir) / "agent_workdir" / sample_id)
+            )
             _retrans_output_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.md"
             _retrans_manifest_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.manifest.json"
 
@@ -1715,6 +1720,7 @@ def build_record(
                 track_idx=0,
                 mistake_rate=0.0,
                 seed=int(args.seed) + 6666,
+                dawfarm=ctx,
             )
             if retrans_result.record:
                 retrans_result.record["id"] = f"{sample_id}_retranscription"
@@ -1728,19 +1734,35 @@ def build_record(
             with open(_retrans_output_file, "w") as _rtf:
                 _rtf.write(retrans_final_msg)
                 _rtf.write("\n")
+            if ctx is not None:
+                dawfarm_session.put(_retrans_output_file, _retrans_output_file)
 
-            # Restore correct notes for remaining batches
+            # Restore correct notes for remaining batches. In real mode the
+            # sub-builder's final insert already replaced the timeline MIDI.
             notes = _correct_notes
             _log(f"  re-transcription complete, restored correct notes")
 
-            # Re-render current cumulative with corrected notes
+            # Re-render current cumulative with corrected notes (with an
+            # explicit render tool_call — a listen without one teaches the
+            # model that audio appears for free).
             _retrans_wav = batch_audio_dir / f"batch_{bi}_retranscribed.wav"
-            render_cumulative_audio(cumulative, notes, _retrans_wav)
+            if ctx is None:
+                render_cumulative_audio(cumulative, notes, _retrans_wav)
             audio_assets.append(str(_retrans_wav))
-            _emit_listen_sequence(
-                messages, audio_assets, _retrans_wav,
-    
-            )
+            _retrans_render_cmd = _wrap_as_bash(build_reaper_render_snippet(
+                out_path=ctx.cw(_retrans_wav) if ctx is not None else str(_retrans_wav)))
+            messages.append(_tool_call("Bash", {"command": _retrans_render_cmd}))
+            if ctx is not None:
+                _rtres = ctx.real_exec(_retrans_render_cmd, "retranscribed render")
+                ctx.fetch_wav(ctx.cw(_retrans_wav), _retrans_wav)
+                _emit_listen_sequence(
+                    messages, audio_assets, _retrans_wav,
+                    probe_stdout=_rtres.stdout, display_path=ctx.cw(_retrans_wav),
+                )
+            else:
+                _emit_listen_sequence(
+                    messages, audio_assets, _retrans_wav,
+                )
             last_batch_audio = _retrans_wav
             pending_check = "Re-transcription confirmed — the melody now matches the target. Continuing with parameter tuning."
 
@@ -2041,10 +2063,6 @@ def main() -> None:
     # both require absolute paths.
     args.out_dir = args.out_dir.resolve()
 
-    if args.daw_farm and float(getattr(args, "retranscribe_rate", 0.0) or 0.0) > 0:
-        # Re-transcription needs the wrong-notes timeline dance ported (Stage 2).
-        print("WARNING: --retranscribe-rate is not yet supported with --daw-farm; forcing 0.")
-        args.retranscribe_rate = 0.0
 
     if args.mistake_rate is not None:
         import warnings
