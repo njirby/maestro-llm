@@ -694,6 +694,55 @@ def _emit_listen_sequence(
 
 
 # ---------------------------------------------------------------------------
+# daw-farm rollout context — real-environment execution for builders
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+from dataclasses import dataclass as _dataclass, field as _field
+
+
+@_dataclass
+class DawFarmRolloutCtx:
+    """Shared handle for executing a sample's snippets in its daw-farm session.
+
+    One instance per sample rollout; passed into sub-builders (search, judge,
+    transcription) so all env execution serializes on the sample's single
+    REAPER container via ``lock`` — reapy allows one client at a time, and at
+    inference subagents share the container the same way.
+    """
+
+    session: Any  # maestro.reaper.dawfarm.DawFarmSession
+    sample_id: str
+    exec_timeout: float = 300.0
+    lock: _threading.Lock = _field(default_factory=_threading.Lock)
+
+    def cw(self, host_path: str | Path, subdir: str = "") -> str:
+        """Container path a snippet should write to (mirrors v3's _cw)."""
+        from maestro.reaper.dawfarm import rollout_dir
+        base = rollout_dir(self.sample_id)
+        if subdir:
+            base = f"{base}/{subdir}"
+        name = Path(host_path).name if str(host_path) else ""
+        return f"{base}/{name}" if name else base
+
+    def real_exec(self, cmd: str, what: str, timeout: float | None = None):
+        with self.lock:
+            res = self.session.exec_bash(cmd, timeout=timeout or self.exec_timeout)
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"daw-farm {what} failed on {self.session.name} (rc={res.returncode}): "
+                f"{(res.stderr or res.stdout)[-2000:]}"
+            )
+        return res
+
+    def fetch_wav(self, container_path: str, host_path: str | Path) -> None:
+        with self.lock:
+            if not self.session.wait_for_file(container_path, timeout=60):
+                raise RuntimeError(f"daw-farm render never appeared: {container_path}")
+            self.session.get(container_path, host_path)
+
+
+# ---------------------------------------------------------------------------
 # Inline snippet builders — replace prebuilt skill scripts
 # ---------------------------------------------------------------------------
 
@@ -827,12 +876,15 @@ def build_render_probes_snippet(
     """
     if names:
         names_literal = repr(names)
-        assignments_code = f"probe_names = {names_literal}\n"
+        # names-mode (judge): filenames use the local enumerate index.
+        assignments_code = f"probe_items = list(enumerate({names_literal}))\n"
     else:
         idxs_literal = repr(idxs or [])
+        # idxs-mode (search): filenames must carry the GLOBAL library index —
+        # the search builder's tool responses and audios key off it.
         assignments_code = (
             f"all_idxs = {idxs_literal}\n"
-            "probe_names = [all_names[i] for i in all_idxs if i < len(all_names)]\n"
+            "probe_items = [(i, all_names[i]) for i in all_idxs if i < len(all_names)]\n"
         )
 
     midi_path_literal = repr(midi_path)
@@ -851,7 +903,7 @@ def build_render_probes_snippet(
         + "name_to_wt = {wt['name']: wt for wt in lib if 'name' in wt}\n"
         "base_preset = read_vital_preset()\n"
         "rendered = []\n"
-        "for idx, wt_name in enumerate(probe_names):\n"
+        "for idx, wt_name in probe_items:\n"
         "    if wt_name not in name_to_wt: continue\n"
         "    preset = json.loads(json.dumps(base_preset))\n"
         "    preset['settings']['wavetables'][0] = name_to_wt[wt_name]\n"

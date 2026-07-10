@@ -107,6 +107,8 @@ class DawFarmSession:
         return self.exec_argv(["reaper-exec", "-"], stdin=lua, timeout=timeout)
 
     def put(self, host_path: str | Path, container_path: str) -> None:
+        if not container_path.startswith("/"):
+            raise ValueError(f"container path must be absolute: {container_path!r}")
         parent = str(Path(container_path).parent)
         res = self.exec_argv(["mkdir", "-p", parent])
         if not res.ok:

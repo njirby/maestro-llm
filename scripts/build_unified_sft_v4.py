@@ -127,6 +127,8 @@ from maestro.synth import path_gen as _pg
 from maestro.synth.path_gen import _denormalize, _normalize, _param_family
 from maestro.synth.preset_gen import generate_preset
 from maestro.render.dawdreamer import render_preset_audio, make_probe_notes, notes_from_dicts
+from maestro.reaper import dawfarm as _dawfarm
+from scripts.agent_sft_common import DawFarmRolloutCtx
 
 import numpy as np
 
@@ -203,6 +205,7 @@ def _build_steer_turns(
     batch_audio_dir: Path,
     rng: "random.Random",
     sample_id: str,
+    ctx: "DawFarmRolloutCtx | None" = None,
 ) -> None:
     """Append 1-2 user steer turns to the conversation."""
     n_turns = rng.choice([1, 1, 1, 2])
@@ -231,16 +234,27 @@ def _build_steer_turns(
         messages.append({"role": "assistant", "content": direction["response"]})
         action_snippet = build_batch_action_snippet(steer_params)
         messages.append(_tool_call("Bash", {"command": action_snippet}))
-        _action_stdout = json.dumps({"status": "ok", "applied": len(steer_params)}) + "\n"
+        if ctx is not None:
+            _action_stdout = ctx.real_exec(action_snippet, "steer apply").stdout
+        else:
+            _action_stdout = json.dumps({"status": "ok", "applied": len(steer_params)}) + "\n"
         messages.append(_bash_tool_response(_action_stdout))
 
         steer_wav = batch_audio_dir / f"steer_{turn_i}.wav"
-        render_cumulative_audio(cumulative, notes, steer_wav)
+        if ctx is None:
+            render_cumulative_audio(cumulative, notes, steer_wav)
         audio_assets.append(str(steer_wav))
         messages.append({"role": "assistant", "content": "Rendering after the adjustment."})
-        _render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(steer_wav)))
+        _render_cmd = _wrap_as_bash(build_reaper_render_snippet(
+            out_path=ctx.cw(steer_wav) if ctx is not None else str(steer_wav)))
         messages.append(_tool_call("Bash", {"command": _render_cmd}))
-        _emit_listen_sequence(messages, audio_assets, steer_wav)
+        if ctx is not None:
+            _srres = ctx.real_exec(_render_cmd, "steer render")
+            ctx.fetch_wav(ctx.cw(steer_wav), steer_wav)
+            _emit_listen_sequence(messages, audio_assets, steer_wav,
+                                  probe_stdout=_srres.stdout, display_path=ctx.cw(steer_wav))
+        else:
+            _emit_listen_sequence(messages, audio_assets, steer_wav)
         messages.append({"role": "assistant", "content": "Done — the adjustment has been applied."})
 
 
@@ -263,11 +277,16 @@ def build_record(
     stage2_model: str,
     serial_lock: threading.Lock,
     notes: list,
+    dawfarm_session: "_dawfarm.DawFarmSession | None" = None,
 ) -> tuple[dict | None, list[dict], list[dict], list[dict]]:
     """Build one unified SFT record.
 
     Returns (main_record, search_records, judge_records, transcription_records).
     main_record is None to skip; subagent lists may be empty.
+
+    With *dawfarm_session*, all emitted snippets execute inside a real
+    daw-farm REAPER container (see DawFarmRolloutCtx); sub-agent env execs
+    serialize on the same session via the ctx lock.
     """
     import time as _time
     _t0 = _time.monotonic()
@@ -396,7 +415,7 @@ def build_record(
     def _compute_slices(base: int) -> list[int]:
         starts = []
         for i in range(n_agents):
-            start = (base + i * stride) % total_named
+            start = base + i * stride
             if start + slice_size > total_named:
                 start = max(0, total_named - slice_size)
             starts.append(start)
@@ -406,15 +425,13 @@ def build_record(
     force_research_rate = float(getattr(args, "force_research_rate", 0.30))
     force_miss = sample_rng.random() < force_research_rate
 
-    base_offset = sample_rng.randrange(stride)
-    slice_starts = _compute_slices(base_offset)
+    base_offset = 0
+    slice_starts = _compute_slices(0)
     if gt_idxs and not force_miss:
-        step = max(1, stride // 4)
-        tried = 0
-        while not any(s <= gi < (s + slice_size) for s in slice_starts for gi in gt_idxs) and tried < total_named:
-            base_offset = (base_offset + step) % stride
-            slice_starts = _compute_slices(base_offset)
-            tried += step
+        if not any(s <= gi < (s + slice_size) for s in slice_starts for gi in gt_idxs):
+            gt_target = gt_idxs[0]
+            new_start = max(0, min(gt_target - slice_size // 2, total_named - slice_size))
+            slice_starts[-1] = new_start
 
     # ---- Begin messages ----
     messages: list[dict] = []
@@ -504,13 +521,42 @@ def build_record(
                         break
             _skill_description = " ".join(_desc_lines).strip()
 
+    # ---- daw-farm real-execution mode (mirrors v3; see DawFarmRolloutCtx) ----
+    ctx: DawFarmRolloutCtx | None = None
+    if dawfarm_session is not None:
+        ctx = DawFarmRolloutCtx(
+            session=dawfarm_session,
+            sample_id=sample_id,
+            exec_timeout=float(getattr(args, "daw_farm_timeout", 300.0)),
+        )
+        _log(f"daw-farm session {dawfarm_session.name} — reset project + sync data")
+        _dawfarm.reset_project(dawfarm_session)
+        _dawfarm.sync_vital_data(dawfarm_session, getattr(args, "daw_farm_vital_data", None))
+        _dawfarm.prepare_sample_dirs(dawfarm_session, sample_id)
+        _dawfarm.set_project_tempo(
+            dawfarm_session,
+            60.0 * float(target_preset.get("settings", {}).get("beats_per_minute", 2.0)))
+        if not dawfarm_session.exec_argv(["test", "-d", "/work/skills"]).ok:
+            dawfarm_session.put(str(ROOT / "skills"), "/work/skills")
+
+    # Output dirs (needed before the transcription block below).
+    tuple_audio_dir = Path(args.out_dir) / "tuple_audio" / sample_id
+    tuple_audio_dir.mkdir(parents=True, exist_ok=True)
+    search_probe_dir = Path(args.out_dir) / "search_probe_audio"
+    judge_probe_dir = Path(args.out_dir) / "judge_probe_audio"
+    transcription_dir = Path(args.out_dir) / "transcription_audio"
+
     _log("start — skill discovery + transcription")
     messages.append({
         "role": "assistant",
         "content": "Let me see which skills are available for this plugin.",
     })
     messages.append(_tool_call("Bash", {"command": "ls skills/*/SKILL.md"}))
-    messages.append(_bash_tool_response("\n".join(_available_skill_paths) + "\n"))
+    if ctx is not None:
+        messages.append(_bash_tool_response(
+            ctx.real_exec("ls skills/*/SKILL.md", "skill discovery").stdout))
+    else:
+        messages.append(_bash_tool_response("\n".join(_available_skill_paths) + "\n"))
 
     messages.append({
         "role": "assistant",
@@ -528,16 +574,52 @@ def build_record(
         }, ensure_ascii=False),
     })
 
+    # Create the REAPER track holding Vital (and later the transcribed MIDI).
+    # Unconditional (v3 order): the default render below reads the live
+    # preset, and the apply/batch snippets all assume track 0 + Vital.
+    _track_name = "target_melody"
+    _create_track_snippet = (
+        _REAPY_HELPER
+        + f"track_name = {json.dumps(_track_name)}\n"
+          f"with reapy.inside_reaper():\n"
+          f"    RPR.InsertTrackAtIndex(0, True)\n"
+          f"    track = RPR.GetTrack(0, 0)\n"
+          f"    RPR.GetSetMediaTrackInfo_String(track, 'P_NAME', track_name, True)\n"
+          f"    RPR.TrackFX_AddByName(track, 'Vital', False, 1)\n"
+          f"print(json.dumps({{'status': 'ok', 'track_idx': 0, 'track_name': track_name}}))\n"
+    )
+    _create_track_cmd = _wrap_as_bash(_create_track_snippet)
+    messages.append({
+        "role": "assistant",
+        "content": "Creating a REAPER track with Vital loaded to hold the recreation.",
+    })
+    messages.append(_tool_call("Bash", {"command": _create_track_cmd}))
+    if ctx is not None:
+        messages.append(_bash_tool_response(
+            ctx.real_exec(_create_track_cmd, "track creation").stdout))
+        # Align the live Vital with the sample's init preset — a fresh VST3
+        # instance boots with the factory patch, not maestro's baseline.
+        _dawfarm.apply_vital_preset(dawfarm_session, init_preset)
+    else:
+        messages.append(_bash_tool_response(json.dumps({
+            "status": "ok", "track_idx": 0, "track_name": _track_name,
+        }) + "\n"))
+
     # Render baseline (needed for batch-rendering diffs later), but skip
     # listening — the model already heard the result via the judge agent.
     _default_render_cmd = _wrap_as_bash(build_render_verify_snippet(
-        out_path=str(default_audio_path),
+        out_path=ctx.cw(default_audio_path) if ctx is not None else str(default_audio_path),
         notes_override=list(notes),
     ))
     messages.append(_tool_call("Bash", {"command": _default_render_cmd}))
-    messages.append(_bash_tool_response(
-        json.dumps({"rendered": str(default_audio_path), "ok": True})
-    ))
+    if ctx is not None:
+        _dres = ctx.real_exec(_default_render_cmd, "default render",
+                              timeout=max(ctx.exec_timeout, 600.0))
+        messages.append(_bash_tool_response(_dres.stdout))
+    else:
+        messages.append(_bash_tool_response(
+            json.dumps({"rendered": str(default_audio_path), "ok": True})
+        ))
 
     # --- TRANSCRIPTION BLOCK ---
     # Create a REAPER track and dispatch the transcription subagent.
@@ -545,6 +627,7 @@ def build_record(
     # agent itself (v4) — the main agent just dispatches once and proceeds.
     transcription_summary_text = ""
     _trans_output_file: str | None = None
+    _trans_notes_file: str | None = None
     if source_midi_path and Path(source_midi_path).exists():
         try:
             _trans_notes = load_notes_from_midi(source_midi_path)
@@ -558,7 +641,13 @@ def build_record(
             _trans_track_idx = 0
             _trans_track_name = "target_melody"
             _trans_agent_id = make_agent_id(sample_id, "melody_transcription")
-            _trans_agent_dir = f"/tmp/agents/{sample_id}"
+            # daw-farm mode: /tmp/agents is writable inside the container and
+            # the same absolute path exists on both sides (v3 convention);
+            # host-repo paths can't be created by the container user.
+            _trans_agent_dir = (
+                f"/tmp/agents/{sample_id}" if dawfarm_session is not None
+                else str(Path(args.out_dir) / "agent_workdir" / sample_id)
+            )
             _trans_output_file = f"{_trans_agent_dir}/{_trans_agent_id}.md"
             _trans_manifest_file = f"{_trans_agent_dir}/{_trans_agent_id}.manifest.json"
             _trans_notes_file = f"{_trans_agent_dir}/{sample_id}_notes.json"
@@ -568,32 +657,11 @@ def build_record(
             with open(_trans_notes_file, "w") as _tnf:
                 json.dump({"notes": _trans_notes, "n_notes": _trans_n_notes, "duration_s": _trans_duration_s}, _tnf)
                 _tnf.write("\n")
+            if ctx is not None:
+                # Same absolute paths in-container so midi_path snippets resolve.
+                dawfarm_session.put(_trans_notes_file, _trans_notes_file)
 
-            # Step 1: create a REAPER track + load Vital on it
-            _trans_create_snippet = (
-                _REAPY_HELPER
-                + f"track_name = {json.dumps(_trans_track_name)}\n"
-                  f"with reapy.inside_reaper():\n"
-                  f"    RPR.InsertTrackAtIndex(0, True)\n"
-                  f"    track = RPR.GetTrack(0, 0)\n"
-                  f"    RPR.GetSetMediaTrackInfo_String(track, 'P_NAME', track_name, True)\n"
-                  f"    RPR.TrackFX_AddByName(track, 'Vital', False, 1)\n"
-                  f"print(json.dumps({{'status': 'ok', 'track_idx': 0, 'track_name': track_name}}))\n"
-            )
-            _trans_create_cmd = _wrap_as_bash(_trans_create_snippet)
-            messages.append({
-                "role": "assistant",
-                "content": "Creating a REAPER track to hold the transcribed MIDI before I search the wavetable library.",
-            })
-            messages.append(_tool_call("Bash", {"command": _trans_create_cmd}))
-            _track_stdout = json.dumps({
-                "status": "ok",
-                "track_idx": _trans_track_idx,
-                "track_name": _trans_track_name,
-            }) + "\n"
-            messages.append(_bash_tool_response(_track_stdout))
-
-            # Step 2: dispatch transcription subagent (single call)
+            # Dispatch transcription subagent (track with Vital created above)
             _dispatch_prompt = (
                 f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
                 f"(reapy → MIDI_InsertNote) that inserts the MIDI "
@@ -633,7 +701,7 @@ def build_record(
                 archetype=archetype,
                 target_audio_path=target_audio_path,
                 source_midi_path=source_midi_path,
-                output_dir=Path(f"/tmp/agents"),
+                output_dir=transcription_dir,
                 track_idx=_trans_track_idx,
                 mistake_rate=_trans_mistake_rate,
                 seed=int(args.seed),
@@ -651,11 +719,32 @@ def build_record(
             with open(_trans_output_file, "w") as _trf:
                 _trf.write(trans_final_msg)
                 _trf.write("\n")
+            if ctx is not None:
+                dawfarm_session.put(_trans_output_file, _trans_output_file)
+                # Apply the transcription subagent's project-state effect for
+                # real so subsequent timeline renders are audible. (Stage 2
+                # moves this inside the sub-builder's own real execution.)
+                _dawfarm.insert_midi_notes(dawfarm_session, _trans_notes,
+                                           track_idx=_trans_track_idx)
 
             transcription_summary_text = (
                 f"Transcription verified — {_trans_n_notes} notes on track "
                 f"{_trans_track_idx}. "
             )
+
+    if ctx is not None and _trans_notes_file is None:
+        # No source MIDI — the timeline still needs notes for REAPER renders
+        # and downstream snippets need a notes JSON (infra, not conversation).
+        _fallback_notes = [
+            {"pitch": int(p), "velocity": int(v), "start_s": float(s), "dur_s": float(d)}
+            for (p, v, s, d) in notes
+        ]
+        _trans_notes_file = f"/tmp/agents/{sample_id}/{sample_id}_notes.json"
+        Path(_trans_notes_file).parent.mkdir(parents=True, exist_ok=True)
+        with open(_trans_notes_file, "w") as _tnf:
+            json.dump({"notes": _fallback_notes, "n_notes": len(_fallback_notes)}, _tnf)
+        dawfarm_session.put(_trans_notes_file, _trans_notes_file)
+        _dawfarm.insert_midi_notes(dawfarm_session, _fallback_notes)
 
     # Library size check
     messages.append({
@@ -663,14 +752,26 @@ def build_record(
         "content": f"{transcription_summary_text}Checking wavetable library size.",
     })
     messages.append(_tool_call("Bash", {"command": _wrap_as_bash(build_list_wavetables_total_snippet())}))
-    messages.append(_bash_tool_response(json.dumps({"total": total_named}) + "\n"))
+    if ctx is not None:
+        _wt_res = ctx.real_exec(_wrap_as_bash(build_list_wavetables_total_snippet()), "wavetable count")
+        messages.append(_bash_tool_response(_wt_res.stdout))
+        try:
+            _container_total = int(json.loads(_wt_res.stdout).get("total", -1))
+        except Exception:
+            _container_total = -1
+        if _container_total != total_named:
+            _log(f"WARNING: container wavetable library has {_container_total} "
+                 f"entries vs host {total_named} — sync --daw-farm-vital-data")
+    else:
+        messages.append(_bash_tool_response(json.dumps({"total": total_named}) + "\n"))
 
-    agent_out_dir = f"/tmp/agents/{sample_id}"
+    agent_out_dir = (
+        f"/tmp/agents/{sample_id}" if dawfarm_session is not None
+        else str(Path(args.out_dir) / "agent_workdir" / sample_id)
+    )
 
     _wt_name_to_emb = build_name_embedding_map(shortlist_data["embeddings"], index_rows)
 
-    tuple_audio_dir = Path(args.out_dir) / "tuple_audio" / sample_id
-    tuple_audio_dir.mkdir(parents=True, exist_ok=True)
     wt_lib_by_name = {wt["name"]: wt for wt in wavetable_lib if "name" in wt}
 
     def _build_tuple_preset(tup: list, oscs: list[int], lib: dict, base: dict) -> dict:
@@ -784,6 +885,7 @@ def build_record(
                 shortlist_dir=Path(agent_out_dir),
                 clap_threshold=0.97,
                 midi_path=_trans_notes_file,
+                probe_audio_dir=search_probe_dir,
             )
             return ai, agent_id, sr
 
@@ -843,6 +945,8 @@ def build_record(
             }))
 
         for _start, _end, agent_id, output_file, manifest_file, _sl in round_agent_meta:
+            if ctx is not None:
+                dawfarm_session.put(output_file, output_file)
             messages.append({
                 "role": "tool_response",
                 "content": json.dumps({
@@ -869,7 +973,11 @@ def build_record(
             except Exception:
                 pass
             round_shortlists.append(sl)
-        messages.append(_bash_tool_response("\n".join(grep_output_lines) + "\n"))
+        if ctx is not None:
+            messages.append(_bash_tool_response(
+                ctx.real_exec(grep_cmd, "shortlist grep").stdout))
+        else:
+            messages.append(_bash_tool_response("\n".join(grep_output_lines) + "\n"))
 
         # Pool in shortlists
         for sl in round_shortlists:
@@ -903,6 +1011,7 @@ def build_record(
             stage2_server=stage2_server,
             stage2_model=stage2_model,
             judge_output_dir=Path(agent_out_dir),
+            probe_audio_dir=judge_probe_dir,
         )
         if judge_result.record:
             judge_result.record["id"] = f"{sample_id}_r{rounds_used}_judge"
@@ -1031,10 +1140,16 @@ def build_record(
             "role": "assistant",
             "content": "Reading judge's verdict and selection.",
         })
+        if ctx is not None:
+            dawfarm_session.put(str(judge_output_file), str(judge_output_file))
         messages.append(_tool_call("Bash", {"command": f"cat {judge_output_file}"}))
-        with open(judge_output_file) as jf:
-            judge_content = jf.read().strip()
-        messages.append(_bash_tool_response(judge_content + "\n"))
+        if ctx is not None:
+            messages.append(_bash_tool_response(
+                ctx.real_exec(f"cat {judge_output_file}", "judge cat").stdout))
+        else:
+            with open(judge_output_file) as jf:
+                judge_content = jf.read().strip()
+            messages.append(_bash_tool_response(judge_content + "\n"))
 
         # Branch on verdict
         if judge_verdict in ("no_match", "partial_match"):
@@ -1088,13 +1203,15 @@ def build_record(
         tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}.wav"
         osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
         render_cmd = _wrap_as_bash(build_render_tuple_snippet(
-            osc_names=osc_names, out_path=str(tuple_wav),
+            osc_names=osc_names,
+            out_path=ctx.cw(tuple_wav) if ctx is not None else str(tuple_wav),
             midi_path=_trans_notes_file,
         ))
-        render_cumulative_audio(
-            _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
-            notes, tuple_wav,
-        )
+        if ctx is None:
+            render_cumulative_audio(
+                _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
+                notes, tuple_wav,
+            )
 
         tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
         messages.append({
@@ -1106,13 +1223,18 @@ def build_record(
         })
         messages.append(_tool_call("Bash", {"command": render_cmd}))
         audio_assets.append(str(tuple_wav))
-        _tuple_stdout = json.dumps({
-            "status": "ok", "out": str(tuple_wav), "wavetables": cur_active_names,
-        }) + "\n"
+        if ctx is not None:
+            _tres = ctx.real_exec(render_cmd, "tuple render", timeout=max(ctx.exec_timeout, 600.0))
+            ctx.fetch_wav(ctx.cw(tuple_wav), tuple_wav)
+            _tuple_stdout = _tres.stdout
+        else:
+            _tuple_stdout = json.dumps({
+                "status": "ok", "out": str(tuple_wav), "wavetables": cur_active_names,
+            }) + "\n"
         _emit_listen_sequence(
             messages, audio_assets, tuple_wav,
             probe_stdout=_tuple_stdout,
-
+            display_path=ctx.cw(tuple_wav) if ctx is not None else None,
         )
         break
 
@@ -1121,13 +1243,15 @@ def build_record(
         tuple_wav = tuple_audio_dir / f"tuple_r{rounds_used}_fallback.wav"
         osc_names = {oi: cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]}
         render_cmd = _wrap_as_bash(build_render_tuple_snippet(
-            osc_names=osc_names, out_path=str(tuple_wav),
+            osc_names=osc_names,
+            out_path=ctx.cw(tuple_wav) if ctx is not None else str(tuple_wav),
             midi_path=_trans_notes_file,
         ))
-        render_cumulative_audio(
-            _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
-            notes, tuple_wav,
-        )
+        if ctx is None:
+            render_cumulative_audio(
+                _build_tuple_preset(cur_tuple, active_oscs, wt_lib_by_name, init_preset),
+                notes, tuple_wav,
+            )
         cur_active_names = [cur_tuple[oi] for oi in active_oscs if cur_tuple[oi]]
         tuple_names_str = ", ".join(f"'{n}'" for n in cur_active_names)
         _last_verdict = verdicts_by_round[-1] if verdicts_by_round else "no_match"
@@ -1149,13 +1273,19 @@ def build_record(
         })
         messages.append(_tool_call("Bash", {"command": render_cmd}))
         audio_assets.append(str(tuple_wav))
-        _fb_tuple_stdout = json.dumps({
-            "status": "ok", "out": str(tuple_wav), "wavetables": cur_active_names,
-        }) + "\n"
+        if ctx is not None:
+            _fbres = ctx.real_exec(render_cmd, "fallback tuple render",
+                                   timeout=max(ctx.exec_timeout, 600.0))
+            ctx.fetch_wav(ctx.cw(tuple_wav), tuple_wav)
+            _fb_tuple_stdout = _fbres.stdout
+        else:
+            _fb_tuple_stdout = json.dumps({
+                "status": "ok", "out": str(tuple_wav), "wavetables": cur_active_names,
+            }) + "\n"
         _emit_listen_sequence(
             messages, audio_assets, tuple_wav,
             probe_stdout=_fb_tuple_stdout,
-
+            display_path=ctx.cw(tuple_wav) if ctx is not None else None,
         )
 
     gt_tuple = cur_tuple
@@ -1201,6 +1331,9 @@ def build_record(
         "    if wt_name in name_to_wt:\n"
         "        preset['settings']['wavetables'][osc_idx] = name_to_wt[wt_name]\n"
         f"preset['settings']['modulations'] = {target_mods_literal}\n"
+        f"_lfos = {repr(target_preset.get('settings', {}).get('lfos'))}\n"
+        "if _lfos is not None:\n"
+        "    preset['settings']['lfos'] = _lfos\n"
         f"for _k, _v in {overrides_literal}.items():\n"
         "    preset['settings'][_k] = _v\n"
         "chunk = build_vital_chunk(preset)\n"
@@ -1213,7 +1346,10 @@ def build_record(
     )
     messages.append({"role": "assistant", "content": selection_text})
     messages.append(_tool_call("Bash", {"command": _wrap_as_bash(apply_snippet)}))
-    _apply_stdout = json.dumps({"status": "ok", "applied": apply_names}) + "\n"
+    if ctx is not None:
+        _apply_stdout = ctx.real_exec(_wrap_as_bash(apply_snippet), "wavetable apply").stdout
+    else:
+        _apply_stdout = json.dumps({"status": "ok", "applied": apply_names}) + "\n"
     messages.append(_bash_tool_response(_apply_stdout))
 
     # ---- DIAGNOSIS + SUBSYSTEM BATCHES (identical to v3) ----
@@ -1308,14 +1444,11 @@ def build_record(
 
         batch_wav = batch_audio_dir / f"batch_{bi}_{b.subsystem}.wav"
         _bt = _time.monotonic()
-        render_cumulative_audio(cumulative, notes, batch_wav)
-        _log(f"  batch {bi}/{len(batches)-1} ({b.subsystem}) render {_time.monotonic()-_bt:.1f}s")
-
-        with serial_lock:
-            try:
-                clap_after = float(embedder.cosine_paths(batch_wav, target_audio_path))
-            except Exception:
-                clap_after = None
+        if ctx is None:
+            render_cumulative_audio(cumulative, notes, batch_wav)
+            _log(f"  batch {bi}/{len(batches)-1} ({b.subsystem}) render {_time.monotonic()-_bt:.1f}s")
+        # daw-farm mode: audio comes from a real REAPER render after the
+        # apply below; CLAP is computed once the wav exists (post-listen).
 
         b.audio_wav = batch_wav
         params_native = {
@@ -1340,20 +1473,27 @@ def build_record(
 
         for sq in search_queries:
             search_snippet = _wrap_as_bash(build_param_search_snippet(sq))
-            search_results = simulate_param_search(
-                sq, _REAPER_PARAM_DUMP,
-                value_overrides=current_reaper_values,
-            )
-            search_stdout = json.dumps(
-                {"query": sq, "count": len(search_results), "params": search_results},
-                indent=2, ensure_ascii=False,
-            ) + "\n"
             messages.append(_tool_call("Bash", {"command": search_snippet}))
-            messages.append(_bash_tool_response(search_stdout))
+            if ctx is not None:
+                messages.append(_bash_tool_response(
+                    ctx.real_exec(search_snippet, f"param search {sq!r}").stdout))
+            else:
+                search_results = simulate_param_search(
+                    sq, _REAPER_PARAM_DUMP,
+                    value_overrides=current_reaper_values,
+                )
+                search_stdout = json.dumps(
+                    {"query": sq, "count": len(search_results), "params": search_results},
+                    indent=2, ensure_ascii=False,
+                ) + "\n"
+                messages.append(_bash_tool_response(search_stdout))
 
         messages.append({"role": "assistant", "content": f"Applying {b.subsystem} changes."})
         messages.append(_tool_call("Bash", {"command": action_snippet}))
-        _action_stdout = json.dumps({"status": "ok", "applied": len(params_native)}) + "\n"
+        if ctx is not None:
+            _action_stdout = ctx.real_exec(action_snippet, f"{b.subsystem} apply").stdout
+        else:
+            _action_stdout = json.dumps({"status": "ok", "applied": len(params_native)}) + "\n"
         messages.append(_bash_tool_response(_action_stdout))
 
         for name, norm in b.params_applied.items():
@@ -1362,10 +1502,26 @@ def build_record(
 
         audio_assets.append(str(batch_wav))
         messages.append({"role": "assistant", "content": f"Listening after {b.subsystem} batch."})
-        _batch_render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(batch_wav)))
+        _batch_render_cmd = _wrap_as_bash(build_reaper_render_snippet(
+            out_path=ctx.cw(batch_wav) if ctx is not None else str(batch_wav)))
         messages.append(_tool_call("Bash", {"command": _batch_render_cmd}))
-        _emit_listen_sequence(messages, audio_assets, batch_wav)
+        if ctx is not None:
+            _bt = _time.monotonic()
+            _rres = ctx.real_exec(_batch_render_cmd, f"{b.subsystem} render")
+            ctx.fetch_wav(ctx.cw(batch_wav), batch_wav)
+            _log(f"  batch {bi}/{len(batches)-1} ({b.subsystem}) reaper render {_time.monotonic()-_bt:.1f}s")
+            _emit_listen_sequence(messages, audio_assets, batch_wav,
+                                  probe_stdout=_rres.stdout, display_path=ctx.cw(batch_wav))
+        else:
+            _emit_listen_sequence(messages, audio_assets, batch_wav)
         last_batch_audio = batch_wav
+
+        # CLAP vs GT (wav exists in both modes now)
+        with serial_lock:
+            try:
+                clap_after = float(embedder.cosine_paths(batch_wav, target_audio_path))
+            except Exception:
+                clap_after = None
 
         gap = _step_remaining_gap(target_preset, {"cumulative_preset": cumulative})
         is_last = bi == len(batches) - 1
@@ -1432,12 +1588,8 @@ def build_record(
                     cumulative_native_overrides[m.param] = corr_native
 
                 corr_wav = batch_audio_dir / f"batch_{bi}_correction_{correction_turn}.wav"
-                render_cumulative_audio(cumulative, notes, corr_wav)
-                with serial_lock:
-                    try:
-                        corr_clap = float(embedder.cosine_paths(corr_wav, target_audio_path))
-                    except Exception:
-                        corr_clap = None
+                if ctx is None:
+                    render_cumulative_audio(cumulative, notes, corr_wav)
 
                 corr_prefix = f"{pending_check}\n\n" if pending_check else ""
                 pending_check = None
@@ -1460,8 +1612,12 @@ def build_record(
                     corr_native[m.param] = _denormalize(m.param, m.true_value)
 
                 if corr_native:
-                    messages.append(_tool_call("Bash", {"command": build_batch_action_snippet(corr_native)}))
-                    _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_native)}) + "\n"
+                    _corr_action_cmd = build_batch_action_snippet(corr_native)
+                    messages.append(_tool_call("Bash", {"command": _corr_action_cmd}))
+                    if ctx is not None:
+                        _corr_stdout = ctx.real_exec(_corr_action_cmd, "correction apply").stdout
+                    else:
+                        _corr_stdout = json.dumps({"status": "ok", "applied": len(corr_native)}) + "\n"
                     messages.append(_bash_tool_response(_corr_stdout))
                 else:
                     messages.append(_tool_call("Bash", {"command": "echo 'no matching REAPER param'"}))
@@ -1469,13 +1625,26 @@ def build_record(
 
                 audio_assets.append(str(corr_wav))
                 messages.append({"role": "assistant", "content": "Listening to the corrected preset."})
-                _corr_render_cmd = _wrap_as_bash(build_reaper_render_snippet(out_path=str(corr_wav)))
+                _corr_render_cmd = _wrap_as_bash(build_reaper_render_snippet(
+                    out_path=ctx.cw(corr_wav) if ctx is not None else str(corr_wav)))
                 messages.append(_tool_call("Bash", {"command": _corr_render_cmd}))
-                _emit_listen_sequence(
-                    messages, audio_assets, corr_wav,
-        
-                )
+                if ctx is not None:
+                    _crres = ctx.real_exec(_corr_render_cmd, "correction render")
+                    ctx.fetch_wav(ctx.cw(corr_wav), corr_wav)
+                    _emit_listen_sequence(
+                        messages, audio_assets, corr_wav,
+                        probe_stdout=_crres.stdout, display_path=ctx.cw(corr_wav),
+                    )
+                else:
+                    _emit_listen_sequence(
+                        messages, audio_assets, corr_wav,
+                    )
                 last_batch_audio = corr_wav
+                with serial_lock:
+                    try:
+                        corr_clap = float(embedder.cosine_paths(corr_wav, target_audio_path))
+                    except Exception:
+                        corr_clap = None
 
                 if unfixed:
                     pending_check = f"Improved {b.subsystem}, but something still sounds off — listening again."
@@ -1496,7 +1665,7 @@ def build_record(
         # ---- MID-CONVERSATION RE-TRANSCRIPTION ----
         if retranscribe_after_batch is not None and bi == retranscribe_after_batch:
             _retrans_agent_id = make_agent_id(sample_id, "melody_retranscription")
-            _retrans_agent_dir = f"/tmp/agents/{sample_id}"
+            _retrans_agent_dir = str(Path(args.out_dir) / "agent_workdir" / sample_id)
             _retrans_output_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.md"
             _retrans_manifest_file = f"{_retrans_agent_dir}/{_retrans_agent_id}.manifest.json"
 
@@ -1542,7 +1711,7 @@ def build_record(
                 archetype=archetype,
                 target_audio_path=target_audio_path,
                 source_midi_path=source_midi_path,
-                output_dir=Path("/tmp/agents"),
+                output_dir=transcription_dir,
                 track_idx=0,
                 mistake_rate=0.0,
                 seed=int(args.seed) + 6666,
@@ -1629,6 +1798,7 @@ def build_record(
             batch_audio_dir=batch_audio_dir,
             rng=_steer_rng,
             sample_id=sample_id,
+            ctx=ctx,
         )
         steer_applied = True
 
@@ -1689,6 +1859,7 @@ def build_record(
             "mistake_caught": mistake_caught,
             "transcription_output_file": _trans_output_file,
             "random_init": use_random_init,
+            "daw_farm_session": dawfarm_session.name if dawfarm_session is not None else None,
         },
     }
 
@@ -1854,7 +2025,26 @@ def main() -> None:
     ap.add_argument("--stage2-server", default="")
     ap.add_argument("--stage2-model", default="")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--daw-farm", default="",
+        help="Execute rollout snippets in real daw-farm REAPER sessions. "
+             "Spec: docker[:name1,name2] or k8s[:pod1,pod2] (empty names = discover). "
+             "Empty flag = simulate tool responses (legacy behaviour).")
+    ap.add_argument("--daw-farm-vital-data", default=str(ROOT / "data/prepared/wavetable_lib_vital_dir"),
+        help="Host Vital data dir synced into each session (use the generation "
+             "library from scripts/export_wavetable_lib_dir.py).")
+    ap.add_argument("--daw-farm-timeout", type=float, default=300.0,
+        help="Per-snippet exec timeout in daw-farm mode (seconds).")
     args = ap.parse_args()
+
+    # Absolute paths everywhere: agent workdir files are pushed into the
+    # container at their host paths, and snippets resolve them in-container —
+    # both require absolute paths.
+    args.out_dir = args.out_dir.resolve()
+
+    if args.daw_farm and float(getattr(args, "retranscribe_rate", 0.0) or 0.0) > 0:
+        # Re-transcription needs the wrong-notes timeline dance ported (Stage 2).
+        print("WARNING: --retranscribe-rate is not yet supported with --daw-farm; forcing 0.")
+        args.retranscribe_rate = 0.0
 
     if args.mistake_rate is not None:
         import warnings
@@ -1907,8 +2097,15 @@ def main() -> None:
     all_judge: list[dict] = []
     all_trans: list[dict] = []
 
+    dawfarm_pool: "_dawfarm.DawFarmPool | None" = None
+    if args.daw_farm:
+        dawfarm_pool = _dawfarm.DawFarmPool.from_spec(args.daw_farm)
+        if len(dawfarm_pool.sessions) < args.workers:
+            print(f"NOTE: {args.workers} workers > {len(dawfarm_pool.sessions)} "
+                  f"daw-farm sessions — workers will queue for sessions.", flush=True)
+
     def _process(entry: dict) -> tuple[dict | None, list[dict], list[dict], list[dict]]:
-        return build_record(
+        kwargs = dict(
             entry=entry,
             args=args,
             embedder=embedder,
@@ -1922,6 +2119,10 @@ def main() -> None:
             serial_lock=serial_lock,
             notes=_notes,
         )
+        if dawfarm_pool is not None:
+            with dawfarm_pool.acquire() as _sess:
+                return build_record(dawfarm_session=_sess, **kwargs)
+        return build_record(**kwargs)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     write_lock = threading.Lock()
