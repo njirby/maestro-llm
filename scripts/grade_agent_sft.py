@@ -339,7 +339,7 @@ _WRITE_FUNC_RE = re.compile(
     r"""(?:"([^"]+\.wav)"|'([^']+\.wav)')""",
 )
 _REAPER_RENDER_PATH_RE = re.compile(
-    r"""out_path\s*=\s*(?:"([^"]+\.wav)"|'([^']+\.wav)')""",
+    r"""out_path\s*=\s*(?:os\.path\.abspath\(\s*)?(?:"([^"]+\.wav)"|'([^']+\.wav)')""",
 )
 _LISTEN_PROBE_PATH_RE = re.compile(r'"path":\s*"([^"]+)"')
 

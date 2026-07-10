@@ -105,6 +105,48 @@ python scripts/build_main_agent_sft_v3.py \
 
 v3 does **not** use path_gen's per-step iterations for conversation structure. It diffs the target preset vs the init preset directly, buckets changed params by subsystem, and renders fresh per-batch audio using vita (build time). This eliminates cross-subsystem leakage from path_gen's support-family fill mechanism.
 
+**Step 2b — real-DAW rollouts via daw-farm (recommended):**
+
+With `--daw-farm`, every emitted tool-call snippet executes inside a real
+REAPER instance from the [daw-farm](~/daw-farm) fleet instead of being
+simulated: tool responses carry actual stdout/stderr from the container,
+param searches hit the live TrackFX API, chunk applies mutate the live Vital,
+and all listen audio is real REAPER timeline renders (or in-container
+DawDreamer renders) fetched out of the session. Snippet paths point at the
+container filesystem (`/work/rollouts/<sample_id>/`, `/tmp/agents/<sid>/`) —
+the same view the model has at inference time.
+
+```bash
+# bring up sessions (one per --workers is ideal)
+cd ~/daw-farm && docker compose up -d --scale reaper=8
+# k8s alternative: ./bin/dawfarm new -c 8
+
+# re-render stage A's model-visible audio (gt_wav/default_wav) through the
+# environment itself — training targets must come from the same engine and
+# render path the model acts in, not from vita
+python scripts/rerender_manifest_dawfarm.py --manifest outputs/iter_sft/manifest.jsonl
+
+python scripts/build_main_agent_sft_v3.py \
+    ... same flags as above ... \
+    --daw-farm docker \
+    --workers 8
+```
+
+- `--daw-farm docker[:name1,name2]` / `--daw-farm k8s[:pod1,pod2]` — backend
+  + optional explicit session list (default: discover all healthy sessions).
+- `--daw-farm-vital-data` — host wavetable dir synced into each session.
+  Point it at the generation library, not a personal Vital dir (same-name
+  wavetables with different content silently corrupt rollout audio):
+  `python scripts/export_wavetable_lib_dir.py` materializes
+  `data/wavetable_lib.json` as `data/prepared/wavetable_lib_vital_dir`.
+- `--daw-farm-timeout` (default 300 s) — per-snippet exec timeout.
+- Sanity-check the fleet first: `python scripts/smoke_test_dawfarm.py`.
+
+A sample whose snippet fails in the real environment (nonzero exit) is
+dropped with a warning — surfacing environment bugs instead of baking
+fabricated successes into training data. `meta.daw_farm_session` records
+which session built each record.
+
 **Conversation structure:**
 
 ```

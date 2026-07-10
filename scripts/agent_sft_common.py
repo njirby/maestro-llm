@@ -665,6 +665,7 @@ def _emit_listen_sequence(
     audio_assets: list[str],
     audio_path: str | Path,
     probe_stdout: str | None = None,
+    display_path: str | None = None,
 ) -> None:
     """Append the BashCommandOutput → Read → audio sequence.
 
@@ -672,12 +673,17 @@ def _emit_listen_sequence(
     The Read tool_call follows immediately (same assistant turn, no
     intermediate assistant message). ``audio_path`` must already be in
     ``audio_assets`` before calling this.
+
+    ``display_path`` — path shown in the conversation (Read file_path and
+    the default probe stdout). Used by daw-farm builds where the render
+    lives at a container path while ``audio_path`` is the fetched host copy;
+    defaults to ``audio_path``.
     """
-    path_str = str(audio_path)
+    path_str = str(display_path or audio_path)
     if probe_stdout is None:
         probe_out: dict[str, Any] = {"listen_probe": {"path": path_str, "exists": True}}
         try:
-            info = sf.info(path_str)
+            info = sf.info(str(audio_path))
             probe_out["listen_probe"]["duration_s"] = round(info.duration, 4)
         except Exception:
             pass
@@ -980,7 +986,7 @@ def build_reaper_render_snippet(
     """
     return (
         _REAPY_HELPER
-        + "import os\n"
+        + "import os, time\n"
         f"out_path = os.path.abspath({out_path!r})\n"
         "os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)\n"
         "with reapy.inside_reaper():\n"
@@ -996,6 +1002,19 @@ def build_reaper_render_snippet(
         "    RPR.GetSetProjectInfo_String(proj, 'RENDER_PATTERN', "
         "os.path.splitext(os.path.basename(out_path))[0], True)\n"
         "    RPR.Main_OnCommand(42230, 0)\n"
+        "# Render completes asynchronously; wait for a stable file. REAPER\n"
+        "# writes to <name>-001.wav when it detects a conflict.\n"
+        "prev_size = -1\n"
+        "for _ in range(120):\n"
+        "    alt = out_path[:-len('.wav')] + '-001.wav'\n"
+        "    if not os.path.isfile(out_path) and os.path.isfile(alt):\n"
+        "        os.rename(alt, out_path)\n"
+        "    if os.path.isfile(out_path):\n"
+        "        size = os.path.getsize(out_path)\n"
+        "        if size > 44 and size == prev_size:\n"
+        "            break\n"
+        "        prev_size = size\n"
+        "    time.sleep(0.25)\n"
         "print(json.dumps({'listen_probe': {'path': out_path, 'exists': os.path.isfile(out_path)}}))\n"
     )
 
@@ -1039,10 +1058,11 @@ def build_param_search_snippet(
         f"                options = []\n"
         f"                for oi in range(n_options):\n"
         f"                    ov = oi / max(1, n_options - 1)\n"
-        f"                    RPR.TrackFX_SetParam(track, {fx_idx}, i, ov)\n"
-        f"                    _od = RPR.TrackFX_GetFormattedParamValue(track, {fx_idx}, i, '', 2048)\n"
+        f"                    # format-only: never TrackFX_SetParam here — a set (even\n"
+        f"                    # set-then-restore) stamps REAPER's VST3 param cache and the\n"
+        f"                    # next render re-asserts it over chunk-applied state\n"
+        f"                    _od = RPR.TrackFX_FormatParamValueNormalized(track, {fx_idx}, i, ov, '', 2048)\n"
         f"                    options.append((_od[-2] if len(_od) > 2 else '').strip())\n"
-        f"                RPR.TrackFX_SetParam(track, {fx_idx}, i, val)\n"
         f"                entry['type'] = 'discrete'\n"
         f"                entry['options'] = options\n"
         f"                entry['current_index'] = round(val * max(1, n_options - 1))\n"
@@ -1288,8 +1308,27 @@ def select_and_apply_mutation(
     return None
 
 
-def execute_for_traceback(broken_code: str, cwd: str, timeout: float = 15.0) -> str | None:
-    """Run broken Python in subprocess, return stderr if it failed."""
+def execute_for_traceback(
+    broken_code: str,
+    cwd: str,
+    timeout: float = 15.0,
+    session: Any | None = None,
+) -> str | None:
+    """Run broken Python in subprocess, return stderr if it failed.
+
+    With *session* (a maestro.reaper.dawfarm.DawFarmSession), the code runs
+    inside the daw-farm container instead — the traceback then comes from
+    the same environment the rest of the rollout executed in.
+    """
+    if session is not None:
+        try:
+            res = session.exec_python(broken_code, timeout=timeout)
+        except Exception as exc:
+            logger.warning("execute_for_traceback (daw-farm) failed: %s", exc)
+            return None
+        if res.returncode != 0 and res.stderr.strip():
+            return res.stderr.strip()
+        return None
     try:
         proc = subprocess.run(
             ["bash", "-c", f"python3 - <<'PY'\n{broken_code}\nPY"],

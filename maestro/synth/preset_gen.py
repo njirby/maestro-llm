@@ -505,7 +505,9 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["reverb_high_shelf_cutoff"] = rng.uniform(80.0, 120.0)
     p["reverb_high_shelf_gain"] = rng.uniform(-6.0, 0.0)
     p["reverb_size"] = rng.uniform(0.3, 1.0)
-    p["reverb_feedback"] = rng.uniform(0.5, 0.95)
+    # NOTE: no reverb_feedback — legacy pre-1.5 key. The Vital VST3 plugin
+    # drops it (only vita's loader honors it), so it would bake an effect
+    # into GT audio that no deployment synth can reproduce.
     p["reverb_chorus_amount"] = rng.uniform(0.0, 0.3)
     p["reverb_chorus_frequency"] = rng.uniform(-3.0, 3.0)
 
