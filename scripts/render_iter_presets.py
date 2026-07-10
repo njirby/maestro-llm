@@ -189,7 +189,11 @@ def _render_sample(job: dict) -> dict | None:
                 gt_notes = picked_notes
                 clip_dur = max(n.end for n in gt_notes) + 0.25
         if gt_notes is None:
-            # Fallback to the legacy fixed 4-triad pattern
+            # Fallback to the legacy fixed 4-triad pattern. Loud on purpose:
+            # a run silently full of synthetic melodies looks like real data.
+            if _midi_catalog:
+                print(f"WARNING: {sample_id}: no catalog clip matched archetype "
+                      f"'{archetype}' — using synthetic 4-triad fallback", file=sys.stderr)
             gt_notes = make_gt_notes(clip_duration_s=clip_dur)
         probe_notes = gt_notes  # target and probe share the melody
         _probe_tail_s = max(0.1, 1.0 * (clip_dur / 10.0))
@@ -397,13 +401,19 @@ def parse_args() -> argparse.Namespace:
              "to halve audio token budget for training)",
     )
     p.add_argument(
-        "--midi-catalog", type=Path, default=None,
-        help="Optional path to a Lakh MIDI clip catalog JSONL (from "
-             "scripts/build_midi_clip_catalog.py). When set, per-sample target "
-             "MIDI is picked from the catalog with archetype-appropriate "
-             "filters; probes share the same melody so preset comparisons "
-             "stay clean. When unset, falls back to the synthetic 4-triad "
-             "pattern (make_gt_notes).",
+        "--midi-catalog", type=Path,
+        default=Path("outputs/midi_clips/lakh_catalog.jsonl"),
+        help="Lakh MIDI clip catalog JSONL (from "
+             "scripts/build_midi_clip_catalog.py). Per-sample target MIDI is "
+             "picked from the catalog with archetype-appropriate filters; "
+             "probes share the same melody so preset comparisons stay clean. "
+             "Real melodies are the default — generation fails if the "
+             "catalog is missing unless --synthetic-melodies is passed.",
+    )
+    p.add_argument(
+        "--synthetic-melodies", action="store_true",
+        help="Explicitly opt into the legacy synthetic 4-triad pattern "
+             "instead of real catalog MIDI (debug/smoke use only).",
     )
     p.add_argument(
         "--random-start-prob", type=float, default=0.0,
@@ -525,7 +535,17 @@ def main() -> None:
     max_in_flight = args.jobs * 4
 
     try:
-        catalog_path = str(args.midi_catalog) if getattr(args, "midi_catalog", None) else None
+        if getattr(args, "synthetic_melodies", False):
+            catalog_path = None
+        else:
+            if not args.midi_catalog or not args.midi_catalog.exists():
+                raise SystemExit(
+                    f"MIDI catalog not found: {args.midi_catalog}\n"
+                    "Real melodies are required by default. Build the catalog with "
+                    "scripts/build_midi_clip_catalog.py, pass --midi-catalog, or "
+                    "explicitly opt into --synthetic-melodies."
+                )
+            catalog_path = str(args.midi_catalog)
         with ProcessPoolExecutor(
             max_workers=args.jobs,
             initializer=_worker_init,

@@ -85,6 +85,11 @@ python scripts/render_iter_presets.py \
     --jobs 24
 ```
 
+Target melodies come from the Lakh clip catalog by default
+(`outputs/midi_clips/lakh_catalog.jsonl`); generation fails loudly if it's
+missing. `--synthetic-melodies` opts into the legacy 4-triad pattern for
+debug/smoke runs.
+
 **Step 2 — build SFT conversations** (requires Qwen3-Omni at localhost:8000):
 
 ```bash
