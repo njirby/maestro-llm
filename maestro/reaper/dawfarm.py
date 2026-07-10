@@ -428,6 +428,8 @@ import reapy
 from reapy import reascript_api as RPR
 out_path = {out_path!r}
 os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+if os.path.isfile(out_path):
+    os.remove(out_path)  # existing file triggers REAPER's overwrite prompt
 with reapy.inside_reaper():
     proj = RPR.EnumProjects(-1, '', 512)[0]
     track = RPR.GetTrack(0, 0)
