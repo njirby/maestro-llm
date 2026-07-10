@@ -175,10 +175,13 @@ class ClapEmbedder:
         key = str(path.resolve())
         if key in self._cache:
             return self._cache[key]
+        import time as _t
+        _t0 = _t.monotonic()
         audio, sr = sf.read(path, always_2d=True)
         audio = audio.T.astype(np.float32)
         emb = _embed_clap(audio, sr, self.model, self.processor, self.device)
         self._cache[key] = emb
+        record_timing("clap_embed", _t.monotonic() - _t0)
         return emb
 
     def cosine_paths(self, a: Path, b: Path) -> float:
@@ -697,8 +700,39 @@ def _emit_listen_sequence(
 # daw-farm rollout context — real-environment execution for builders
 # ---------------------------------------------------------------------------
 
+import collections as _collections
 import threading as _threading
+import time as _time_mod
 from dataclasses import dataclass as _dataclass, field as _field
+
+# Aggregate wall-time per pipeline category, for bottleneck analysis.
+PIPELINE_TIMINGS: "_collections.Counter[str]" = _collections.Counter()
+PIPELINE_COUNTS: "_collections.Counter[str]" = _collections.Counter()
+_TIMINGS_LOCK = _threading.Lock()
+
+
+def record_timing(category: str, dt: float) -> None:
+    with _TIMINGS_LOCK:
+        PIPELINE_TIMINGS[category] += dt
+        PIPELINE_COUNTS[category] += 1
+
+
+def format_pipeline_timings() -> str:
+    with _TIMINGS_LOCK:
+        rows = sorted(PIPELINE_TIMINGS.items(), key=lambda kv: -kv[1])
+        lines = [f"  {cat:<24} {total:8.1f}s  n={PIPELINE_COUNTS[cat]:<5} "
+                 f"avg={total / max(1, PIPELINE_COUNTS[cat]):6.2f}s"
+                 for cat, total in rows]
+    return "\n".join(lines) if lines else "  (no timings recorded)"
+
+
+def _env_category(what: str) -> str:
+    w = what.lower()
+    for key in ("render", "search", "apply", "creation", "insert", "slice",
+                "grep", "cat", "count", "discovery"):
+        if key in w:
+            return f"env_{key}"
+    return "env_other"
 
 
 @_dataclass
@@ -726,8 +760,13 @@ class DawFarmRolloutCtx:
         return f"{base}/{name}" if name else base
 
     def real_exec(self, cmd: str, what: str, timeout: float | None = None):
+        _t0 = _time_mod.monotonic()
         with self.lock:
+            _t1 = _time_mod.monotonic()
             res = self.session.exec_bash(cmd, timeout=timeout or self.exec_timeout)
+            _t2 = _time_mod.monotonic()
+        record_timing("env_lock_wait", _t1 - _t0)
+        record_timing(_env_category(what), _t2 - _t1)
         if res.returncode != 0:
             raise RuntimeError(
                 f"daw-farm {what} failed on {self.session.name} (rc={res.returncode}): "
@@ -736,10 +775,12 @@ class DawFarmRolloutCtx:
         return res
 
     def fetch_wav(self, container_path: str, host_path: str | Path) -> None:
+        _t0 = _time_mod.monotonic()
         with self.lock:
             if not self.session.wait_for_file(container_path, timeout=60):
                 raise RuntimeError(f"daw-farm render never appeared: {container_path}")
             self.session.get(container_path, host_path)
+        record_timing("env_fetch", _time_mod.monotonic() - _t0)
 
 
 # ---------------------------------------------------------------------------

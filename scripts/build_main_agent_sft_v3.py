@@ -1274,32 +1274,24 @@ def build_record(
     if not active_oscs:
         active_oscs = [0]
 
-    # Slice planning
+    # Slice planning — full contiguous partition (see v4 for rationale: the
+    # old stride grid left gaps and teleported a slice onto the GT, a
+    # structural label leak). Agent count derives from library size.
     slice_size = int(getattr(args, "candidates_per_slice", 48))
-    n_agents = int(args.num_agents)
     max_rounds = int(getattr(args, "max_search_rounds", 3))
-    stride = max(1, total_named // n_agents)
+    n_agents = max(1, (total_named + slice_size - 1) // slice_size)
+    slice_starts = [i * slice_size for i in range(n_agents)]
 
-    def _compute_slices(base: int) -> list[int]:
-        starts = []
-        for i in range(n_agents):
-            start = base + i * stride
-            if start + slice_size > total_named:
-                start = max(0, total_named - slice_size)
-            starts.append(start)
-        return starts
+    def _slice_ranges_str(starts: list[int]) -> str:
+        return ", ".join(
+            f"{s}-{min(s + slice_size, total_named) - 1}" for s in starts
+        )
 
     gt_idxs = [name_to_idx_full[n] for n in gt_names_list if n in name_to_idx_full]
     force_research_rate = float(getattr(args, "force_research_rate", 0.30))
+    # Forced re-search happens at the shortlist level (round-1 shortlists
+    # omit the GT), not by slicing around it.
     force_miss = sample_rng.random() < force_research_rate
-
-    base_offset = 0
-    slice_starts = _compute_slices(0)
-    if gt_idxs and not force_miss:
-        if not any(s <= gi < (s + slice_size) for s in slice_starts for gi in gt_idxs):
-            gt_target = gt_idxs[0]
-            new_start = max(0, min(gt_target - slice_size // 2, total_named - slice_size))
-            slice_starts[-1] = new_start
 
     # ---- Begin messages ----
     messages: list[dict] = []
@@ -1686,6 +1678,10 @@ def build_record(
         """
         names_in = [idx_to_name_full[i] for i in range(start, end) if i in idx_to_name_full]
         gts_in = [n for n in names_in if n in gt_names_list]
+        if force_miss and rounds_used == 1:
+            # Forced perceptual miss: round-1 agents audition the GT but
+            # don't shortlist it → judge no_match → genuine round 2.
+            gts_in = []
         non_gt = [n for n in names_in if n not in gt_names_list]
         # Pick 2 non-GT by deterministic sampling
         sample_rng.shuffle(non_gt)
@@ -1762,15 +1758,15 @@ def build_record(
         if rounds_used == 1:
             intro = (
                 f"Library has {total_named} wavetables. Dispatching {n_agents} search "
-                f"agents in parallel across slices "
-                f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
+                f"agents in parallel across contiguous slices covering the full library "
+                f"[{_slice_ranges_str(slice_starts)}]."
             )
         else:
             intro = (
                 f"{_research_prefix}"
-                f"Expanding to different library regions with {n_agents} more search agents "
-                f"in parallel: "
-                f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
+                f"Re-dispatching {n_agents} search agents across the full library for "
+                f"a fresh audition: "
+                f"[{_slice_ranges_str(slice_starts)}]."
             )
             _research_prefix = ""
         messages.append({"role": "assistant", "content": intro})
@@ -2025,10 +2021,10 @@ def build_record(
             _research_prefix = (
                 f"The judge reports the pool of {len(pool)} candidates doesn't contain "
                 f"any wavetable with the {missing_character} of the target. "
-                f"Expanding search to unexplored library regions. "
+                f"Re-dispatching the search for a fresh audition of the library. "
             )
-            base_offset = (base_offset + stride // 2) % stride
-            slice_starts = _compute_slices(base_offset)
+            # Same full partition — re-search is a fresh audition, not new
+            # regions (the slices already cover the whole library).
             continue
 
         # verdict == "good" → render tuple, listen, break out of search loop.

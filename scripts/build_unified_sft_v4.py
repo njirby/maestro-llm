@@ -412,30 +412,26 @@ def build_record(
         active_oscs = [0]
 
     slice_size = int(getattr(args, "candidates_per_slice", 48))
-    n_agents = int(args.num_agents)
     max_rounds = int(getattr(args, "max_search_rounds", 3))
-    stride = max(1, total_named // n_agents)
+    # Full contiguous partition: agent count derives from library size, no
+    # gaps, no GT-targeted slice adjustment. (The old stride grid left ~1/3
+    # of the library unsearchable and teleported one slice onto the GT when
+    # needed — a structural label leak: the off-grid slice held the answer.)
+    n_agents = max(1, (total_named + slice_size - 1) // slice_size)
+    slice_starts = [i * slice_size for i in range(n_agents)]
 
-    def _compute_slices(base: int) -> list[int]:
-        starts = []
-        for i in range(n_agents):
-            start = base + i * stride
-            if start + slice_size > total_named:
-                start = max(0, total_named - slice_size)
-            starts.append(start)
-        return starts
+    def _slice_ranges_str(starts: list[int]) -> str:
+        return ", ".join(
+            f"{s}-{min(s + slice_size, total_named) - 1}" for s in starts
+        )
 
     gt_idxs = [name_to_idx_full[n] for n in gt_names_list if n in name_to_idx_full]
     force_research_rate = float(getattr(args, "force_research_rate", 0.30))
+    # Forced re-search now happens at the SHORTLIST level: in round 1 the
+    # search agent covering a GT auditions it but doesn't shortlist it (the
+    # realistic inference failure — imperfect ears, not bad slicing), so the
+    # judge reports no_match and round 2 re-dispatches the same partition.
     force_miss = sample_rng.random() < force_research_rate
-
-    base_offset = 0
-    slice_starts = _compute_slices(0)
-    if gt_idxs and not force_miss:
-        if not any(s <= gi < (s + slice_size) for s in slice_starts for gi in gt_idxs):
-            gt_target = gt_idxs[0]
-            new_start = max(0, min(gt_target - slice_size // 2, total_named - slice_size))
-            slice_starts[-1] = new_start
 
     # ---- Begin messages ----
     messages: list[dict] = []
@@ -836,15 +832,15 @@ def build_record(
         if rounds_used == 1:
             intro = (
                 f"Library has {total_named} wavetables. Dispatching {n_agents} search "
-                f"agents in parallel across slices "
-                f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
+                f"agents in parallel across contiguous slices covering the full library "
+                f"[{_slice_ranges_str(slice_starts)}]."
             )
         else:
             intro = (
                 f"{_research_prefix}"
-                f"Expanding to different library regions with {n_agents} more search agents "
-                f"in parallel: "
-                f"[{', '.join(f'{s}-{s + slice_size - 1}' for s in slice_starts)}]."
+                f"Re-dispatching {n_agents} search agents across the full library for "
+                f"a fresh audition: "
+                f"[{_slice_ranges_str(slice_starts)}]."
             )
             _research_prefix = ""
         messages.append({"role": "assistant", "content": intro})
@@ -866,6 +862,12 @@ def build_record(
 
         def _run_search(spec: tuple[int, int, int, str]) -> tuple[int, str, SearchResult]:
             ai, start, end, agent_id = spec
+            # Round-1 forced miss: the agent whose shard holds a GT auditions
+            # it but leaves it off the shortlist (realistic perceptual miss).
+            _fm_names = None
+            if force_miss and rounds_used == 1:
+                _fm_names = [n for n in gt_names_list
+                             if start <= name_to_idx_full.get(n, -1) < end] or None
             sr = build_search_record(
                 sample_id=sample_id,
                 agent_idx=ai + 1,
@@ -889,6 +891,7 @@ def build_record(
                 midi_path=_trans_notes_file,
                 probe_audio_dir=search_probe_dir,
                 dawfarm=ctx,
+                force_miss_names=_fm_names,
             )
             return ai, agent_id, sr
 
@@ -1181,10 +1184,10 @@ def build_record(
                 _research_prefix = (
                     f"The judge reports the pool of {len(pool)} candidates doesn't contain "
                     f"any wavetable with the {missing_character} of the target. "
-                    f"Expanding search to unexplored library regions. "
+                    f"Re-dispatching the search for a fresh audition of the library. "
                 )
-            base_offset = (base_offset + stride // 2) % stride
-            slice_starts = _compute_slices(base_offset)
+            # Same full partition — re-search means a fresh audition, not new
+            # regions (there are none: the slices already cover everything).
 
             # Pre-render probes for next round
             next_slice_names: list[str] = []
@@ -2221,6 +2224,9 @@ def main() -> None:
         print(f"  per rollout:     {_wall_elapsed/_n_ok:>8.1f}s", flush=True)
         print(f"  throughput:      {_n_ok/_wall_elapsed*3600:>8.1f} rollouts/hr  (at {args.workers} workers)", flush=True)
     print(f"  LLM calls:       {llm_post_stats.summary()}", flush=True)
+    from scripts.agent_sft_common import format_pipeline_timings
+    print(f"  --- aggregate category timings (thread-seconds, all workers) ---", flush=True)
+    print(format_pipeline_timings(), flush=True)
 
 
 if __name__ == "__main__":

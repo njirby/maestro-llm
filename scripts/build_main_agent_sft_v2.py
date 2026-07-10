@@ -813,7 +813,7 @@ def init_llm_router(server_urls: list[str], model: str) -> None:
             })
         _llm_router = Router(
             model_list=deployments,
-            routing_strategy="least-busy",
+            routing_strategy="simple-shuffle",
             num_retries=3,
             timeout=180.0,
             retry_after=5,
@@ -824,6 +824,16 @@ def init_llm_router(server_urls: list[str], model: str) -> None:
 
 def _llm_post(server_url: str, payload: dict, timeout: float = 120.0, max_retries: int = 3) -> dict:
     """POST to an OpenAI-compatible completions endpoint with retry on timeout/5xx/connect errors."""
+    import time as _t
+    from scripts.agent_sft_common import record_timing as _rec
+    _t0 = _t.monotonic()
+    try:
+        return _llm_post_inner(server_url, payload, timeout, max_retries)
+    finally:
+        _rec("omni_call", _t.monotonic() - _t0)
+
+
+def _llm_post_inner(server_url: str, payload: dict, timeout: float = 120.0, max_retries: int = 3) -> dict:
     if _llm_router is not None:
         try:
             resp = _llm_router.completion(

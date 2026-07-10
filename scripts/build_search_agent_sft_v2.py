@@ -459,6 +459,7 @@ def build_search_record(
     seed: int = 1337,
     probe_audio_dir: Path | None = None,
     dawfarm: "DawFarmRolloutCtx | None" = None,
+    force_miss_names: list[str] | None = None,
 ) -> SearchResult:
     """Build one search agent SFT record: render all probes upfront, then
     listen and assess in batches.
@@ -681,6 +682,10 @@ def build_search_record(
             selection_labels[name] = is_clap_selected(
                 name, gt_wavetable_names, name_to_emb, threshold=clap_threshold
             )
+            if force_miss_names and name in force_miss_names:
+                # Forced perceptual miss (round-1 re-search training signal):
+                # the agent auditions this GT but does not shortlist it.
+                selection_labels[name] = False
 
         # Accumulate selected candidates (builder-controlled, no model parsing needed)
         batch_selected = [n for n in batch if selection_labels[n]]
@@ -790,6 +795,7 @@ def build_search_record(
             "n_batches": len(all_ordered),
             "candidates_per_batch": candidates_per_batch,
             "gt_in_shard": gt_in_shard,
+            "forced_miss_names": force_miss_names or [],
             "final_shortlist": selected_so_far,
             "gt_on_shortlist": [n for n in selected_so_far if n in gt_set],
             "shortlist_output_file": shortlist_path,
