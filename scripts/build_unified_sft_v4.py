@@ -867,6 +867,11 @@ def build_record(
             if force_miss and rounds_used == 1:
                 _fm_names = [n for n in gt_names_list
                              if start <= name_to_idx_full.get(n, -1) < end] or None
+            # Data-mix control: emit the GT-holding shard's record always,
+            # others at --search-record-keep-rate (pool-only otherwise).
+            _has_gt = any(start <= name_to_idx_full.get(n, -1) < end for n in gt_names_list)
+            _keep_rng = random.Random(int(args.seed) + sid_seed + rounds_used * 101 + ai)
+            _keep = _has_gt or _keep_rng.random() < float(getattr(args, "search_record_keep_rate", 1.0))
             sr = build_search_record(
                 sample_id=sample_id,
                 agent_idx=ai + 1,
@@ -892,6 +897,7 @@ def build_record(
                 dawfarm=ctx,
                 force_miss_names=_fm_names,
                 merged_stage2=bool(getattr(args, "merged_stage2", False)),
+                pool_only=not _keep,
             )
             return ai, agent_id, sr
 
@@ -917,7 +923,8 @@ def build_record(
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"{agent_id}.md"
             manifest_path = out_dir / f"{agent_id}.manifest.json"
-            final_msg = search_result.record["messages"][-1]["content"] if search_result.record else ""
+            final_msg = (search_result.record["messages"][-1]["content"]
+                         if search_result.record else search_result.final_message)
             with open(out_path, "w") as f:
                 f.write(final_msg)
                 f.write("\n")
@@ -2066,6 +2073,11 @@ def main() -> None:
     ap.add_argument("--daw-farm-vital-data", default=str(ROOT / "data/prepared/wavetable_lib_vital_dir"),
         help="Host Vital data dir synced into each session (use the generation "
              "library from scripts/export_wavetable_lib_dir.py).")
+    ap.add_argument("--search-record-keep-rate", type=float, default=0.25,
+        help="Fraction of non-GT-shard search-agent records to emit as SFT "
+             "records (the GT shard's record is always kept; dropped shards "
+             "run pool-only: identical shortlists, no omni narration). "
+             "1.0 = legacy behaviour, every search record emitted.")
     ap.add_argument("--merged-stage2", action=argparse.BooleanOptionalAction, default=True,
         help="Search agents: single merged stage-2 call per batch instead of "
              "synthesize+notes. Default on (+32%% throughput, judge-identical "

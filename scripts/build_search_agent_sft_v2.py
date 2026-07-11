@@ -489,6 +489,7 @@ class SearchResult:
     shortlist: list[str]
     shard_start: int
     shard_end: int
+    final_message: str = ""
 
 
 _TOOL_SPECS = json.dumps([
@@ -547,6 +548,7 @@ def build_search_record(
     dawfarm: "DawFarmRolloutCtx | None" = None,
     force_miss_names: list[str] | None = None,
     merged_stage2: bool = False,
+    pool_only: bool = False,
 ) -> SearchResult:
     """Build one search agent SFT record: render all probes upfront, then
     listen and assess in batches.
@@ -565,6 +567,28 @@ def build_search_record(
 
     gt_set = set(gt_wavetable_names)
     gt_in_shard = [n for n in shard if n in gt_set]
+
+    if pool_only:
+        # Data-mix control: this agent's SFT record won't be emitted, so skip
+        # all omni narration, env execution, and probe rendering — but derive
+        # the shortlist and output-file text identically to a full build so
+        # the main-agent conversation (pool, grep of shortlist files) is
+        # byte-equivalent regardless of which search records are kept.
+        _sel = []
+        for _n in shard:
+            _ok = is_clap_selected(_n, gt_wavetable_names, name_to_emb, threshold=clap_threshold)
+            if force_miss_names and _n in force_miss_names:
+                _ok = False
+            if _ok:
+                _sel.append(_n)
+        _sl_str = ", ".join(f'"{n}"' for n in _sel)
+        _final = (
+            f"Shortlist: [{_sl_str}]. {len(_sel)} candidate(s) "
+            f"flagged for the judge agent."
+        )
+        return SearchResult(record=None, shortlist=_sel,
+                            shard_start=shard_start, shard_end=shard_end,
+                            final_message=_final)
 
     # Compute processing chain description for GT grounding
     gt_transform_desc = describe_key_transforms(target_preset) if gt_in_shard else ""
