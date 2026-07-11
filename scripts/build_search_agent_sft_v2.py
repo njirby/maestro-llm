@@ -1078,8 +1078,7 @@ def main() -> None:
             selected_rows=selected_by_name,
             out_dir=args.probe_dir,
             cache=candidate_audio,
-            notes=_midi_notes_pm,
-        )
+                    )
 
         # Build one record per search agent, one per slice.
         # Agents within a sample are independent — parallelize their Omni calls.

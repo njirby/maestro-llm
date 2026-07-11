@@ -795,6 +795,69 @@ class DawFarmRolloutCtx:
         record_timing("env_fetch_dir", _time_mod.monotonic() - _t0)
 
 
+def warm_candidate_probe_cache_dawfarm(
+    session: Any,
+    names: list[str],
+    out_dir: Path,
+    cache: dict,
+    probe_archetype: str = "lead",
+) -> int:
+    """Render the shared candidate-describe probes inside a daw-farm session.
+
+    One DawDreamer engine spawn in the container renders every missing
+    wavetable probe with fixed archetype notes (env-exact audio for the
+    describe calls; the on-disk cache persists across runs). Call BEFORE the
+    sample worker fan-out — never mid-rollout (it resets the project).
+    Populates *cache* (name → host wav path) and returns #rendered.
+    """
+    import re as _re
+    from maestro.render.dawdreamer import make_probe_notes
+    from maestro.reaper import dawfarm as _df
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _slug(s: str) -> str:
+        return (_re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_") or "unnamed")[:80]
+
+    expected = {n: out_dir / f"wt_{i:04d}_{_slug(n)}.wav" for i, n in enumerate(names)}
+    missing = [n for n, p in expected.items() if not p.exists()]
+    for n, p in expected.items():
+        if p.exists():
+            cache.setdefault(n, p)
+    if not missing:
+        return 0
+
+    _df.reset_project(session)
+    _df.create_vital_track(session)
+    notes = [
+        {"pitch": int(p), "velocity": int(v), "start_s": float(s), "dur_s": float(d)}
+        for (p, v, s, d) in make_probe_notes(probe_archetype)
+    ]
+    notes_file = "/work/rollouts/_probe_cache/notes.json"
+    res = session.exec_bash(
+        f"mkdir -p /work/rollouts/_probe_cache && cat > {notes_file} <<'EOF'\n"
+        + json.dumps({"notes": notes}) + "\nEOF")
+    if not res.ok:
+        raise RuntimeError(f"probe cache notes push failed: {res.stderr}")
+    container_dir = "/work/rollouts/_probe_cache/probes"
+    snippet = _wrap_as_bash(build_render_probes_snippet(
+        names=names, out_dir=container_dir, midi_path=notes_file))
+    res = session.exec_bash(snippet, timeout=1800)
+    if not res.ok:
+        raise RuntimeError(f"probe cache render failed: {res.stderr[-1500:]}")
+    session.get_dir(container_dir, out_dir)
+    n_done = 0
+    for n, p in expected.items():
+        if p.exists():
+            cache[n] = p
+            n_done += 1
+        elif n in missing:
+            logger.warning("probe cache: %s not rendered", n)
+    _df.reset_project(session)
+    return n_done
+
+
 # ---------------------------------------------------------------------------
 # Inline snippet builders — replace prebuilt skill scripts
 # ---------------------------------------------------------------------------

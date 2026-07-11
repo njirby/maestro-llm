@@ -800,8 +800,7 @@ def build_record(
             selected_rows=selected_by_name,
             out_dir=Path(getattr(args, "probe_dir", "outputs/agent_sft/candidate_probes")),
             cache=candidate_audio,
-            notes=notes,
-        )
+                    )
 
     _log("search loop start")
     # ---- Multi-round search loop (REAL builders, not oracle) ----
@@ -1000,8 +999,7 @@ def build_record(
                 selected_rows=selected_by_name,
                 out_dir=Path(getattr(args, "probe_dir", "outputs/agent_sft/candidate_probes")),
                 cache=candidate_audio,
-                notes=notes,
-            )
+                            )
 
         # Judge via REAL builder
         judge_result = build_judge_record(
@@ -1204,8 +1202,7 @@ def build_record(
                     selected_rows=selected_by_name,
                     out_dir=Path(getattr(args, "probe_dir", "outputs/agent_sft/candidate_probes")),
                     cache=candidate_audio,
-                    notes=notes,
-                )
+                                    )
             continue
 
         # Good verdict — render tuple, listen, break
@@ -2136,6 +2133,19 @@ def main() -> None:
     dawfarm_pool: "_dawfarm.DawFarmPool | None" = None
     if args.daw_farm:
         dawfarm_pool = _dawfarm.DawFarmPool.from_spec(args.daw_farm)
+        # Warm the shared candidate-describe probe cache with env-rendered
+        # audio (fixed archetype melody) before the worker fan-out.
+        from scripts.agent_sft_common import warm_candidate_probe_cache_dawfarm
+        _all_names = sorted({wt["name"] for wt in wavetable_lib
+                             if isinstance(wt, dict) and wt.get("name")})
+        with dawfarm_pool.acquire() as _ws:
+            _dawfarm.sync_vital_data(_ws, getattr(args, "daw_farm_vital_data", None))
+            _n = warm_candidate_probe_cache_dawfarm(
+                _ws, _all_names,
+                Path(getattr(args, "probe_dir", "outputs/agent_sft/candidate_probes")),
+                candidate_audio)
+            print(f"probe cache warmed: {_n} env-rendered, "
+                  f"{len(candidate_audio)} total cached", flush=True)
         if len(dawfarm_pool.sessions) < args.workers:
             print(f"NOTE: {args.workers} workers > {len(dawfarm_pool.sessions)} "
                   f"daw-farm sessions — workers will queue for sessions.", flush=True)
