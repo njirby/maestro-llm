@@ -1890,6 +1890,7 @@ def build_record(
             "transcription_output_file": _trans_output_file,
             "random_init": use_random_init,
             "daw_farm_session": dawfarm_session.name if dawfarm_session is not None else None,
+            "determinism_clap": entry.get("determinism_clap"),
         },
     }
 

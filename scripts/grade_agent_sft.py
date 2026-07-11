@@ -1304,12 +1304,23 @@ def _extract_v3_plan_and_narrations(record: dict) -> dict:
         if m.get("role") != "tool_response":
             continue
         c = str(m.get("content", ""))[:300]
-        if '"batch_audio"' not in c:
+        # Batch-listen responses: sim mode paths live under .../batch_audio/,
+        # daw-farm mode uses container paths /work/rollouts/<sid>/batch_*.wav.
+        if '"batch_audio"' not in c and not re.search(
+                r'listen_probe.*/(?:batch|steer)_[^"]*\.wav', c):
             continue
-        if i + 1 >= len(messages):
-            continue
-        nxt = messages[i + 1]
-        if nxt.get("role") != "assistant":
+        # The listen sequence is: bash listen_probe response → Read tool_call
+        # → "<audio>" tool_response → assistant narration. Accept the
+        # narration at i+1 (legacy shape) or i+3 (listen-sequence shape).
+        nxt = None
+        if i + 1 < len(messages) and messages[i + 1].get("role") == "assistant":
+            nxt = messages[i + 1]
+        elif (i + 3 < len(messages)
+              and messages[i + 2].get("role") == "tool_response"
+              and str(messages[i + 2].get("content", "")).strip() == "<audio>"
+              and messages[i + 3].get("role") == "assistant"):
+            nxt = messages[i + 3]
+        if nxt is None:
             continue
         text = str(nxt.get("content", "") or "")
         # Also strip any FINAL ASSESSMENT fold-in on the last batch turn.
@@ -2056,6 +2067,38 @@ def score_main_v3_record(
     else:
         clap_net_improvement = None
 
+    # -- Narration/CLAP consistency (over-claiming detector) --
+    # For each non-correction batch, the narration after the listen must not
+    # contradict the sign of the CLAP delta. Perceptual claims only; "applied
+    # X" statements are neutral. Skipped for render-stochastic samples
+    # (determinism_clap <= 0.95: CLAP deltas are noise there).
+    narration_clap_consistency: float | None = None
+    _det = meta.get("determinism_clap")
+    if (_det is None or _det > 0.95) and len(clap_scores) >= 2:
+        _pos_re = re.compile(
+            r"\b(closer to the target|now matches|sits (?:back )?in line|"
+            r"locks in|improved|much closer|now captures)\b", re.I)
+        _neg_re = re.compile(
+            r"\b(sounds off|doesn'?t sound right|still off|moved away|"
+            r"worse|needs (?:a )?correct)\w*\b", re.I)
+        _narrs = _extract_v3_plan_and_narrations(record).get("narrations", [])
+        checked = clean = 0
+        for bi, (_subsys, _text) in enumerate(_narrs):
+            if bi + 1 >= len(clap_scores):
+                break
+            d = clap_scores[bi + 1] - clap_scores[bi] if bi > 0 else clap_scores[bi] - clap_scores[0]
+            claims_pos = bool(_pos_re.search(_text or ""))
+            claims_neg = bool(_neg_re.search(_text or ""))
+            if not (claims_pos or claims_neg):
+                continue
+            checked += 1
+            if (claims_pos and d < -0.02) or (claims_neg and d > 0.02):
+                pass  # contradiction
+            else:
+                clean += 1
+        if checked:
+            narration_clap_consistency = round(clean / checked, 4)
+
     # -- Diagnosis subsystem coverage (F1-style) --
     truth = set(meta.get("diagnosis_subsystems_truth") or [])
     mentioned = set(meta.get("diagnosis_subsystems_mentioned") or [])
@@ -2146,6 +2189,7 @@ def score_main_v3_record(
         "diagnosis_subsystem_coverage": 0.10,
         "clap_net_improvement": 0.15,
         "verdict_grounded": 0.05,
+        "narration_clap_consistency": 0.05,
         "no_gt_leak": 0.05,
         "file_causality": 0.05,
         "snake_case_clean": 0.025,
@@ -2171,6 +2215,8 @@ def score_main_v3_record(
         "snake_case_clean": snake_case_clean,
         "format_consistent": format_consistent,
         "verdict_grounded": verdict_grounded,
+        "narration_clap_consistency": narration_clap_consistency,
+        "determinism_clap": _det,  # context passthrough, not weighted
         "no_gt_leak": no_gt_leak,
         "file_causality": file_causality,
         "mistake_recovery": mistake_recovery,
