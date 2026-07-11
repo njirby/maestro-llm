@@ -2934,8 +2934,9 @@ def score_record(
 ) -> dict[str, Any]:
     task = record.get("task_type", "")
     meta = record.get("meta", {})
-    # Branch: v3 pipeline records use a different scoring path.
-    if task == "main" and meta.get("pipeline_version") == "v3":
+    # Branch: v3-style pipeline records (incl. v4_unified — same record
+    # schema: batch_labels, target audio, FINAL ASSESSMENT turn).
+    if task == "main" and meta.get("pipeline_version") in ("v3", "v4_unified"):
         scores = score_main_v3_record(
             record, llm_judge_server=llm_judge_server, llm_judge_model=llm_judge_model,
             other_verdicts=other_verdicts,
@@ -3031,7 +3032,7 @@ def grade_file(
     narrations_by_idx: dict[int, list[tuple[str, str]]] = {}
     for i, record in enumerate(rows):
         meta = record.get("meta", {})
-        if record.get("task_type") == "main" and meta.get("pipeline_version") == "v3":
+        if record.get("task_type") == "main" and meta.get("pipeline_version") in ("v3", "v4_unified"):
             extracted = _extract_v3_plan_and_narrations(record)
             if extracted["verdict"]:
                 verdicts_by_idx[i] = extracted["verdict"]
@@ -3104,7 +3105,7 @@ def grade_file(
     # same-subsystem narrations across v3 records. Low diversity = same boilerplate
     # phrases recurring across samples, which structural metrics can't catch.
     v3_indices = [i for i, r in enumerate(rows)
-                  if r.get("task_type") == "main" and r.get("meta", {}).get("pipeline_version") == "v3"]
+                  if r.get("task_type") == "main" and r.get("meta", {}).get("pipeline_version") in ("v3", "v4_unified")]
     diversity_by_idx: dict[int, float | None] = {}
     if len(v3_indices) >= 2:
         narrations_by_idx: dict[int, list[tuple[str, str]]] = {}
