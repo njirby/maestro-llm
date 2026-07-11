@@ -43,6 +43,22 @@ def _load_notes(source_midi_path: str) -> list[dict]:
     return load_notes_from_midi(source_midi_path)
 
 
+_embedder = None
+_embedder_lock = None
+
+
+def _clap_cosine(a, b) -> float:
+    global _embedder, _embedder_lock
+    import threading
+    from scripts.agent_sft_common import ClapEmbedder
+    if _embedder_lock is None:
+        _embedder_lock = threading.Lock()
+    with _embedder_lock:
+        if _embedder is None:
+            _embedder = ClapEmbedder.create("cpu")
+        return float(_embedder.cosine_paths(Path(a), Path(b)))
+
+
 def _rerender_entry(pool: dawfarm.DawFarmPool, entry: dict, vital_data: str) -> str:
     sid = entry["sample_id"]
     pd = json.load(open(entry["path_file"]))
@@ -68,6 +84,14 @@ def _rerender_entry(pool: dawfarm.DawFarmPool, entry: dict, vital_data: str) -> 
             peak = float(np.abs(audio).max())
             if peak < 1e-4:
                 raise RuntimeError(f"{sid}: env render of {wav.name} is silent (peak={peak})")
+        # Determinism ceiling: render the target a second time and CLAP the
+        # two GT renders. Patches with random osc phase / free-running LFOs
+        # are render-stochastic — final CLAP is only interpretable relative
+        # to this per-sample self-similarity.
+        if entry.get("gt_wav"):
+            gt_b = Path(entry["gt_wav"]).with_name(Path(entry["gt_wav"]).stem + "_b.wav")
+            dawfarm.render_preset_in_reaper(s, target, notes, gt_b, tag=f"stage_a_{sid}_b")
+            entry["determinism_clap"] = round(_clap_cosine(entry["gt_wav"], gt_b), 4)
         dawfarm.reset_project(s)
     return sid
 
@@ -97,6 +121,17 @@ def main() -> None:
             except Exception as exc:
                 failed.append(sid)
                 print(f"WARNING: {sid} failed: {exc}", flush=True)
+
+    # Write back the manifest (entries gained determinism_clap), atomically.
+    tmp = args.manifest.with_suffix(".jsonl.tmp")
+    with open(tmp, "w") as f:
+        for e in entries:
+            f.write(json.dumps(e) + "\n")
+    tmp.replace(args.manifest)
+    dets = [e["determinism_clap"] for e in entries if "determinism_clap" in e]
+    if dets:
+        print(f"determinism_clap: min={min(dets):.3f} mean={sum(dets)/len(dets):.3f} "
+              f"(n={len(dets)}; final CLAP is only interpretable relative to this ceiling)")
     print(f"Done: {ok} re-rendered, {len(failed)} failed{': ' + ', '.join(failed) if failed else ''}")
     sys.exit(1 if failed else 0)
 
