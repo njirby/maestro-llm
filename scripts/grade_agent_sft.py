@@ -1298,7 +1298,7 @@ def _extract_v3_plan_and_narrations(record: dict) -> dict:
     # transition lines that reference the NEXT batch and would confuse per-batch
     # judges into seeing a hallucination where there is none.
     _trailer_re = re.compile(
-        r"\n+\s*(Applying|Correcting|Listening)\b[^\n]*$", flags=re.IGNORECASE
+        r"\n+\s*(Applying|Correcting|Listening|Searching)\b[^\n]*$", flags=re.IGNORECASE
     )
     for i, m in enumerate(messages):
         if m.get("role") != "tool_response":
@@ -1307,7 +1307,7 @@ def _extract_v3_plan_and_narrations(record: dict) -> dict:
         # Batch-listen responses: sim mode paths live under .../batch_audio/,
         # daw-farm mode uses container paths /work/rollouts/<sid>/batch_*.wav.
         if '"batch_audio"' not in c and not re.search(
-                r'listen_probe.*/(?:batch|steer)_[^"]*\.wav', c):
+                r'listen_probe.*/(?:batch|steer)_(?![^"]*_correction_)[^"]*\.wav', c):
             continue
         # The listen sequence is: bash listen_probe response → Read tool_call
         # → "<audio>" tool_response → assistant narration. Accept the
