@@ -479,7 +479,7 @@ def build_record(
                 "path_complete": False,
                 "n_remaining": 0,
                 "commentary_mode": "two_stage",
-                "num_agents": int(args.num_agents),
+                "num_agents": n_agents,
                 "pool_top_k": int(args.pool_top_k),
                 "max_batches": int(args.max_batches),
                 "per_param_mistake_rate": float(getattr(args, "per_param_mistake_rate", 0.10) or 0.10),
@@ -1873,7 +1873,7 @@ def build_record(
             "archetype": archetype,
             "start_type": entry.get("start_type", "init"),
             "agent": "main",
-            "num_agents": int(args.num_agents),
+            "num_agents": n_agents,
             "pool_top_k": int(args.pool_top_k),
             "max_batches": int(args.max_batches),
             "per_param_mistake_rate": float(_per_param_rate),
@@ -2026,7 +2026,10 @@ def main() -> None:
     ap.add_argument("--max-samples", type=int, default=256)
     ap.add_argument("--max-batches", type=int, default=16)
     ap.add_argument("--pool-top-k", type=int, default=48)
-    ap.add_argument("--num-agents", type=int, default=4)
+    ap.add_argument("--num-agents", type=int, default=None,
+        help="DEPRECATED and ignored: search agent count is derived from "
+             "library size (ceil(total/candidates-per-slice)).")
+
     ap.add_argument("--candidates-per-slice", type=int, default=48)
     ap.add_argument("--candidates-per-batch", type=int, default=8)
     ap.add_argument("--max-search-rounds", type=int, default=3)
@@ -2065,9 +2068,10 @@ def main() -> None:
     ap.add_argument("--daw-farm-vital-data", default=str(ROOT / "data/prepared/wavetable_lib_vital_dir"),
         help="Host Vital data dir synced into each session (use the generation "
              "library from scripts/export_wavetable_lib_dir.py).")
-    ap.add_argument("--merged-stage2", action="store_true",
+    ap.add_argument("--merged-stage2", action=argparse.BooleanOptionalAction, default=True,
         help="Search agents: single merged stage-2 call per batch instead of "
-             "synthesize+notes (throughput experiment; off by default).")
+             "synthesize+notes. Default on (+32%% throughput, judge-identical "
+             "quality); --no-merged-stage2 restores the split calls.")
     ap.add_argument("--daw-farm-timeout", type=float, default=300.0,
         help="Per-snippet exec timeout in daw-farm mode (seconds).")
     args = ap.parse_args()

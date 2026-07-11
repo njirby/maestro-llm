@@ -121,10 +121,18 @@ DawDreamer renders) fetched out of the session. Snippet paths point at the
 container filesystem (`/work/rollouts/<sample_id>/`, `/tmp/agents/<sid>/`) —
 the same view the model has at inference time.
 
+**Validated production config (2026-07-11)**: 30B TP4 server + 20
+containers/workers + merged stage-2 (default) → ~57 rollouts/hr on the
+4×3090 box. At 8 workers the server is underfed (avg 23/32 running seqs);
+20 saturates it — measure with `scripts/vllm_concurrency_monitor.sh`.
+Qwen2.5-Omni-7B as a 4-replica fleet (`scripts/serve_qwen25_omni_7b_fleet.sh`,
+router via comma-separated `--omni-server`) is ~1.8× faster but produces
+degenerate narration (garbled perceptual descriptions) — experiments only.
+
 ```bash
 # bring up sessions (one per --workers is ideal)
-cd ~/daw-farm && docker compose up -d --scale reaper=8
-# k8s alternative: ./bin/dawfarm new -c 8
+cd ~/daw-farm && docker compose up -d --scale reaper=20
+# k8s alternative: ./bin/dawfarm new -c 20
 
 # re-render stage A's model-visible audio (gt_wav/default_wav) through the
 # environment itself — training targets must come from the same engine and
@@ -134,7 +142,9 @@ python scripts/rerender_manifest_dawfarm.py --manifest outputs/iter_sft/manifest
 python scripts/build_main_agent_sft_v3.py \
     ... same flags as above ... \
     --daw-farm docker \
-    --workers 8
+    --workers 20
+# unified v4 (main+search+judge+transcription in one pass) takes the same
+# --daw-farm flags; merged stage-2 is default (--no-merged-stage2 to split)
 ```
 
 - `--daw-farm docker[:name1,name2]` / `--daw-farm k8s[:pod1,pod2]` — backend
