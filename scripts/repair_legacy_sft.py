@@ -170,6 +170,75 @@ def repair_main(record: dict, presets_dir: Path, stats: dict) -> dict | None:
     return record
 
 
+_DISPATCH_KEY_RE = {
+    "search_v2": lambda rid: ("search-r{}-a{}".format(*__import__("re").match(r".*_r(\d+)_agent(\d+)_search$", rid).groups())
+                              if __import__("re").match(r".*_r(\d+)_agent(\d+)_search$", rid) else None),
+    "judge": lambda rid: ("judge-{}".format(__import__("re").match(r".*_r(\d+)_judge$", rid).group(1))
+                          if __import__("re").match(r".*_r(\d+)_judge$", rid) else "judge-1"),
+    "melody_transcription": lambda rid: "transcribe",
+}
+
+
+def align_subagents(source: Path, out_dir: Path) -> dict:
+    """D1: rewrite subagent record openers to the paired main's dispatch
+    prompt text (audio attachment position preserved). Join: sample_id +
+    dispatch name (search-rR-aN / judge-R / transcribe-<sid>)."""
+    import re as _re
+    # 1. dispatch prompt lookup from ALL original mains (prompts aren't the leak)
+    lookup: dict[tuple, str] = {}
+    for line in open(source):
+        r = json.loads(line)
+        if r.get("task_type") != "main":
+            continue
+        sid = r.get("meta", {}).get("sample_id", "")
+        for m in r["messages"]:
+            if m.get("role") != "tool_call" or '"Agent"' not in str(m.get("content", ""))[:20]:
+                continue
+            a = json.loads(m["content"]).get("arguments", {})
+            name = a.get("name", "")
+            if name.startswith("transcribe-"):
+                key = (sid, "transcribe")
+            else:
+                key = (sid, name)
+            lookup[key] = a.get("prompt", "")
+    stats = {"aligned": 0, "fallback_kept": 0, "by_type": {}}
+    outs = {t: open(out_dir / f"{short}_aligned.jsonl", "w")
+            for t, short in (("search_v2", "search"), ("judge", "judge"),
+                             ("melody_transcription", "transcription"))}
+    for line in open(source):
+        r = json.loads(line)
+        t = r.get("task_type")
+        if t not in outs:
+            continue
+        sid = r.get("meta", {}).get("sample_id", "")
+        rid = r.get("id", "")
+        if t == "search_v2":
+            m = _re.match(r".*_r(\d+)_agent(\d+)_search$", rid)
+            key = (sid, f"search-r{m.group(1)}-a{m.group(2)}") if m else None
+        elif t == "judge":
+            m = _re.match(r".*_r(\d+)_judge$", rid)
+            key = (sid, f"judge-{m.group(1)}") if m else (sid, "judge-1")
+        else:
+            key = (sid, "transcribe")
+        prompt = lookup.get(key) if key else None
+        first = r["messages"][0]
+        if prompt and first.get("role") == "user" and str(first.get("content", "")).startswith("<audio>"):
+            first["content"] = "<audio>\n" + prompt
+            stats["aligned"] += 1
+        else:
+            stats["fallback_kept"] += 1
+        stats["by_type"][t] = stats["by_type"].get(t, 0) + 1
+        try:
+            assert_valid_ms_swift_multiturn_record(r)
+            outs[t].write(json.dumps(r, ensure_ascii=False) + "\n")
+        except Exception:
+            stats.setdefault("schema_dropped", 0)
+            stats["schema_dropped"] = stats.get("schema_dropped", 0) + 1
+    for f in outs.values():
+        f.close()
+    return stats
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, type=Path)
@@ -198,6 +267,8 @@ def main() -> None:
             stats["kept"] += 1
             out_main.write(json.dumps(rep, ensure_ascii=False) + "\n")
     out_main.close()
+    astats = align_subagents(args.input, args.out_dir)
+    stats["align_subagents"] = astats
     with open(args.out_dir / "repair_report.json", "w") as f:
         json.dump(stats, f, indent=2)
     print(json.dumps(stats, indent=2))

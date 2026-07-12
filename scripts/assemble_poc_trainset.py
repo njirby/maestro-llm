@@ -37,11 +37,20 @@ def main() -> None:
     main_clips = sum(len(r.get("audios", [])) for r in mains)
 
     pools: dict[str, list] = {"search_v2": [], "judge": [], "melody_transcription": []}
-    for line in open(args.source):
-        r = json.loads(line)
-        t = r.get("task_type")
-        if t in pools:
-            pools[t].append(r)
+    # Prefer contract-aligned subagent files (D1) beside the repaired mains;
+    # fall back to the raw source otherwise.
+    aligned = {"search_v2": args.repaired.parent / "search_aligned.jsonl",
+               "judge": args.repaired.parent / "judge_aligned.jsonl",
+               "melody_transcription": args.repaired.parent / "transcription_aligned.jsonl"}
+    if all(p.exists() for p in aligned.values()):
+        for t, path in aligned.items():
+            pools[t] = [json.loads(l) for l in open(path)]
+    else:
+        for line in open(args.source):
+            r = json.loads(line)
+            t = r.get("task_type")
+            if t in pools:
+                pools[t].append(r)
 
     def sample_to_clips(records: list, target_clips: float) -> list:
         rng.shuffle(records)
