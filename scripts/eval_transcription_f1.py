@@ -93,6 +93,10 @@ def extract_code(msg: dict) -> str | None:
     fm = _CODE_FENCE_RE.search(text)
     if fm:
         return fm.group(1)
+    # raw-code emission (trained format): slice from the first import line
+    im = re.search(r"^import \w+", text, re.M)
+    if im and ("MIDI_InsertNote" in text or "notes = [" in text or "notes=[" in text):
+        return text[im.start():]
     if "MIDI_InsertNote" in text:
         return text
     return None
@@ -147,7 +151,7 @@ def main() -> None:
                     {"type": "input_audio", "input_audio": {"data": b64, "format": "wav"}},
                     {"type": "text", "text": prompt_text},
                 ]}],
-                "max_tokens": 1200, "temperature": 0.2,
+                "max_tokens": 2600, "temperature": 0.2,
             }, timeout=600)
             msg = r.json()["choices"][0]["message"]
         except Exception as exc:
