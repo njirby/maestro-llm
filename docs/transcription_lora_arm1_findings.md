@@ -68,3 +68,23 @@ Same lr/rank/alpha/packing for a clean A/B on the pitch-anchor question.
 If pitch F1 (exact) doesn't move materially, the encoder can't be taught an
 absolute-pitch reference by LoRA → arm 3 discussion (unfrozen encoder / 30B /
 lower-level pitch features).
+
+---
+
+## Arm 2 mid-run reading (checkpoint-200, iteration 200/1,046, 2026-08-12)
+
+Same recipe + `--freeze-vit false --freeze-aligner false` (LoRA on audio tower
++ aligner; 384 tower adapter tensors verified saving/learning/resuming).
+Head-to-head vs arm 1 at identical iteration, same 30 val samples:
+
+| metric | arm 1 frozen | arm 2 tower | Δ |
+|---|---|---|---|
+| pitch F1 exact | 0.147 (med 0.02) | 0.246 (med 0.13) | +67% |
+| pitch F1 transp-corrected | 0.530 | 0.623 | +18% |
+| onset-only F1 | 0.555 | 0.866 | +56% |
+| in-key melodies | 4/30 | 6/29 | — |
+
+Rhythm nearly solved; contour better; absolute-pitch anchor improving but
+still the weak link at <1 epoch. Run continuing to 4 epochs (wandb 0u02eucq).
+Val loss @250 also better than arm 1 (0.073 vs 0.083). Eval artifacts:
+outputs/transcription_lora/eval_v2_ckpt200.json.
