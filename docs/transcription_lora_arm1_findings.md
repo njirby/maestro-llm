@@ -165,3 +165,23 @@ Verdict: **feasible with more data and train time**; remaining gaps are
 characterized and have known levers (data diversity/volume, register
 conventions, longer training, best-of-k render-verify at serving, optional
 30B base). Transcription POC is closed; attention moves to the search agent.
+
+## Scaling estimate: what "good" transcription likely costs
+
+Measured: 8,667 records (~70% effectively unique melodies), tower LoRA,
+exact pitch F1 reached ~0.29 (greedy) at iter 775 (~3 epochs), slope still
+~+0.02/100 iters at stop, no train/val gap. Assumptions: fresh env-native
+data (Lakh melodies, register conventions) at least matches legacy data's
+per-token value; slope decays roughly geometrically past 3 epochs; contour
+ceiling (~0.68) is the practical one-shot limit until the anchor locks.
+
+Estimate for one-shot greedy exact F1 ≈ 0.55-0.65 (near contour ceiling):
+- **30-50k diverse transcription rollouts** (3.5-6x current volume),
+- **3-4 epochs ≈ 350-700M training tokens** (5-10x current spend),
+- on this 4x3090 box: roughly **4-8 days** of training at measured
+  throughput; days, not weeks, of daw-farm generation (transcription-only
+  rollouts are cheap relative to full unified).
+With best-of-k render-verify at serving (est. +0.1-0.2 effective), a
+deployable ~0.7 effective transcription looks reachable at this scale.
+Bass register stays capped by the front-end floor unless the calibration
+tone / octave conventions are added to the data — include them in the regen.
