@@ -88,3 +88,40 @@ Rhythm nearly solved; contour better; absolute-pitch anchor improving but
 still the weak link at <1 epoch. Run continuing to 4 epochs (wandb 0u02eucq).
 Val loss @250 also better than arm 1 (0.073 vs 0.083). Eval artifacts:
 outputs/transcription_lora/eval_v2_ckpt200.json.
+
+## Arm 2 deep-dive (2026-08-13, checkpoints 500-700 + diagnostics)
+
+Trajectory (fixed 30-sample val, temp 0.2 protocol): exact pitch F1
+0.246 (it200) → 0.266 → 0.300 → 0.321 → 0.334 (it700, 2.7 epochs), linear,
+no plateau. Contour (transp-corrected) saturated ~0.66-0.69 from it500;
+rhythm solved (onset-only 0.866). Gains come from the absolute-pitch anchor
+slowly sharpening (in-key 6→8/28).
+
+Key findings:
+- **Per-sample churn**: only 3/30 melodies improve monotonically; the mean
+  hides violent per-sample flapping (0↔1 across checkpoints). With strong
+  contour, each generation ≈ a key guess: land it → ~1, miss → ~0.
+- **Temp 0 vs 0.2 at ckpt-700**: greedy 0.291 vs sampled 0.334 — the sampled
+  number included luck. 23/28 samples identical; 5 flipped ≥0.3 in BOTH
+  directions → correct keys carry real probability mass but often aren't the
+  mode. Headline numbers are temp-0 from now on.
+- **Majority-key voting is invalid** (converges to the mode = greedy).
+  The right exploitation is **best-of-k render-verify**: sample k, render
+  each in REAPER, select by audio similarity — the trained verify loop as
+  parallel selection. Est. 0.29 → ~0.45+ with current weights.
+- **No train/val gap** (two train slices: 0.131, 0.314 vs val 0.334) → not
+  data-volume-bound. Also: 30-sample slices carry ±0.1 slice noise —
+  go/no-go comparisons need 100+ samples.
+- **A440 inference probe negative but informative**: 26/28 generations
+  transcribed the tone as a note and it dragged the register guess upward —
+  the model attends to reference audio; needs the convention trained in.
+- Error taxonomy (ckpt-700): errors are whole-melody transposition + local
+  noise, NOT octave confusion (7% octave, 62% far). Note counts good
+  (61% exact). Keys 0.387 > bass 0.300 — low-register fundamentals are the
+  weak spot (mel resolution story) → target bass-heavy data in arm 3.
+- Retranscription records are partially OOD at first-turn eval (their
+  dispatch text references prior state) — 2 of the stuck-at-0 samples.
+
+Next: finish 4 epochs → temp-0 100-sample final eval + best-of-5
+render-verify probe → arm-3 ranking: trained-in reference tone,
+low-register data emphasis, larger/unfrozen audio path.
