@@ -185,3 +185,17 @@ With best-of-k render-verify at serving (est. +0.1-0.2 effective), a
 deployable ~0.7 effective transcription looks reachable at this scale.
 Bass register stays capped by the front-end floor unless the calibration
 tone / octave conventions are added to the data — include them in the regen.
+
+## Design note: next-gen SEARCH rollout format (2026-08-14)
+
+Current search records ≈ 22k tokens (≈10k audio from 49×8.2s clips, ≈2k+
+per-candidate prose). For future generation:
+- Terse structured verdicts for rejects ("'<name>': bright, metallic, sharp
+  attack — no", ~10 tok) instead of 40-token sentences; keep one full
+  sentence only for shortlisted candidates (the judge consumes only names,
+  so reject-prose is training scaffolding — keep it as compressed CoT, not
+  flowing text; zero-rationale risks discrimination accuracy + loses the
+  timbre-vocabulary↔spectra grounding signal).
+- Shorten probes 8.2s → ~4s: halves the audio-token budget (bigger lever
+  than text). Combined: ~22k → ~10-11k tok/record ≈ 2× training throughput.
+- Testable: small terse-format corpus vs verbose baseline on selection eval.
