@@ -148,3 +148,20 @@ eval protocol.
 Assets: best checkpoint v2/checkpoint-750 (~0.29 greedy exact, rhythm
 solved, contour 0.68); eval stack (swift-infer + container scoring);
 best-of-k render-verify identified as serving-time amplifier (untested).
+
+## CONCLUSION: transcription agent — feasibility PROVEN (2026-08-14)
+
+Two independent POC attempts both cleared the bar:
+1. **POC 1 (earlier)**: Lua actions, default preset only — demonstrated the
+   basic audio→MIDI→DAW loop.
+2. **POC 2 (this experiment)**: Python/reapy with per-sample presets —
+   r128 LoRA on Qwen2.5-Omni-7B (audio tower + aligner trainable) reaches
+   ~0.29 greedy exact pitch F1 / 0.68 contour / rhythm solved, with the
+   F1 curve still climbing at stop, no train/val gap, errors concentrated
+   where the front-end physics predicts, and 100% executable tool output
+   under the trained prefix.
+
+Verdict: **feasible with more data and train time**; remaining gaps are
+characterized and have known levers (data diversity/volume, register
+conventions, longer training, best-of-k render-verify at serving, optional
+30B base). Transcription POC is closed; attention moves to the search agent.
