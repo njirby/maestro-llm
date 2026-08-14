@@ -125,3 +125,26 @@ Key findings:
 Next: finish 4 epochs → temp-0 100-sample final eval + best-of-5
 render-verify probe → arm-3 ranking: trained-in reference tone,
 low-register data emphasis, larger/unfrozen audio path.
+
+## Experiment closed (2026-08-14, stopped at iter 775/1046, ~3 epochs)
+
+Decision: architecture exonerated for mid/high register (keys: mean 0.43,
+zero total failures, graded degradation with polyphony density; several
+low scorers are human-hard). Remaining fundamentals are only (1) the
+sub-100Hz mel/STFT floor for bass (physical; mitigate via data conventions)
+and (2) Qwen2.5's 2s attention blinders (absent in Qwen3-Omni's 8s windows;
+same mel front-end though — bass floor carries over).
+
+**Verdict: next arm is a DATA arm** — env-native transcription generation
+(daw-farm) with Lakh melodies (diversity, no duplicates), register-balanced
+with a bass convention (under-clip calibration tone and/or octave rule),
+polyphony-density curriculum, 2-4x volume — and longer training (curve was
+still climbing at stop). Base-model choice gated on a Qwen3-Omni-30B
+zero-shot ear test. Recipe fixes for the next run: audio-only target regex
+(drop 102M dead visual adapters), marker-token fix (cooler lr or
+modules_to_save or plain-text markers), eval_iters>1, temp-0/100-sample
+eval protocol.
+
+Assets: best checkpoint v2/checkpoint-750 (~0.29 greedy exact, rhythm
+solved, contour 0.68); eval stack (swift-infer + container scoring);
+best-of-k render-verify identified as serving-time amplifier (untested).
