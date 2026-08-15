@@ -218,3 +218,37 @@ selectivity rising. Val loss also flat (0.35-0.37) — unlike transcription,
 both metrics plateau together. Caveats: LR peak is at iter ~550 (not yet
 reached at last eval); 20-record slices resolve only coarse moves.
 Decision pending the iter-600 eval (40 records incl. GT-absent half).
+
+## SEARCH POC ROOT CAUSE (2026-08-15): probe renders never apply wavetables
+
+User-confirmed by ear, measured, and traced to code:
+- maestro/render/dawdreamer.py applies presets via set_parameter() ONLY
+  (its own docstring: non-automatable state — WAVETABLES, mod routing, LFO
+  shapes — cannot be set that way, and load_state() doesn't commit headless).
+- Every candidate probe (legacy cache outputs/agent_sft/candidate_probes,
+  564 files) rendered on Vital's DEFAULT wavetable: within-shard spectral
+  centroid spread ~29 Hz, mel signatures identical, CLAP undiscriminating.
+  The search/judge corpora's audio evidence is content-free; assessments
+  were oracle-fabricated; selection labels oracle-forced. The trained
+  model's 0.5 GT-recall = text-cue reading; audio discrimination was never
+  testable. Model exonerated; experiment invalid as an audio test.
+- **The CURRENT daw-farm search snippet has the same bug** (renders probes
+  via the same DawDreamer path in-container): measured 39 Hz spread across
+  8 wavetables incl. sine-vs-saw. Any regen MUST fix probe rendering first.
+- Transcription data was UNAFFECTED: its renders go through REAPER
+  (chunk-load into track FX + action 42230), which applies full preset
+  state — why that POC was valid.
+
+Fix options for probe rendering, ranked:
+1. Render probes via REAPER chunk path (render_preset_in_reaper) — known
+  to apply wavetables; slower (serial per session) but 20 containers.
+2. Try DawDreamer load_state WITH editor window under the container's Xvfb
+  (the X11-error-handler machinery in dawdreamer.py suggests it was
+  attempted; containers have displays — may work where headless didn't).
+3. Pre-render the full probe library once per melody-archetype via REAPER
+  into a proper cache (amortized).
+
+MANDATORY regen gate: probe discriminability check — centroid/mel spread
+across wavetables must be large before any rollout generation runs.
+Lesson recorded: validate INFORMATION CONTENT of generated audio, not just
+file existence/non-silence.
