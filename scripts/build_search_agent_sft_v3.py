@@ -111,6 +111,9 @@ def shard_descriptors(paths_by_name: dict[str, str]
     """Descriptor triples for a whole shard, computed relative to the shard's
     own feature distribution so characterizations always spread out."""
     feats = {n: audio_features(p) for n, p in paths_by_name.items()}
+    # ~8 of 282 library wavetables render silent deterministically (empty or
+    # degenerate tables). They are labeled "'name': silent — no" and never
+    # shortlisted: correct behavior, not a render failure.
     live = {n: f for n, f in feats.items() if not f.get("silent")}
     if not live:
         return {n: ["silent"] for n in feats}, feats
@@ -352,12 +355,39 @@ def build_search_record_v3(
 
     final_shortlist = list(shortlist)
     shortlist_str = ", ".join(f'"{n}"' for n in final_shortlist)
+
+    batches = [shard[i:i + candidates_per_batch]
+               for i in range(0, len(shard), candidates_per_batch)]
+
+    def _build_final_content() -> str:
+        """The subagent's final message. Built identically whether or not the
+        standalone search record is kept for training — at inference the real
+        subagent always emits this full form, so the main agent's task_result
+        must never see a truncated variant (contract drift, 2026-08-15)."""
+        last_batch_verdicts = "\n".join(
+            terse_verdict(n, feats[n][1], n in set(final_shortlist), hedged)
+            for n in batches[-1]) if batches else ""
+        sentences = shortlist_sentences(
+            final_shortlist, {n: feats[n][1] for n in shard}, archetype,
+            stage2_server, stage2_model)
+        parts = []
+        if last_batch_verdicts:
+            parts.append(last_batch_verdicts)
+        if hedged and final_shortlist:
+            parts.append(
+                "No candidate clears the similarity bar in this slice; flagging "
+                "the closest matches as best-available for the judge.")
+        parts.extend(sentences[n] for n in final_shortlist)
+        parts.append(
+            f"Shortlist: [{shortlist_str}]. {len(final_shortlist)} candidate(s) "
+            f"flagged for the judge agent.")
+        return "\n\n".join(parts)
+
     if pool_only:
-        final = (f"Shortlist: [{shortlist_str}]. {len(final_shortlist)} candidate(s) "
-                 f"flagged for the judge agent.")
         return SearchResultV3(record=None, shortlist=final_shortlist,
                               shard_start=shard_start, shard_end=shard_end,
-                              final_message=final, meta=verdict_meta)
+                              final_message=_build_final_content(),
+                              meta=verdict_meta)
 
     # --- conversation ---
     messages: list[dict] = []
@@ -383,8 +413,6 @@ def build_search_record_v3(
     messages.append(oc_bash_call_msg(render_cmd))
     messages.append(oc_bash_response_msg(rres.stdout))
 
-    batches = [shard[i:i + candidates_per_batch]
-               for i in range(0, len(shard), candidates_per_batch)]
     pending_verdicts: str | None = None
     for bi, batch in enumerate(batches):
         intro = f"Listening to batch {bi + 1} of {len(batches)}."
@@ -400,21 +428,7 @@ def build_search_record_v3(
                  for n in batch]
         pending_verdicts = "\n".join(lines)
 
-    sentences = shortlist_sentences(
-        final_shortlist, {n: feats[n][1] for n in shard}, archetype,
-        stage2_server, stage2_model)
-    closing_parts = []
-    if pending_verdicts:
-        closing_parts.append(pending_verdicts)
-    if hedged and final_shortlist:
-        closing_parts.append(
-            "No candidate clears the similarity bar in this slice; flagging the "
-            "closest matches as best-available for the judge.")
-    closing_parts.extend(sentences[n] for n in final_shortlist)
-    closing_parts.append(
-        f"Shortlist: [{shortlist_str}]. {len(final_shortlist)} candidate(s) "
-        f"flagged for the judge agent.")
-    final_content = "\n\n".join(closing_parts)
+    final_content = _build_final_content()
     messages.append({"role": "assistant", "content": final_content})
 
     shortlist_path = None

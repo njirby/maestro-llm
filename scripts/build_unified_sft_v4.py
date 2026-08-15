@@ -562,7 +562,8 @@ def build_record(
     # Output dirs (needed before the transcription block below).
     tuple_audio_dir = Path(args.out_dir) / "tuple_audio" / sample_id
     tuple_audio_dir.mkdir(parents=True, exist_ok=True)
-    search_probe_dir = Path(args.out_dir) / "search_probe_audio"
+    search_probe_dir = Path(getattr(args, "search_probe_dir", None)
+                            or (Path(args.out_dir) / "search_probe_audio"))
     judge_probe_dir = Path(args.out_dir) / "judge_probe_audio"
     transcription_dir = Path(args.out_dir) / "transcription_audio"
 
@@ -677,12 +678,8 @@ def build_record(
                 dawfarm_session.put(_trans_notes_file, _trans_notes_file)
 
             # Dispatch transcription subagent (track with Vital created above)
-            _dispatch_prompt = (
-                f"Target: {target_audio_path}. Track: {_trans_track_idx}. Write Python "
-                f"(reapy → MIDI_InsertNote) that inserts the MIDI "
-                f"notes on that track. After inserting, render and listen to verify "
-                f"it matches the target melody."
-            )
+            _dispatch_prompt = _oc.transcription_dispatch_prompt(
+                target_audio_path, _trans_track_idx)
             write_agent_manifest(
                 agent_id=_trans_agent_id,
                 subagent_type="melody_transcription",
@@ -1916,6 +1913,33 @@ def build_record(
         "applied_wavetable_names": applied_wt_names,
     })
 
+    # Contract assertion (D1 class): every task call's prompt must equal the
+    # linked subagent record's opening user text minus the <audio> tag. A
+    # mismatch means the deployed subagent would receive wording it never saw
+    # in training — the failure that broke the first POC.
+    _sub_openers: dict[str, list[str]] = {}
+    for _r in (list(search_records) + list(judge_records) + list(transcription_records)):
+        _t = (_r.get("messages") or [{}])[1].get("content", "") if len(_r.get("messages", [])) > 1 else ""
+        _sub_openers.setdefault(_r.get("task_type", ""), []).append(
+            _t.replace("<audio>\n", "", 1).strip())
+    _all_openers = {t for lst in _sub_openers.values() for t in lst}
+    for _m in messages:
+        if _m.get("role") != "tool_call":
+            continue
+        try:
+            _tc = json.loads(_m["content"])
+        except Exception:
+            continue
+        if _tc.get("name") != "task":
+            continue
+        _prompt = (_tc.get("arguments") or {}).get("prompt", "").strip()
+        if _all_openers and _prompt not in _all_openers:
+            raise RuntimeError(
+                f"{sample_id}: task dispatch prompt has no matching subagent "
+                f"opener (contract drift). subagent_type="
+                f"{_tc['arguments'].get('subagent_type')!r} prompt[:120]="
+                f"{_prompt[:120]!r}")
+
     assert_valid_ms_swift_multiturn_record(record)
     return record, search_records, judge_records, transcription_records
 
@@ -2046,6 +2070,8 @@ def main() -> None:
         help="Fraction of samples starting with 1-4 GT subsystems pre-applied.")
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--clap-device", default="cuda:0")
+    ap.add_argument("--search-probe-dir", type=Path, default=None,
+                    help="reuse probe wavs from another run (paths key the CLAP cache)")
     ap.add_argument("--clap-cache", type=Path, default=None,
                     help="Pre-computed CLAP cache .npz (from precompute_clap_cache.py)")
     ap.add_argument("--omni-server", default="")
