@@ -17,8 +17,11 @@ divergences between the two systems (e.g. ``osc_1_on`` → "Oscillator 1
 Switch", ``chorus_cutoff`` → "Chorus Filter Cutoff").
 
 Non-automatable state (wavetables, modulation routing, LFO shapes) cannot
-be set via ``set_parameter()`` and ``load_state()`` doesn't apply on
-headless Linux (Vital requires a GUI editor window to commit state).
+be set via ``set_parameter()``. It IS applied via ``load_state()``, which
+works headless when an X display (e.g. Xvfb) is available and the non-fatal
+X11 error handler is installed before importing dawdreamer (verified in the
+daw-farm containers, renderer bake-off 2026-08-15). The historical claim
+that load_state requires a GUI editor window is false under Xvfb.
 For wavetable changes, use vita or REAPER+reapy with the chunk API.
 """
 from __future__ import annotations
@@ -261,7 +264,30 @@ def _render_worker(req_q, resp_q, vst3_path, sample_rate, block_size):
         preset_json, notes, tail_s = msg
         try:
             preset_dict = json.loads(preset_json)
-            _apply_preset_params(synth, preset_dict, mapping, param_ranges)
+            # Full-state application via load_state(): the ONLY path that
+            # commits non-automatable state (wavetables, mod routing, LFO
+            # shapes). Verified working headless under the daw-farm Xvfb
+            # with the X11 error handler installed above (renderer bake-off,
+            # 2026-08-15: 9,422 Hz probe centroid spread vs 2 Hz without).
+            # set_parameter-only application silently renders the default
+            # wavetable and MUST NOT be the primary path.
+            try:
+                state_blob = _build_dawdreamer_state(preset_dict)
+                state_path = os.path.join(
+                    tempfile.gettempdir(), f"dd_state_{os.getpid()}.vstate")
+                with open(state_path, "wb") as sf_:
+                    sf_.write(state_blob)
+                synth.load_state(state_path)
+            except Exception as state_exc:
+                # Param-only fallback: numeric params apply, wavetables DO NOT.
+                # Loud on purpose — silent use of this path produced an entire
+                # corpus of identical probe renders (2026-08-15 postmortem).
+                print(
+                    f"[dawdreamer] WARNING: load_state failed ({state_exc}); "
+                    "falling back to set_parameter-only — WAVETABLES/MOD/LFO "
+                    "STATE WILL NOT APPLY. Renders may be timbrally invalid.",
+                    file=sys.stderr, flush=True)
+                _apply_preset_params(synth, preset_dict, mapping, param_ranges)
 
             synth.clear_midi()
             for pitch, vel, start, dur in notes:
