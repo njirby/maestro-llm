@@ -1825,16 +1825,25 @@ def execute_for_traceback(
     cwd: str,
     timeout: float = 15.0,
     session: Any | None = None,
+    as_bash: bool = False,
 ) -> str | None:
-    """Run broken Python in subprocess, return stderr if it failed.
+    """Run broken code in a subprocess, return stderr if it failed.
 
     With *session* (a maestro.reaper.dawfarm.DawFarmSession), the code runs
     inside the daw-farm container instead — the traceback then comes from
     the same environment the rest of the rollout executed in.
+
+    *as_bash* treats ``broken_code`` as a full shell command (the exact
+    string the rollout emits, e.g. an already ``_wrap_as_bash``-wrapped
+    heredoc) rather than as bare Python to be wrapped here. Use it whenever
+    the traceback must come from executing precisely what the model wrote.
     """
     if session is not None:
         try:
-            res = session.exec_python(broken_code, timeout=timeout)
+            if as_bash:
+                res = session.exec_bash(broken_code, timeout=timeout)
+            else:
+                res = session.exec_python(broken_code, timeout=timeout)
         except Exception as exc:
             logger.warning("execute_for_traceback (daw-farm) failed: %s", exc)
             return None
@@ -1843,7 +1852,8 @@ def execute_for_traceback(
         return None
     try:
         proc = subprocess.run(
-            ["bash", "-c", f"python3 - <<'PY'\n{broken_code}\nPY"],
+            ["bash", "-c",
+             broken_code if as_bash else f"python3 - <<'PY'\n{broken_code}\nPY"],
             capture_output=True, text=True, timeout=timeout, cwd=cwd,
         )
     except subprocess.TimeoutExpired:
@@ -1877,6 +1887,84 @@ def emit_code_mistake_sequence(
     messages.append(_tool_call("Bash", {"command": _wrap_as_bash(broken_cmd)}))
     messages.append(_bash_tool_response(stdout="", stderr=traceback_stderr))
     messages.append({"role": "assistant", "content": mutation.diagnosis})
+
+
+def oc_emit_code_mistake_sequence(
+    messages: list[dict],
+    broken_cmd: str,
+    traceback_stderr: str,
+    mutation: CodeMutation,
+) -> None:
+    """opencode-contract error->diagnosis emission.
+
+    ``broken_cmd`` is the FULL bash command as the model would emit it (the
+    same string that was executed to obtain ``traceback_stderr`` — never a
+    fabricated trace). Emits:
+      1. tool_call     (broken bash)
+      2. tool_response (real traceback, via the contract's failure shape)
+      3. assistant     (diagnosis naming the error + the fix)
+    The caller then appends the correct tool_call + success tool_response,
+    completing the error->recovery pattern.
+    """
+    messages.append(oc_bash_call_msg(broken_cmd))
+    messages.append(oc_bash_response_msg("", exit_code=1, stderr=traceback_stderr))
+    messages.append({"role": "assistant", "content": mutation.diagnosis})
+
+
+# ---------------------------------------------------------------------------
+# Search round coverage — honest partial-library auditions
+# ---------------------------------------------------------------------------
+
+
+def compute_round_coverage(
+    total: int, coverage: float, rng: random.Random,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Split the library into a round-1 audition window and its complement.
+
+    Round 1 auditions a contiguous (wrapped) window covering ``coverage`` of
+    the library; round 2 auditions exactly the rest. Together the two rounds
+    cover [0, total) once, with no wavetable auditioned twice.
+
+    This replaces the old forced-miss: making an agent audition the GT and
+    then decline to shortlist it contradicts evidence-derived labels (a GT
+    probe scores 1.0 against itself). Partial coverage produces an HONEST
+    miss — the GT was never heard — and matches inference reality, where a
+    large library cannot be fully auditioned every time.
+
+    Returns (round1_regions, round2_regions) as [(start, end)] half-open
+    index regions; round2 is empty when coverage covers everything.
+    """
+    total = max(0, int(total))
+    if total == 0:
+        return [], []
+    k = int(round(float(coverage) * total))
+    k = max(1, min(total, k))
+    if k >= total:
+        return [(0, total)], []
+    off = rng.randrange(total)
+    end = off + k
+    if end <= total:
+        r1 = [(off, end)]
+        r2 = [(end, total), (0, off)]
+    else:
+        wrapped = end - total
+        r1 = [(off, total), (0, wrapped)]
+        r2 = [(wrapped, off)]
+    _clean = lambda rs: [(a, b) for a, b in rs if b > a]  # noqa: E731
+    return _clean(r1), _clean(r2)
+
+
+def slices_for_regions(
+    regions: list[tuple[int, int]], slice_size: int,
+) -> list[tuple[int, int]]:
+    """Chop index regions into contiguous agent shards of at most slice_size."""
+    out: list[tuple[int, int]] = []
+    for a, b in regions:
+        s = a
+        while s < b:
+            out.append((s, min(s + slice_size, b)))
+            s += slice_size
+    return out
 
 
 # ---------------------------------------------------------------------------
