@@ -199,3 +199,22 @@ per-candidate prose). For future generation:
 - Shorten probes 8.2s → ~4s: halves the audio-token budget (bigger lever
   than text). Combined: ~22k → ~10-11k tok/record ≈ 2× training throughput.
 - Testable: small terse-format corpus vs verbose baseline on selection eval.
+
+## Search-agent POC — interim (2026-08-15)
+
+Training: search_r128_tower_v1 on 43,943 legacy search records (lazy encode,
+no packing, ~175 s/it, save/val every 40 iters). Env validation passed
+(snippets execute clean in containers; wavetable library map changed since
+recording — records internally consistent; recompute GT presence for any
+env-native eval).
+
+Selection eval (20 GT-in-shard records, temp 0, teacher-forced context):
+| iter | GT recall | shortlist size | parse |
+| 200  | 0.47      | 4.5            | 90%   |
+| 320  | 0.55      | 2.75           | 100%  |
+| 440  | 0.43      | 2.2            | 100%  |
+Recall flat at ~0.5 ± 0.11 since iter 200 (≈10× chance for 2.2-of-48 picks);
+selectivity rising. Val loss also flat (0.35-0.37) — unlike transcription,
+both metrics plateau together. Caveats: LR peak is at iter ~550 (not yet
+reached at last eval); 20-record slices resolve only coarse moves.
+Decision pending the iter-600 eval (40 records incl. GT-absent half).
