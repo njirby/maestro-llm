@@ -50,7 +50,7 @@ import numpy as np
 
 from scripts.agent_sft_common import (  # type: ignore
     DawFarmRolloutCtx,
-    assert_valid_ms_swift_multiturn_record,
+    assert_valid_oc_record as assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_name_embedding_map,
     build_render_probes_snippet,
@@ -61,9 +61,9 @@ from scripts.agent_sft_common import (  # type: ignore
     load_manifest_entries,
     load_wavetable_lib,
     select_probe_rows_by_name,
-    _bash_tool_response,
-    _read_tool_response_audio,
-    _tool_call as _tool_call_common,
+    oc_compat_bash_response as _bash_tool_response,
+    oc_compat_read_response_audio as _read_tool_response_audio,
+    oc_compat_tool_call as _tool_call_common,
     _wrap_as_bash,
 )
 from scripts.build_main_agent_sft_v2 import (  # type: ignore
@@ -82,6 +82,9 @@ def _tool_call(name: str, arguments: dict) -> dict:
 
 
 # Tools available to the judge agent at inference (matches main-agent dispatch prompt)
+from scripts.opencode_contract import TOOLS as _OC_TOOLS
+_OC_TOOLS_JSON = json.dumps(_OC_TOOLS, ensure_ascii=False)
+
 _JUDGE_TOOL_SPECS = [
     {
         "type": "function",
@@ -618,7 +621,14 @@ def build_judge_record(
     if not pool:
         return JudgeResult(record=None, verdict="no_match", tuple=None)
 
+    from scripts import opencode_contract as _oc
     messages: list[dict] = []
+    messages.append({
+        "role": "system",
+        "content": _oc.system_message(
+            _oc.AGENT_PROMPTS["wavetable_judge"],
+            cwd=dawfarm.cw("", "") if dawfarm is not None else "/work/rollout"),
+    })
     audio_assets: list[str] = [str(target_audio_path)]
 
     n_osc_slots = len(active_oscs)
@@ -859,7 +869,7 @@ def build_judge_record(
     record = {
         "id": f"{sample_id}_judge",
         "task_type": "judge",
-        "tools": _JUDGE_TOOL_SPECS,
+        "tools": _OC_TOOLS_JSON,
         "messages": messages,
         "audios": audio_assets,
         "meta": {

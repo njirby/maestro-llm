@@ -723,6 +723,71 @@ def oc_emit_listen_sequence(
     messages.append(oc_read_audio_response_msg(audio_path, display_path=path_str))
 
 
+# --- compat shims: legacy call-shape, new-contract emission -----------------
+# Builders that historically used the claw-code helpers can switch to the
+# opencode contract by importing these under the old names. They translate
+# tool names and argument keys and emit plain-string outputs.
+
+_OC_NAME_MAP = {"Bash": "bash", "Read": "read", "Skill": "skill", "Agent": "task"}
+
+
+def oc_compat_tool_call(name: str, arguments: dict) -> dict:
+    oc_name = _OC_NAME_MAP.get(name, name)
+    args = dict(arguments)
+    if oc_name == "read" and "file_path" in args:
+        args = {"filePath": args["file_path"]}
+    elif oc_name == "skill":
+        args = {"name": args.get("skill") or args.get("name", "")}
+    elif oc_name == "task":
+        args = {
+            "description": args.get("description", ""),
+            "prompt": args.get("prompt", ""),
+            "subagent_type": args.get("subagent_type", ""),
+        }
+    elif oc_name == "bash":
+        out = {"command": args.get("command", "")}
+        if args.get("timeout") is not None:
+            t = args["timeout"]
+            out["timeout"] = int(t * 1000) if t < 10000 else int(t)
+        if args.get("cwd") or args.get("workdir"):
+            out["workdir"] = args.get("cwd") or args.get("workdir")
+        args = out
+    return {"role": "tool_call", "content": oc.tool_call(oc_name, args)}
+
+
+def oc_compat_bash_response(stdout: str, stderr: str = "",
+                            interrupted: bool = False) -> dict:
+    exit_code = 1 if (stderr and stderr.strip()) or interrupted else 0
+    return {"role": "tool_response",
+            "content": oc.bash_output(stdout, exit_code=exit_code, stderr=stderr)}
+
+
+def oc_compat_read_response_audio() -> dict:
+    # Legacy signature carries no path info; the <audio> placeholder alone is
+    # positionally sufficient (aligned with the record's audios list).
+    return {"role": "tool_response", "content": "<audio>"}
+
+
+def oc_compat_emit_listen_sequence(
+    messages: list[dict],
+    audio_assets: list[str],
+    audio_path: str | Path,
+    probe_stdout: str | None = None,
+    display_path: str | None = None,
+) -> None:
+    path_str = str(display_path or audio_path)
+    if probe_stdout is None:
+        try:
+            info = sf.info(str(audio_path))
+            probe_stdout = (f"Rendered {path_str} "
+                            f"({info.duration:.2f}s, {int(info.samplerate)} Hz)")
+        except Exception:
+            probe_stdout = f"Rendered {path_str}"
+    messages.append(oc_compat_bash_response(probe_stdout))
+    messages.append(oc_compat_tool_call("Read", {"file_path": path_str}))
+    messages.append(oc_compat_read_response_audio())
+
+
 OC_ALLOWED_ROLES = {"system", "user", "assistant", "tool_call", "tool_response"}
 
 

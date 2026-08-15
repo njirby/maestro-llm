@@ -51,17 +51,20 @@ from maestro.render.dawdreamer import notes_from_dicts, render_preset_audio
 from scripts.agent_sft_common import (  # type: ignore
     DawFarmRolloutCtx,
     apply_transcription_mutations,
-    assert_valid_ms_swift_multiturn_record,
+    assert_valid_oc_record as assert_valid_ms_swift_multiturn_record,
     build_render_verify_snippet,
     load_manifest_entries,
     make_agent_id,
-    _bash_tool_response,
-    _emit_listen_sequence,
+    oc_compat_bash_response as _bash_tool_response,
+    oc_compat_emit_listen_sequence as _emit_listen_sequence,
     _REAPY_HELPER,
-    _tool_call,
+    oc_compat_tool_call as _tool_call,
     _wrap_as_bash,
 )
 
+
+from scripts.opencode_contract import TOOLS as _OC_TOOLS
+_OC_TOOLS_JSON = json.dumps(_OC_TOOLS, ensure_ascii=False)
 
 _TRANSCRIPTION_V4_TOOL_SPECS = [
     {
@@ -234,7 +237,14 @@ def build_transcription_record_v4(
     n_retries = _pick_n_retries(rng) if inject_mistake else 0
     total_attempts = n_retries + 1
 
+    from scripts import opencode_contract as _oc
     messages: list[dict] = []
+    messages.append({
+        "role": "system",
+        "content": _oc.system_message(
+            _oc.AGENT_PROMPTS["melody_transcription"],
+            cwd=dawfarm.cw("", "") if dawfarm is not None else "/work/rollout"),
+    })
     audio_assets: list[str] = [str(target_audio_path)]
     mutations_applied: list[list[dict]] = []
 
@@ -384,7 +394,7 @@ def build_transcription_record_v4(
     record = {
         "id": f"{sample_id}_transcription",
         "task_type": "melody_transcription",
-        "tools": _TRANSCRIPTION_V4_TOOL_SPECS,
+        "tools": _OC_TOOLS_JSON,
         "messages": messages,
         "audios": audio_assets,
         "meta": {

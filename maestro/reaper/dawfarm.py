@@ -174,6 +174,30 @@ class DockerSession(DawFarmSession):
         return ["docker", "cp", f"{self.name}:{container}", host]
 
 
+    def recycle(self, timeout: float = 180.0) -> None:
+        """Restart the container and wait for REAPER readiness — the
+        strongest between-rollout hygiene (kills plugin param caches, stray
+        renders, leaked project state; 2026-08-15 policy)."""
+        import time as _time
+        subprocess.run(["docker", "restart", self.name], check=True,
+                       capture_output=True, timeout=timeout)
+        deadline = _time.time() + timeout
+        ready = False
+        while _time.time() < deadline:
+            if self.healthy(timeout=20.0):
+                ready = True
+                break
+            _time.sleep(3.0)
+        if not ready:
+            raise RuntimeError(f"{self.name}: not ready {timeout}s after recycle")
+        # docker restart keeps the container filesystem — clear rollout litter
+        # explicitly (process state, e.g. plugin param caches, died with the
+        # restart; /tmp does not).
+        self.exec_bash(
+            "rm -rf /tmp/agents /tmp/search_probes /tmp/gate && "
+            "find /tmp -name 'wt_*.wav' -delete 2>/dev/null; true", timeout=60.0)
+
+
 class K8sSession(DawFarmSession):
     def __init__(self, name: str, namespace: str = K8S_NAMESPACE):
         super().__init__(name)
@@ -311,6 +335,45 @@ def build_vital_chunk(preset_json):
     struct.pack_into('>I', prefix, 180, json_size + 32)
     return bytes(prefix) + json_bytes + suffix
 """
+
+
+ASSERT_CLEAN_SNIPPET = '''
+import glob, json, os
+import reapy
+from reapy import reascript_api as RPR
+problems = []
+with reapy.inside_reaper():
+    n_tracks = RPR.CountTracks(0)
+    if n_tracks != 0:
+        problems.append(f"tracks={n_tracks}")
+    bpm = RPR.Master_GetTempo()
+    if abs(bpm - 120.0) > 0.01:
+        problems.append(f"tempo={bpm}")
+for d in ("/tmp/agents", "/tmp/search_probes", "/tmp/gate"):
+    if os.path.isdir(d) and os.listdir(d):
+        problems.append(f"dirty:{d}")
+stray = glob.glob("/tmp/**/wt_*.wav", recursive=True)
+if stray:
+    problems.append(f"stray_probes={len(stray)}")
+print(json.dumps({"clean": not problems, "problems": problems}))
+'''
+
+
+def assert_clean(session: DawFarmSession) -> None:
+    """Verify the container is pristine before starting a rollout. Fails
+    LOUDLY instead of cleaning: silent cleanup hides state-leak bugs."""
+    res = session.exec_bash(f"python3 - <<'PY'\n{ASSERT_CLEAN_SNIPPET}\nPY",
+                            timeout=60.0)
+    try:
+        verdict = json.loads((res.stdout or "").strip().splitlines()[-1])
+    except Exception:
+        raise RuntimeError(
+            f"{session.name}: assert_clean unparseable: {res.stdout[:200]!r} "
+            f"{res.stderr[:200]!r}")
+    if not verdict.get("clean"):
+        raise RuntimeError(
+            f"{session.name}: container dirty at rollout start: "
+            f"{verdict.get('problems')} — recycle it or fix the leak")
 
 
 def reset_project(session: DawFarmSession) -> None:

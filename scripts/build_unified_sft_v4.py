@@ -38,7 +38,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.agent_sft_common import (
     ClapEmbedder,
-    assert_valid_ms_swift_multiturn_record,
+    assert_valid_oc_record as assert_valid_ms_swift_multiturn_record,
     build_clap_shortlist_data,
     build_gt_similarity_pool,
     build_list_wavetables_slice_snippet,
@@ -58,13 +58,13 @@ from scripts.agent_sft_common import (
     select_probe_rows_by_name,
     simulate_param_search,
     write_agent_manifest,
-    _bash_tool_response,
+    oc_compat_bash_response as _bash_tool_response,
     _BUILD_CHUNK_HELPER,
     _READ_CHUNK_HELPER,
-    _emit_listen_sequence,
-    _read_tool_response_audio,
+    oc_compat_emit_listen_sequence as _emit_listen_sequence,
+    oc_compat_read_response_audio as _read_tool_response_audio,
     _REAPY_HELPER,
-    _tool_call,
+    oc_compat_tool_call as _tool_call,
     _WT_DISCOVER_SNIPPET,
     _wrap_as_bash,
 )
@@ -81,7 +81,6 @@ from scripts.build_main_agent_sft_v3 import (
     _json_key_to_reaper_display,
     _JSON_KEY_TO_REAPER,
     _REAPER_PARAM_DUMP,
-    _V3_TOOL_SPECS,
     _VITAL_DISPLAY_NAMES,
     build_batch_action_snippet,
     build_batches_from_diff,
@@ -109,6 +108,9 @@ from scripts.build_main_agent_sft_v2 import (
 )
 
 # Real subagent builders
+from scripts.opencode_contract import TOOLS as _OC_TOOLS
+_OC_TOOLS_JSON = json.dumps(_OC_TOOLS, ensure_ascii=False)
+
 from scripts.build_search_agent_sft_v2 import (
     SearchResult,
     build_search_record,
@@ -434,7 +436,14 @@ def build_record(
     force_miss = sample_rng.random() < force_research_rate
 
     # ---- Begin messages ----
+    from scripts import opencode_contract as _oc
     messages: list[dict] = []
+    messages.append({
+        "role": "system",
+        "content": _oc.system_message(
+            _oc.AGENT_PROMPTS["main"],
+            cwd=ctx.cw("", "") if ctx is not None else "/work/rollout"),
+    })
     audio_assets: list[str] = [str(target_audio_path)]
 
     # Edge case (~5%): user says "recreate this sound" without audio
@@ -456,7 +465,7 @@ def build_record(
         record = {
             "id": sample_id,
             "task_type": "main",
-            "tools": _V3_TOOL_SPECS,
+            "tools": _OC_TOOLS_JSON,
             "messages": messages,
             "audios": [],
             "assets": {
@@ -686,13 +695,7 @@ def build_record(
                 "name": f"transcribe-{sample_id}",
                 "run_in_background": True,
             }))
-            messages.append({
-                "role": "tool_response",
-                "content": json.dumps({
-                    "status": "completed",
-                    "outputFile": _trans_output_file,
-                }, ensure_ascii=False),
-            })
+            # (task result is appended inline after the sub-record builds)
 
             # Collect the transcription subagent record for training
             _trans_mistake_rate = float(getattr(args, "transcription_mistake_rate", 0.0) or 0.0)
@@ -720,6 +723,10 @@ def build_record(
             with open(_trans_output_file, "w") as _trf:
                 _trf.write(trans_final_msg)
                 _trf.write("\n")
+            # opencode contract: the task tool's response IS the subagent's
+            # final message, inline — no outputFile cat round-trip.
+            from scripts.agent_sft_common import oc_task_result_msg as _oc_task_result
+            messages.append(_oc_task_result(_trans_agent_id, trans_final_msg))
             if ctx is not None:
                 dawfarm_session.put(_trans_output_file, _trans_output_file)
                 # Project state (the MIDI item) was left by the transcription
@@ -872,33 +879,60 @@ def build_record(
             _has_gt = any(start <= name_to_idx_full.get(n, -1) < end for n in gt_names_list)
             _keep_rng = random.Random(int(args.seed) + sid_seed + rounds_used * 101 + ai)
             _keep = _has_gt or _keep_rng.random() < float(getattr(args, "search_record_keep_rate", 1.0))
-            sr = build_search_record(
-                sample_id=sample_id,
-                agent_idx=ai + 1,
-                archetype=archetype,
-                target_audio_path=target_audio_path,
-                target_preset=target_preset,
-                gt_wavetable_names=gt_names_list,
-                shard_start=start,
-                shard_end=end,
-                name_to_idx=name_to_idx_full,
-                idx_to_name=idx_to_name_full,
-                candidate_audio=candidate_audio,
-                name_to_emb=_wt_name_to_emb,
-                omni_server=args.omni_server,
-                omni_model=args.omni_model,
-                stage2_server=stage2_server,
-                stage2_model=stage2_model,
-                candidates_per_batch=int(getattr(args, "candidates_per_batch", 8)),
-                shortlist_dir=Path(agent_out_dir),
-                clap_threshold=0.97,
-                midi_path=_trans_notes_file,
-                probe_audio_dir=search_probe_dir,
-                dawfarm=ctx,
-                force_miss_names=_fm_names,
-                merged_stage2=bool(getattr(args, "merged_stage2", False)),
-                pool_only=not _keep,
-            )
+            if ctx is not None:
+                # v3: opencode contract + evidence labels + fixed probe renders.
+                # (round-1 forced miss is not supported by evidence labels —
+                # rounds still re-dispatch on natural judge no_match verdicts.)
+                from scripts.build_search_agent_sft_v3 import build_search_record_v3
+                sr = build_search_record_v3(
+                    sample_id=sample_id,
+                    agent_idx=ai + 1,
+                    archetype=archetype,
+                    target_audio_path=target_audio_path,
+                    gt_wavetable_names=gt_names_list,
+                    shard_start=start,
+                    shard_end=end,
+                    name_to_idx=name_to_idx_full,
+                    idx_to_name=idx_to_name_full,
+                    embedder=embedder,
+                    dawfarm=ctx,
+                    midi_path=_trans_notes_file,
+                    probe_audio_dir=search_probe_dir,
+                    stage2_server=stage2_server,
+                    stage2_model=stage2_model,
+                    candidates_per_batch=int(getattr(args, "candidates_per_batch", 8)),
+                    clap_threshold=0.97,
+                    shortlist_dir=None,
+                    pool_only=not _keep,
+                )
+            else:
+                sr = build_search_record(
+                    sample_id=sample_id,
+                    agent_idx=ai + 1,
+                    archetype=archetype,
+                    target_audio_path=target_audio_path,
+                    target_preset=target_preset,
+                    gt_wavetable_names=gt_names_list,
+                    shard_start=start,
+                    shard_end=end,
+                    name_to_idx=name_to_idx_full,
+                    idx_to_name=idx_to_name_full,
+                    candidate_audio=candidate_audio,
+                    name_to_emb=_wt_name_to_emb,
+                    omni_server=args.omni_server,
+                    omni_model=args.omni_model,
+                    stage2_server=stage2_server,
+                    stage2_model=stage2_model,
+                    candidates_per_batch=int(getattr(args, "candidates_per_batch", 8)),
+                    shortlist_dir=Path(agent_out_dir),
+                    clap_threshold=0.97,
+                    midi_path=_trans_notes_file,
+                    probe_audio_dir=search_probe_dir,
+                    dawfarm=ctx,
+                    force_miss_names=_fm_names,
+                    merged_stage2=bool(getattr(args, "merged_stage2", False)),
+                    pool_only=not _keep,
+                )
             return ai, agent_id, sr
 
         # Dispatch all search agents in parallel
@@ -957,40 +991,19 @@ def build_record(
                 "run_in_background": True,
             }))
 
+        from scripts.agent_sft_common import oc_task_result_msg as _oc_task_result
+        round_shortlists: list[list[str]] = []
         for _start, _end, agent_id, output_file, manifest_file, _sl in round_agent_meta:
             if ctx is not None:
                 dawfarm_session.put(output_file, output_file)
-            messages.append({
-                "role": "tool_response",
-                "content": json.dumps({
-                    "status": "completed",
-                    "outputFile": output_file,
-                }, ensure_ascii=False),
-            })
-
-        # Extract shortlist lines from search agent output files
-        grep_cmd = "grep -hi 'shortlist:' " + " ".join(round_output_files)
-        messages.append({
-            "role": "assistant",
-            "content": f"Reading shortlists from {len(round_output_files)} search agents.",
-        })
-        messages.append(_tool_call("Bash", {"command": grep_cmd}))
-        grep_output_lines = []
-        round_shortlists: list[list[str]] = []
-        for (_start, _end, _aid, out_file, _mf, sl) in round_agent_meta:
+            # opencode contract: inline <task_result> response, no cat/grep.
             try:
-                with open(out_file) as f:
-                    for line in f:
-                        if "shortlist:" in line.lower():
-                            grep_output_lines.append(line.strip())
+                with open(output_file) as _of:
+                    _final_txt = _of.read().strip()
             except Exception:
-                pass
-            round_shortlists.append(sl)
-        if ctx is not None:
-            messages.append(_bash_tool_response(
-                ctx.real_exec(grep_cmd, "shortlist grep").stdout))
-        else:
-            messages.append(_bash_tool_response("\n".join(grep_output_lines) + "\n"))
+                _final_txt = ""
+            messages.append(_oc_task_result(agent_id, _final_txt))
+            round_shortlists.append(_sl)
 
         # Pool in shortlists
         for sl in round_shortlists:
@@ -1141,29 +1154,12 @@ def build_record(
             "name": f"judge-{rounds_used}",
             "run_in_background": True,
         }))
-        messages.append({
-            "role": "tool_response",
-            "content": json.dumps({
-                "status": "completed",
-                "outputFile": str(judge_output_file),
-            }, ensure_ascii=False),
-        })
-
-        # Read judge verdict
-        messages.append({
-            "role": "assistant",
-            "content": "Reading judge's verdict and selection.",
-        })
+        # opencode contract: judge's final message returns inline in the
+        # task tool_response — no outputFile cat round-trip.
         if ctx is not None:
             dawfarm_session.put(str(judge_output_file), str(judge_output_file))
-        messages.append(_tool_call("Bash", {"command": f"cat {judge_output_file}"}))
-        if ctx is not None:
-            messages.append(_bash_tool_response(
-                ctx.real_exec(f"cat {judge_output_file}", "judge cat").stdout))
-        else:
-            with open(judge_output_file) as jf:
-                judge_content = jf.read().strip()
-            messages.append(_bash_tool_response(judge_content + "\n"))
+        from scripts.agent_sft_common import oc_task_result_msg as _oc_task_result
+        messages.append(_oc_task_result(judge_agent_id, judge_final_msg.strip()))
 
         # Branch on verdict
         if judge_verdict in ("no_match", "partial_match"):
@@ -1846,7 +1842,7 @@ def build_record(
     record = {
         "id": sample_id,
         "task_type": "main",
-        "tools": _V3_TOOL_SPECS,
+        "tools": _OC_TOOLS_JSON,
         "messages": messages,
         "audios": audio_assets,
         "assets": {
@@ -2078,6 +2074,9 @@ def main() -> None:
              "records (the GT shard's record is always kept; dropped shards "
              "run pool-only: identical shortlists, no omni narration). "
              "1.0 = legacy behaviour, every search record emitted.")
+    ap.add_argument("--recycle-containers", type=lambda v: v.lower() != "false",
+                    default=True,
+                    help="docker-restart + assert-clean each container before every sample (default true)")
     ap.add_argument("--merged-stage2", action=argparse.BooleanOptionalAction, default=True,
         help="Search agents: single merged stage-2 call per batch instead of "
              "synthesize+notes. Default on (+32%% throughput, judge-identical "
@@ -2180,6 +2179,19 @@ def main() -> None:
         )
         if dawfarm_pool is not None:
             with dawfarm_pool.acquire() as _sess:
+                # Container hygiene (2026-08-15 policy): recycle before every
+                # rollout, then assert pristine state — fail loudly if dirty.
+                if bool(getattr(args, "recycle_containers", True)):
+                    if hasattr(_sess, "recycle"):
+                        _sess.recycle()
+                    else:
+                        _dawfarm.reset_project(_sess)
+                        _sess.exec_bash(
+                            "rm -rf /tmp/agents /tmp/search_probes /tmp/gate "
+                            "&& find /tmp -name 'wt_*.wav' -delete", timeout=60.0)
+                    _dawfarm.sync_vital_data(
+                        _sess, getattr(args, "daw_farm_vital_data", None))
+                _dawfarm.assert_clean(_sess)
                 return build_record(dawfarm_session=_sess, **kwargs)
         return build_record(**kwargs)
 
