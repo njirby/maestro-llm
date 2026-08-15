@@ -1481,6 +1481,7 @@ def build_param_search_snippet(
     query: str,
     track_idx: int = 0,
     fx_idx: int = 0,
+    max_results: int = 60,
 ) -> str:
     """Build an inline reapy snippet that searches REAPER params by keyword.
 
@@ -1525,7 +1526,22 @@ def build_param_search_snippet(
         f"                entry['min'] = round(mn, 6)\n"
         f"                entry['max'] = round(mx, 6)\n"
         f"            results.append(entry)\n"
-        "print(json.dumps({'query': query, 'count': len(results), 'params': results}, indent=2))\n"
+        # Plain-line, capped output: a 448-param JSON dump was ~30k tokens and
+        # over half a main record (silent-drop risk at max_length); it is also
+        # poor inference behavior — the model re-reads it on every query.
+        f"CAP = {max_results}\n"
+        "shown = results[:CAP]\n"
+        "print(f\"{len(results)} params match '{query}'\")\n"
+        "for e in shown:\n"
+        "    line = f\"{e['idx']} {e['name']} = {e['display']}\"\n"
+        "    if e.get('type') == 'discrete':\n"
+        "        line += f\" [{len(e.get('options', []))} options, index {e.get('current_index')}]\"\n"
+        "    elif e.get('min', 0.0) != 0.0 or e.get('max', 1.0) != 1.0:\n"
+        "        line += f\" (range {e['min']}..{e['max']})\"\n"
+        "    print(line)\n"
+        "if len(results) > CAP:\n"
+        "    print(f\"showing {CAP} of {len(results)} matches for '{query}' — \"\n"
+        "          f\"refine the query to see others\")\n"
     )
 
 
@@ -1557,6 +1573,27 @@ def simulate_param_search(
                     entry["value"] = round(ov, 6)
             results.append(entry)
     return results[:max_results]
+
+
+def format_param_search_output(query: str, results: list[dict],
+                               total: int | None = None,
+                               max_results: int = 60) -> str:
+    """Plain-line rendering of param-search results — must match exactly what
+    build_param_search_snippet prints at inference time."""
+    total = len(results) if total is None else total
+    shown = results[:max_results]
+    lines = [f"{total} params match '{query}'"]
+    for e in shown:
+        line = f"{e['idx']} {e['name']} = {e['display']}"
+        if e.get("type") == "discrete":
+            line += f" [{len(e.get('options', []))} options, index {e.get('current_index')}]"
+        elif e.get("min", 0.0) != 0.0 or e.get("max", 1.0) != 1.0:
+            line += f" (range {e['min']}..{e['max']})"
+        lines.append(line)
+    if total > max_results:
+        lines.append(f"showing {max_results} of {total} matches for '{query}' — "
+                     f"refine the query to see others")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------

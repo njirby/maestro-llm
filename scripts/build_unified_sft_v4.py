@@ -56,6 +56,7 @@ from scripts.agent_sft_common import (
     load_wavetable_lib,
     make_agent_id,
     select_probe_rows_by_name,
+    format_param_search_output,
     simulate_param_search,
     write_agent_manifest,
     oc_compat_bash_response as _bash_tool_response,
@@ -1482,11 +1483,11 @@ def build_record(
                 search_results = simulate_param_search(
                     sq, _REAPER_PARAM_DUMP,
                     value_overrides=current_reaper_values,
+                    max_results=10_000,
                 )
-                search_stdout = json.dumps(
-                    {"query": sq, "count": len(search_results), "params": search_results},
-                    indent=2, ensure_ascii=False,
-                ) + "\n"
+                # identical formatting to the live snippet (env-exactness)
+                search_stdout = format_param_search_output(
+                    sq, search_results, total=len(search_results))
                 messages.append(_bash_tool_response(search_stdout))
 
         messages.append({"role": "assistant", "content": f"Applying {b.subsystem} changes."})
