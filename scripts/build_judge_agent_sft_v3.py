@@ -703,9 +703,9 @@ def build_judge_record(
     # Read each rendered probe — sequential read calls
     if audio_read_paths:
         messages.append({"role": "assistant", "content": "Listening to all pool candidates."})
-        for rp in audio_read_paths:
+        for rp, hp in zip(audio_read_paths, audio_host_paths):
             messages.append(_tool_call("Read", {"file_path": rp}))
-            messages.append(_read_tool_response_audio())
+            messages.append(_read_tool_response_audio(hp, display_path=rp))
 
     # Verdict computation: three-way —
     #   "good":          every active-osc GT is in pool → full tuple, done

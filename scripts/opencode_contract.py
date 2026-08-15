@@ -157,6 +157,15 @@ def read_output_audio(filename: str, duration_s: float, sample_rate: int) -> str
     return f"Attached audio: {filename} ({duration_s:.2f}s, {sample_rate} Hz)"
 
 
+def skill_output(name: str, path: str, content: str,
+                 description: str = "") -> str:
+    """Plain-string skill result: a load line + the SKILL.md content."""
+    head = f"Loaded skill: {name} ({path})"
+    if description:
+        head += f"\n{description}"
+    return f"{head}\n\n{content.rstrip()}"
+
+
 def task_result(session_id: str, text: str, state: str = "completed") -> str:
     """Inline subagent return — the tool_response content of a task call."""
     return (f'<task id="{session_id}" state="{state}">\n'

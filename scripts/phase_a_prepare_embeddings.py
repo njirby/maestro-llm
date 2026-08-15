@@ -98,12 +98,14 @@ def render_sample(session, entry: dict, *, name_to_idx, idx_to_name,
             missing = [p for p in expected if not p.exists()]
             if missing:
                 raise RuntimeError(f"{sid} a{agent_idx}: fetch missing {len(missing)}")
-            cents = [audio_descriptors(p)[0]["centroid"] for p in expected]
-            spread = max(cents) - min(cents)
-            if spread < MIN_CENTROID_SPREAD_HZ:
-                raise RuntimeError(
-                    f"{sid} a{agent_idx}: DISCRIMINABILITY GATE FAILED "
-                    f"({spread:.0f} Hz)")
+        # gate ALL shard probes — including dirs pre-rendered by earlier runs
+        cents = [audio_descriptors(p)[0]["centroid"] for p in expected]
+        spread = max(cents) - min(cents)
+        if spread < MIN_CENTROID_SPREAD_HZ:
+            raise RuntimeError(
+                f"{sid} a{agent_idx}: DISCRIMINABILITY GATE FAILED "
+                f"({spread:.0f} Hz) — probe dir carries no wavetable info "
+                f"(stale/broken renders?): {host_dir}")
         fetched.extend(str(p) for p in expected)
 
         gdir = f"/tmp/phase_a/{sid}_a{agent_idx}_gt"

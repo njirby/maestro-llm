@@ -585,13 +585,8 @@ def build_record(
     messages.append(_tool_call("Skill", {"skill": _skill_name, "args": ""}))
     messages.append({
         "role": "tool_response",
-        "content": json.dumps({
-            "skill": _skill_name,
-            "path": str(_skill_md_path),
-            "args": "",
-            "description": _skill_description,
-            "prompt": _skill_md_text,
-        }, ensure_ascii=False),
+        "content": _oc.skill_output(_skill_name, str(_skill_md_path),
+                                    _skill_md_text, _skill_description),
     })
 
     # Create the REAPER track holding Vital (and later the transcribed MIDI).

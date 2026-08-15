@@ -57,43 +57,107 @@ MIN_CENTROID_SPREAD_HZ = 500.0
 # Audio feature descriptors (terse verdict vocabulary)
 # ---------------------------------------------------------------------------
 
-def audio_descriptors(path: str | Path) -> tuple[dict[str, float], list[str]]:
-    """Measured features -> 2-3 word descriptor list for terse verdicts."""
+def audio_features(path: str | Path) -> dict[str, float]:
+    """Raw per-probe features. Descriptors are assigned SHARD-RELATIVELY
+    (see shard_descriptors) because absolute thresholds collapse a shard's
+    real variation into one or two buckets (2026-08-15 defect)."""
     import soundfile as sf
     y, sr = sf.read(str(path))
     if y.ndim > 1:
         y = y.mean(axis=1)
     y = y[: sr * 6]
     if len(y) < sr // 4 or float(np.abs(y).max()) < 1e-5:
-        return {"centroid": 0.0, "attack_ms": 0.0, "flatness": 0.0}, ["silent"]
+        return {"centroid": 0.0, "flatness": 0.0, "bandwidth": 0.0,
+                "sustain": 0.0, "silent": 1.0}
 
     S = np.abs(np.fft.rfft(y))
     freqs = np.fft.rfftfreq(len(y), 1 / sr)
-    centroid = float((S * freqs).sum() / (S.sum() + 1e-12))
-
-    env = np.abs(y)
-    k = max(1, sr // 200)
-    env = np.convolve(env, np.ones(k) / k, mode="same")
-    # attack measured within the first note only (first 0.8 s)
-    first = env[: int(0.8 * sr)]
-    peak_i = int(np.argmax(first)) if len(first) else 0
-    attack_ms = peak_i / sr * 1000.0
-
+    tot = S.sum() + 1e-12
+    centroid = float((S * freqs).sum() / tot)
+    bandwidth = float(np.sqrt(((freqs - centroid) ** 2 * S).sum() / tot))
     logS = np.log(S + 1e-12)
     flatness = float(np.exp(logS.mean()) / (S.mean() + 1e-12))
 
-    words: list[str] = []
-    words.append("bright" if centroid > 3200 else ("warm" if centroid > 1600 else "dark"))
-    words.append("sharp attack" if attack_ms < 40 else
-                 ("soft attack" if attack_ms > 250 else "medium attack"))
-    if flatness > 0.30:
-        words.append("noisy")
-    elif flatness < 0.02:
-        words.append("pure")
-    else:
-        words.append("harmonic")
-    feats = {"centroid": centroid, "attack_ms": attack_ms, "flatness": flatness}
-    return feats, words
+    # sustain: energy in the note's tail vs its head (pluck <-> pad)
+    env = np.abs(y)
+    k = max(1, sr // 100)
+    env = np.convolve(env, np.ones(k) / k, mode="same")
+    half = len(env) // 2
+    sustain = float(env[half:].mean() / (env[:half].mean() + 1e-9))
+    return {"centroid": centroid, "flatness": flatness, "bandwidth": bandwidth,
+            "sustain": sustain, "silent": 0.0}
+
+
+def _tercile_words(values: dict[str, float], low: str, mid: str, high: str
+                   ) -> dict[str, str]:
+    """Assign words by within-shard rank terciles (ties broken by order)."""
+    order = sorted(values, key=lambda k: values[k])
+    n = len(order)
+    out: dict[str, str] = {}
+    for rank, key in enumerate(order):
+        if n < 3:
+            out[key] = mid
+        elif rank < n / 3:
+            out[key] = low
+        elif rank < 2 * n / 3:
+            out[key] = mid
+        else:
+            out[key] = high
+    return out
+
+
+def shard_descriptors(paths_by_name: dict[str, str]
+                      ) -> tuple[dict[str, list[str]], dict[str, dict[str, float]]]:
+    """Descriptor triples for a whole shard, computed relative to the shard's
+    own feature distribution so characterizations always spread out."""
+    feats = {n: audio_features(p) for n, p in paths_by_name.items()}
+    live = {n: f for n, f in feats.items() if not f.get("silent")}
+    if not live:
+        return {n: ["silent"] for n in feats}, feats
+    bright = _tercile_words({n: f["centroid"] for n, f in live.items()},
+                            "dark", "warm", "bright")
+    texture = _tercile_words({n: f["flatness"] for n, f in live.items()},
+                             "pure", "harmonic", "noisy")
+    body = _tercile_words({n: f["sustain"] for n, f in live.items()},
+                          "plucky", "even-bodied", "sustained")
+    width = _tercile_words({n: f["bandwidth"] for n, f in live.items()},
+                           "narrow", "full", "wide")
+    words: dict[str, list[str]] = {}
+    for n in feats:
+        if feats[n].get("silent"):
+            words[n] = ["silent"]
+            continue
+        # 4 shard-relative axes => 81 possible triples-of-four; the width axis
+        # only appears when it adds information beyond brightness.
+        trio = [bright[n], texture[n], body[n]]
+        if width[n] != {"dark": "narrow", "warm": "full", "bright": "wide"}[bright[n]]:
+            trio.append(width[n])
+        words[n] = trio
+    return words, feats
+
+
+def descriptor_spread_ok(words: dict[str, list[str]], max_share: float = 0.40
+                         ) -> tuple[bool, float, tuple]:
+    """Gate: no single descriptor triple may cover > max_share of the shard."""
+    from collections import Counter
+    counts = Counter(tuple(w) for w in words.values())
+    top, n = counts.most_common(1)[0]
+    share = n / max(1, len(words))
+    return share <= max_share, share, top
+
+
+def audio_descriptors(path: str | Path) -> tuple[dict[str, float], list[str]]:
+    """Back-compat single-file entry (absolute buckets). Prefer
+    shard_descriptors — this remains for gates that only need features."""
+    f = audio_features(path)
+    if f.get("silent"):
+        return f, ["silent"]
+    words = ["bright" if f["centroid"] > 3200 else
+             ("warm" if f["centroid"] > 1600 else "dark"),
+             "noisy" if f["flatness"] > 0.30 else
+             ("pure" if f["flatness"] < 0.02 else "harmonic"),
+             "sustained" if f["sustain"] > 0.9 else "plucky"]
+    return f, words
 
 
 def terse_verdict(name: str, words: list[str], selected: bool, hedged: bool) -> str:
@@ -228,9 +292,16 @@ def build_search_record_v3(
     if missing:
         raise RuntimeError(f"probe fetch incomplete: {len(missing)} missing")
 
-    # --- DISCRIMINABILITY GATE (hard abort on information-free probes)
+    # --- shard-relative descriptors + DISCRIMINABILITY GATE
+    words_by_name, raw_feats = shard_descriptors(
+        {n: name_to_host[n] for n in shard})
+    ok, top_share, top_trio = descriptor_spread_ok(words_by_name)
+    if not ok:
+        print(f"[search v3] WARNING {sample_id} a{agent_idx}: descriptor triple "
+              f"{top_trio} covers {100 * top_share:.0f}% of the shard "
+              f"(>40%) — verdicts under-discriminate", file=sys.stderr, flush=True)
     feats: dict[str, tuple[dict, list[str]]] = {
-        n: audio_descriptors(name_to_host[n]) for n in shard}
+        n: (raw_feats[n], words_by_name[n]) for n in shard}
     centroids = [f[0]["centroid"] for f in feats.values()]
     spread = max(centroids) - min(centroids)
     if spread < MIN_CENTROID_SPREAD_HZ:

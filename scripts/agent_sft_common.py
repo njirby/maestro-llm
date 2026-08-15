@@ -771,10 +771,15 @@ def oc_compat_bash_response(stdout: str, stderr: str = "",
             "content": oc.bash_output(stdout, exit_code=exit_code, stderr=stderr)}
 
 
-def oc_compat_read_response_audio() -> dict:
-    # Legacy signature carries no path info; the <audio> placeholder alone is
-    # positionally sufficient (aligned with the record's audios list).
-    return {"role": "tool_response", "content": "<audio>"}
+def oc_compat_read_response_audio(audio_path: str | Path | None = None,
+                                  display_path: str | None = None) -> dict:
+    """Audio read result: <audio> placeholder AND the contract's attachment
+    line. Callers that pass no path still get a valid (path-less) notice."""
+    if audio_path is None and display_path is None:
+        return {"role": "tool_response",
+                "content": "<audio>\n" + oc.read_output_audio("audio", 0.0, 44100)}
+    return oc_read_audio_response_msg(audio_path or display_path,
+                                      display_path=display_path)
 
 
 def oc_compat_emit_listen_sequence(
@@ -794,7 +799,7 @@ def oc_compat_emit_listen_sequence(
             probe_stdout = f"Rendered {path_str}"
     messages.append(oc_compat_bash_response(probe_stdout))
     messages.append(oc_compat_tool_call("Read", {"file_path": path_str}))
-    messages.append(oc_compat_read_response_audio())
+    messages.append(oc_compat_read_response_audio(audio_path, display_path=path_str))
 
 
 OC_ALLOWED_ROLES = {"system", "user", "assistant", "tool_call", "tool_response"}
