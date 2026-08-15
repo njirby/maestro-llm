@@ -168,13 +168,22 @@ class ClapEmbedder:
         model, processor = _load_clap(device)
         inst = cls(device=device, model=model, processor=processor, _cache={})
         if cache_path:
-            inst.load_cache(cache_path)
+            n = inst.load_cache(cache_path)
+            # Two-phase runs pre-embed everything; a miss means a coverage
+            # leak worth seeing in the logs.
+            inst.warn_on_miss = n > 0
         return inst
+
+    warn_on_miss: bool = False
 
     def embed_audio_path(self, path: Path) -> np.ndarray:
         key = str(path.resolve())
         if key in self._cache:
             return self._cache[key]
+        if self.warn_on_miss:
+            import sys as _sys
+            print(f"[clap] CACHE MISS (embedding on {self.device}): {key}",
+                  file=_sys.stderr, flush=True)
         import time as _t
         _t0 = _t.monotonic()
         audio, sr = sf.read(path, always_2d=True)

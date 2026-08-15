@@ -265,6 +265,14 @@ def _build_steer_turns(
 # ---------------------------------------------------------------------------
 
 
+def compute_search_partition(total_named: int, slice_size: int = 48) -> list[int]:
+    """Contiguous shard starts covering the full library — the single source
+    of truth for how search agents partition wavetable indices (imported by
+    phase-A embedding preparation; keep in sync with nothing, reuse this)."""
+    n_agents = max(1, (total_named + slice_size - 1) // slice_size)
+    return [i * slice_size for i in range(n_agents)]
+
+
 def build_record(
     *,
     entry: dict,
@@ -419,8 +427,8 @@ def build_record(
     # gaps, no GT-targeted slice adjustment. (The old stride grid left ~1/3
     # of the library unsearchable and teleported one slice onto the GT when
     # needed — a structural label leak: the off-grid slice held the answer.)
-    n_agents = max(1, (total_named + slice_size - 1) // slice_size)
-    slice_starts = [i * slice_size for i in range(n_agents)]
+    slice_starts = compute_search_partition(total_named, slice_size)
+    n_agents = len(slice_starts)
 
     def _slice_ranges_str(starts: list[int]) -> str:
         return ", ".join(
@@ -438,11 +446,14 @@ def build_record(
     # ---- Begin messages ----
     from scripts import opencode_contract as _oc
     messages: list[dict] = []
+    # cwd must be deterministic from the sample alone: ctx is not created yet
+    # at this point (and the no-audio edge case returns before it exists).
+    # rollout_dir(sample_id) is the same value ctx.cw("", "") would produce.
+    from maestro.reaper.dawfarm import rollout_dir as _rollout_dir
     messages.append({
         "role": "system",
         "content": _oc.system_message(
-            _oc.AGENT_PROMPTS["main"],
-            cwd=ctx.cw("", "") if ctx is not None else "/work/rollout"),
+            _oc.AGENT_PROMPTS["main"], cwd=_rollout_dir(sample_id)),
     })
     audio_assets: list[str] = [str(target_audio_path)]
 
