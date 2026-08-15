@@ -1478,29 +1478,40 @@ def build_reaper_render_snippet(
 
 
 def build_param_search_snippet(
-    query: str,
+    query: str | list[str],
     track_idx: int = 0,
     fx_idx: int = 0,
     max_results: int = 60,
 ) -> str:
-    """Build an inline reapy snippet that searches REAPER params by keyword.
+    """Build an inline reapy snippet that looks up REAPER plugin params.
+
+    `query` is either a keyword string (substring match — exploratory) or a
+    LIST of exact parameter names (targeted lookup). Prefer the list form:
+    the agent almost always knows which params it is about to set, and a
+    subsystem keyword like "modulation" matches 448 params (~30k tokens of
+    response) of which it uses a handful. A targeted lookup returns a dozen
+    lines and can afford to print full discrete option vocabularies, which
+    is the information the agent actually needs in order to pick a value.
 
     The model learns to write this pattern at inference time — no premade
     scripts, just inline Python that queries REAPER's TrackFX API.
     """
+    _exact = not isinstance(query, str)
     return (
         _REAPY_HELPER
         + f"query = {query!r}\n"
-        "keywords = query.lower().split()\n"
-        "results = []\n"
+        + ("wanted = {q.strip().lower() for q in query}\n" if _exact
+           else "keywords = query.lower().split()\n")
+        + "results = []\n"
         f"with reapy.inside_reaper():\n"
         f"    track = RPR.GetTrack(0, {track_idx})\n"
         f"    n = RPR.TrackFX_GetNumParams(track, {fx_idx})\n"
         f"    for i in range(n):\n"
         f"        _pn = RPR.TrackFX_GetParamName(track, {fx_idx}, i, '', 2048)\n"
         f"        name = _pn[-2] if len(_pn) > 2 else ''\n"
-        f"        if all(kw in name.strip().lower() for kw in keywords):\n"
-        f"            _pv = RPR.TrackFX_GetParam(track, {fx_idx}, i, 0.0, 0.0)\n"
+        + ("        if name.strip().lower() in wanted:\n" if _exact
+           else "        if all(kw in name.strip().lower() for kw in keywords):\n")
+        + f"            _pv = RPR.TrackFX_GetParam(track, {fx_idx}, i, 0.0, 0.0)\n"
         f"            val, mn, mx = float(_pv[0]), float(_pv[-2]), float(_pv[-1])\n"
         f"            _dv = RPR.TrackFX_GetFormattedParamValue(track, {fx_idx}, i, '', 2048)\n"
         f"            disp = _dv[-2] if len(_dv) > 2 else ''\n"
@@ -1535,8 +1546,12 @@ def build_param_search_snippet(
         "for e in shown:\n"
         "    line = f\"{e['idx']} {e['name']} = {e['display']}\"\n"
         "    if e.get('type') == 'discrete':\n"
-        "        line += f\" [{len(e.get('options', []))} options, index {e.get('current_index')}]\"\n"
-        "    elif e.get('min', 0.0) != 0.0 or e.get('max', 1.0) != 1.0:\n"
+        # Targeted lookups return few params, so the full option vocabulary
+        # fits — and it is the one thing the agent cannot infer from the
+        # Vital JSON key alone. Broad keyword queries stay summarised.
+        + ("        line += ' [' + ' | '.join(e.get('options', [])) + ']'\n" if _exact
+           else "        line += f\" [{len(e.get('options', []))} options, index {e.get('current_index')}]\"\n")
+        + "    elif e.get('min', 0.0) != 0.0 or e.get('max', 1.0) != 1.0:\n"
         "        line += f\" (range {e['min']}..{e['max']})\"\n"
         "    print(line)\n"
         "if len(results) > CAP:\n"
@@ -1558,10 +1573,13 @@ def simulate_param_search(
     (discrete with options list, or continuous with value/min/max).
     *value_overrides* patches in current [0,1] values for continuous params.
     """
-    keywords = query.lower().split()
+    _exact = not isinstance(query, str)
+    wanted = {q.strip().lower() for q in query} if _exact else set()
+    keywords = query.lower().split() if not _exact else []
     results: list[dict] = []
     for p in dump:
-        if all(kw in p["name"].lower() for kw in keywords):
+        if (p["name"].strip().lower() in wanted) if _exact else \
+                all(kw in p["name"].lower() for kw in keywords):
             entry = dict(p)
             if value_overrides and p["idx"] in value_overrides:
                 ov = value_overrides[p["idx"]]
@@ -1580,13 +1598,17 @@ def format_param_search_output(query: str, results: list[dict],
                                max_results: int = 60) -> str:
     """Plain-line rendering of param-search results — must match exactly what
     build_param_search_snippet prints at inference time."""
+    _exact = not isinstance(query, str)
     total = len(results) if total is None else total
     shown = results[:max_results]
     lines = [f"{total} params match '{query}'"]
     for e in shown:
         line = f"{e['idx']} {e['name']} = {e['display']}"
         if e.get("type") == "discrete":
-            line += f" [{len(e.get('options', []))} options, index {e.get('current_index')}]"
+            # Targeted lookups print the full option vocabulary; broad
+            # keyword queries stay summarised (see build_param_search_snippet).
+            line += (" [" + " | ".join(e.get("options", [])) + "]") if _exact else \
+                f" [{len(e.get('options', []))} options, index {e.get('current_index')}]"
         elif e.get("min", 0.0) != 0.0 or e.get("max", 1.0) != 1.0:
             line += f" (range {e['min']}..{e['max']})"
         lines.append(line)

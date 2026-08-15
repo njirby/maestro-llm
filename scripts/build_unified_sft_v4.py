@@ -1463,8 +1463,15 @@ def build_record(
             b.subsystem, list(b.params_applied.keys()), _JSON_KEY_TO_REAPER,
         )
 
-        query_label = " and ".join(search_queries) if len(search_queries) > 1 else search_queries[0]
-        intro = f"Searching for {query_label} parameters."
+        def _q_label(q):
+            """Human label for a lookup: exact-name lists read as a count."""
+            if isinstance(q, str):
+                return f"{q} parameters"
+            return (f"the {len(q)} {b.subsystem} parameters I need"
+                    if len(q) > 1 else f"'{q[0]}'")
+
+        query_label = " and ".join(_q_label(q) for q in search_queries)
+        intro = f"Looking up {query_label}."
         if bi == 0 and _diagnosis_text:
             intro = f"{_diagnosis_text}\n\n{intro}"
             _diagnosis_text = None
@@ -1914,16 +1921,14 @@ def build_record(
         "applied_wavetable_names": applied_wt_names,
     })
 
-    # Contract assertion (D1 class): every task call's prompt must equal the
-    # linked subagent record's opening user text minus the <audio> tag. A
-    # mismatch means the deployed subagent would receive wording it never saw
-    # in training — the failure that broke the first POC.
-    _sub_openers: dict[str, list[str]] = {}
-    for _r in (list(search_records) + list(judge_records) + list(transcription_records)):
-        _t = (_r.get("messages") or [{}])[1].get("content", "") if len(_r.get("messages", [])) > 1 else ""
-        _sub_openers.setdefault(_r.get("task_type", ""), []).append(
-            _t.replace("<audio>\n", "", 1).strip())
-    _all_openers = {t for lst in _sub_openers.values() for t in lst}
+    # Contract assertion (D1 class): every subagent record's opening user text
+    # (minus the <audio> tag) must appear verbatim among the main record's task
+    # dispatch prompts. Checked record -> dispatch (not the reverse): pool-only
+    # search agents are dispatched without keeping a record, and their prompt
+    # comes from the same canonical builder. A mismatch means the deployed
+    # subagent would receive wording it never saw in training — the failure
+    # that broke the first POC.
+    _dispatch_prompts = set()
     for _m in messages:
         if _m.get("role") != "tool_call":
             continue
@@ -1931,15 +1936,18 @@ def build_record(
             _tc = json.loads(_m["content"])
         except Exception:
             continue
-        if _tc.get("name") != "task":
+        if _tc.get("name") == "task":
+            _dispatch_prompts.add((_tc.get("arguments") or {}).get("prompt", "").strip())
+    for _r in (list(search_records) + list(judge_records) + list(transcription_records)):
+        _msgs = _r.get("messages") or []
+        if len(_msgs) < 2:
             continue
-        _prompt = (_tc.get("arguments") or {}).get("prompt", "").strip()
-        if _all_openers and _prompt not in _all_openers:
+        _opener = str(_msgs[1].get("content", "")).replace("<audio>\n", "", 1).strip()
+        if _opener not in _dispatch_prompts:
             raise RuntimeError(
-                f"{sample_id}: task dispatch prompt has no matching subagent "
-                f"opener (contract drift). subagent_type="
-                f"{_tc['arguments'].get('subagent_type')!r} prompt[:120]="
-                f"{_prompt[:120]!r}")
+                f"{sample_id}: subagent record {_r.get('id')} opener does not match "
+                f"any task dispatch prompt (contract drift). opener[:120]="
+                f"{_opener[:120]!r}")
 
     assert_valid_ms_swift_multiturn_record(record)
     return record, search_records, judge_records, transcription_records

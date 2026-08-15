@@ -254,27 +254,30 @@ def _batch_search_queries(
     subsystem: str,
     param_keys: list[str],
     key_to_reaper: dict[str, dict],
-) -> list[str]:
-    """Return 1+ search queries for a subsystem batch.
+) -> list[list[str]]:
+    """Return the lookups for a subsystem batch: ONE targeted, exact-name query.
 
-    For most subsystems, returns [subsystem]. For "fx" batches, extracts the
-    specific FX types (chorus, delay, etc.). For "macro" batches, derives
-    queries from the first word of each param's REAPER name.
+    The agent knows exactly which params it is about to set, so it looks up
+    exactly those. The old behaviour queried the subsystem keyword instead
+    ("modulation" -> 448 params, ~30k tokens of response, of which a handful
+    were used); measured on the pilot corpus, param dumps were 68k of a main
+    record's 108k tokens and no returned plugin name was ever referenced by
+    a later command. Targeted lookups also let the response carry each
+    discrete param's FULL option vocabulary — the one thing the agent cannot
+    infer from the Vital JSON key — instead of an option count.
+
+    Falls back to the subsystem keyword only when no param maps to a REAPER
+    name (exploratory behaviour is still worth demonstrating occasionally).
     """
-    if subsystem not in ("fx", "macro"):
-        return [subsystem]
-
-    categories: set[str] = set()
+    names: list[str] = []
     for key in param_keys:
         rinfo = key_to_reaper.get(key)
-        if not rinfo:
-            continue
-        first_word = rinfo["name"].split()[0].lower()
-        if first_word in _FX_SEARCH_KEYWORDS:
-            categories.add(first_word)
-        elif subsystem == "macro":
-            categories.add(first_word)
-    return sorted(categories)[:3] if categories else [subsystem]
+        if rinfo and rinfo.get("name"):
+            names.append(rinfo["name"].strip())
+    if not names:
+        return [subsystem]
+    # de-duplicate, preserve order
+    return [list(dict.fromkeys(names))]
 
 
 # ---------------------------------------------------------------------------
