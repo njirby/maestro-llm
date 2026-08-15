@@ -251,15 +251,8 @@ def build_transcription_record_v4(
     # ── Phase 1: User dispatch ──
     messages.append({
         "role": "user",
-        "content": (
-            f"<audio>\n"
-            f"Transcribe this melody into MIDI notes on REAPER track {track_idx} "
-            f"(the main agent just created the track). Write Python code "
-            f"(reapy → MIDI_InsertNote) that inserts the notes. "
-            f"After inserting, render your output through the default Vital "
-            f"preset and listen to verify it matches the target melody. "
-            f"If it doesn't match, re-transcribe from scratch."
-        ),
+        "content": "<audio>\n" + _oc.transcription_dispatch_prompt(
+            target_audio_path, track_idx),
     })
 
     messages.append({

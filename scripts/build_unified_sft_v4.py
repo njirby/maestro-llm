@@ -974,15 +974,8 @@ def build_record(
 
         # Emit Agent tool_calls
         for ai_idx, (start, end, agent_id, _out, _manifest, _sl) in enumerate(round_agent_meta):
-            _search_prompt_parts = [f"Target: {target_audio_path}."]
-            if _trans_notes_file:
-                _search_prompt_parts.append(f"Transcription MIDI: {_trans_notes_file}.")
-            _search_prompt_parts.append(
-                f"Evaluate wavetables at indices {start}-{end - 1}. "
-                f"Scan Vital's data directories for .vitaltable and .vital files to get names in your range, "
-                f"swap each into the synth, render, and listen. "
-                f"Return a JSON shortlist of 2-4 wavetable names."
-            )
+            _search_prompt_parts = [_oc.search_dispatch_prompt(
+                target_audio_path, _trans_notes_file, start, end)]
             messages.append(_tool_call("Agent", {
                 "subagent_type": "wavetable_search",
                 "description": f"Evaluate wavetables {start}-{end - 1} for target sound",
@@ -1021,6 +1014,14 @@ def build_record(
                 cache=candidate_audio,
                             )
 
+        if _carried_locked_slots:
+            _locked_prompt_section = (
+                f"\nPreviously confirmed (locked) selections from prior round: "
+                + json.dumps({str(k): v for k, v in _carried_locked_slots.items()})
+                + ". Keep these locked — only evaluate new candidates for the unfilled slots."
+            )
+        else:
+            _locked_prompt_section = ""
         # Judge via REAL builder
         judge_result = build_judge_record(
             sample_id=sample_id,
@@ -1039,6 +1040,7 @@ def build_record(
             probe_audio_dir=judge_probe_dir,
             midi_path=_trans_notes_file,
             dawfarm=ctx,
+            locked_prompt_section=_locked_prompt_section,
         )
         if judge_result.record:
             judge_result.record["id"] = f"{sample_id}_r{rounds_used}_judge"
@@ -1112,25 +1114,8 @@ def build_record(
                 f"select the best oscillator combination (up to 3).{_locked_narration}"
             ),
         })
-        if _carried_locked_slots:
-            _locked_prompt_section = (
-                f"\nPreviously confirmed (locked) selections from prior round: "
-                + json.dumps({str(k): v for k, v in _carried_locked_slots.items()})
-                + ". Keep these locked — only evaluate new candidates for the unfilled slots."
-            )
-        else:
-            _locked_prompt_section = ""
-        _judge_dispatch_prompt = (
-            f"Target: {target_audio_path}.\n"
-            f"Pool candidates from search agents: {json.dumps(pool)}.\n"
-            f"The target may use up to 3 active oscillators. Swap each candidate "
-            f"wavetable into the synth via chunk manipulation, render, and listen "
-            f"alongside the target, then select the candidates (1 to 3) that "
-            f"together best capture the target. Return your selection as JSON with "
-            f"keys: tuple (list of chosen names), n_osc_slots (how many you chose), "
-            f"reasoning."
-            f"{_locked_prompt_section}"
-        )
+        _judge_dispatch_prompt = _oc.judge_dispatch_prompt(
+            target_audio_path, pool, _locked_prompt_section)
         # Write judge output file on disk for the cat (always overwrite —
         # stale files from prior builds would show the wrong verdict).
         # In claw-code, outputFile contains the agent's final assistant message.

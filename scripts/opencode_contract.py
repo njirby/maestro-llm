@@ -205,3 +205,44 @@ AGENT_PROMPTS = {
         "for the patch, explaining briefly what each selected candidate contributes."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Subagent dispatch prompts — the SAME string is the parent's task prompt and
+# the subagent record's opening user text (minus the <audio> placeholder).
+# Divergence here is the D1 contract bug; never compose these ad hoc.
+# ---------------------------------------------------------------------------
+
+def transcription_dispatch_prompt(target_audio_path, track_idx: int) -> str:
+    return (
+        f"Target: {target_audio_path}. Track: {track_idx}. Transcribe the target "
+        f"melody into MIDI notes on that track: write Python (reapy \u2192 "
+        f"MIDI_InsertNote) that inserts the notes, then render through the default "
+        f"Vital preset and listen to verify it matches the target melody. If it "
+        f"doesn't match, re-transcribe from scratch."
+    )
+
+
+def search_dispatch_prompt(target_audio_path, midi_path, start: int, end: int) -> str:
+    return (
+        f"Target: {target_audio_path}.\n"
+        f"Transcription MIDI: {midi_path}.\n"
+        f"Evaluate wavetables at indices {start}-{end - 1}. Scan Vital's data "
+        f"directories for candidate names in your range, render all candidates "
+        f"with the transcribed melody, then listen to each and give a terse "
+        f"verdict per candidate. End with your shortlist."
+    )
+
+
+def judge_dispatch_prompt(target_audio_path, pool: list[str],
+                          locked_section: str = "") -> str:
+    pool_str = ", ".join(f'"{n}"' for n in pool)
+    return (
+        f"Target: {target_audio_path}.\n"
+        f"Pool candidates from search agents: [{pool_str}].\n"
+        f"The target may use up to 3 active oscillators. Render probes for each "
+        f"candidate, listen alongside the target, and select the candidates "
+        f"(1 to 3) that together best capture the target's character. Return "
+        f"your selection as JSON with keys: tuple (list of chosen names), "
+        f"n_osc_slots (how many you chose), reasoning.{locked_section}"
+    )

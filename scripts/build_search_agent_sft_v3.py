@@ -298,15 +298,8 @@ def build_search_record_v3(
     })
     messages.append({
         "role": "user",
-        "content": (
-            "<audio>\n"
-            f"Target: {target_audio_path}.\n"
-            f"Transcription MIDI: {midi_path}.\n"
-            f"Evaluate wavetables at indices {shard_start}-{shard_end - 1}. Scan "
-            f"Vital's data directories for candidate names in your range, render "
-            f"all candidates with the transcribed melody, then listen to each and "
-            f"give a terse verdict per candidate. End with your shortlist."
-        ),
+        "content": "<audio>\n" + oc.search_dispatch_prompt(
+            target_audio_path, midi_path, shard_start, shard_end),
     })
 
     messages.append({"role": "assistant",

@@ -616,6 +616,7 @@ def build_judge_record(
     probe_audio_dir: Path | None = None,
     midi_path: str | None = None,
     dawfarm: "DawFarmRolloutCtx | None" = None,
+    locked_prompt_section: str = "",
 ) -> JudgeResult:
     """Build one SFT judge record. Returns empty JudgeResult if the pool is empty."""
     if not pool:
@@ -650,15 +651,8 @@ def build_judge_record(
     # No file path — the framework captures the agent's result automatically.
     messages.append({
         "role": "user",
-        "content": (
-            f"<audio>\n"
-            f"Pool candidates from search agents: [{pool_str}].\n"
-            f"The target may use up to 3 active oscillators. Render probes for each "
-            f"candidate, listen alongside the target, and select the candidates (1 to 3) "
-            f"that together best capture the target's character. "
-            f"Return your selection as JSON with keys: "
-            f"tuple (list of chosen names), n_osc_slots (how many you chose), reasoning."
-        ),
+        "content": "<audio>\n" + _oc.judge_dispatch_prompt(
+            target_audio_path, list(pool), locked_prompt_section),
     })
 
     # Render probes for all pool candidates
