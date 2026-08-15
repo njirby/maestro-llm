@@ -287,3 +287,25 @@ file existence/non-silence.
 5. **Container hygiene**: recycle + assert_clean before every rollout. Note the
    pool's health check can fire before REAPER finishes restarting (~20-30 s);
    transient "unhealthy" messages are expected and retried.
+
+### Note: the wavetable retrieval index does NOT drive search labels
+
+`outputs/wt_retrieval_baseline/wt_index{.npz,_meta.json}` holds one CLAP
+embedding per library wavetable, rendered by the **vita** engine with a
+**fixed** probe melody (`maestro.render.vital._load_vital` + `load_json`, a
+different code path from the VST3/DawDreamer renderer that had the wavetable
+bug — so the index was never poisoned by it).
+
+v4 needs the index at startup (`selected_by_name`, and `_wt_name_to_emb` for
+the simulated path), but `build_search_agent_sft_v3.py` does not reference it
+at all. v3 derives shortlist labels from probes it renders itself — candidates
+AND GT ingredients — with the sample's **transcribed** melody through the
+deployment engine, then compares those embeddings at 0.97. So label audio and
+model-heard audio are the same renders, which is the property that makes the
+labels learnable. Do not "improve" the index expecting search labels to change;
+they come from the per-sample probes.
+
+Residual (simulated path only): index embeddings are vita + fixed melody while
+rollouts are VST3 + transcribed melody — same preset, different engine and
+different notes. Closing that would mean rebuilding the index through the
+deployment engine.
