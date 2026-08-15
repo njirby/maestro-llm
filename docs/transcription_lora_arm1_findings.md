@@ -252,3 +252,38 @@ MANDATORY regen gate: probe discriminability check — centroid/mel spread
 across wavetables must be large before any rollout generation runs.
 Lesson recorded: validate INFORMATION CONTENT of generated audio, not just
 file existence/non-silence.
+
+## Regen requirements discovered during the opencode-contract pilot (2026-08-15)
+
+1. **Probe renders must apply wavetables.** maestro/render/dawdreamer.py applied
+   numeric params only; load_state was never called, so every candidate probe
+   rendered Vital's default wavetable (~30 Hz centroid spread across sine vs
+   saw; user-confirmed identical by ear). Fixed: load_state per render, with a
+   LOUD warning on fallback. Verified: 10.2k-17.9k Hz spread in real data.
+   Renderer bake-off: REAPER chunk path 1.91 s/render, DawDreamer+load_state
+   0.20 s (0.031 s at 8 workers), mel cosine 0.9993 between them.
+2. **Tool responses must summarise, not dump.** Param-search responses were 68k
+   of a main record's 108k tokens; no returned plugin param name was ever
+   referenced by a later command. Fix was NOT a helper library — it was smarter
+   tool calls: query the exact params the batch is about to set (the builder
+   already had them and threw them away). 5,630 tok of canned keyword queries
+   -> ~309 tok/batch, and targeted lookups can afford to print each discrete
+   param's FULL option vocabulary (the one thing not inferable from the JSON
+   key). Standing rule: every tool prints a summary with a "refine to see more"
+   affordance, never a dump.
+3. **Training data contains no failures.** v4 injects PARAM mistakes (wrong
+   values -> audible error -> correction loop) but no CODE mistakes, so the
+   corpus has zero failed bash calls, zero tracebacks, zero invalid-argument
+   errors. A deployed model has never seen an error message. Restore a ~5-10%
+   code-mistake/recovery fraction in the full regen (execute_for_traceback
+   exists in agent_sft_common but is unwired in v4).
+4. **Contract drift is the recurring failure mode.** Three separate instances
+   this round: transcription dispatch != subagent opener (D1 class, twice — the
+   second time because a fix silently no-oped on a unicode-arrow mismatch);
+   search task_result shape differing between kept and pool-only paths; and
+   parallel tool results flushed in completion order while records lay them out
+   in call order (found and fixed harness-side). Builder now ASSERTS every task
+   prompt equals its subagent's opener. Add assertions, don't rely on review.
+5. **Container hygiene**: recycle + assert_clean before every rollout. Note the
+   pool's health check can fire before REAPER finishes restarting (~20-30 s);
+   transient "unhealthy" messages are expected and retried.

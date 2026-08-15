@@ -61,7 +61,15 @@ def _clap_cosine(a, b) -> float:
 
 def _rerender_entry(pool: dawfarm.DawFarmPool, entry: dict, vital_data: str) -> str:
     sid = entry["sample_id"]
-    pd = json.load(open(entry["path_file"]))
+    # Manifests come in two shapes: the iterative-path form (path_file points
+    # at a JSON holding target/start preset paths) and the flat form written
+    # by render_sft_targets.py (target_preset_path directly on the entry).
+    if entry.get("path_file"):
+        pd = json.load(open(entry["path_file"]))
+    else:
+        pd = {"target_preset_path": entry.get("target_preset_path")}
+    if not pd.get("target_preset_path"):
+        raise KeyError("entry has neither path_file nor target_preset_path")
     target = json.load(open(pd["target_preset_path"]))
     if pd.get("start_preset_path"):
         start = json.load(open(pd["start_preset_path"]))
