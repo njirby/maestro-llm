@@ -204,8 +204,29 @@ def link_subagent(call: dict, sample_id: str, by_kind: dict) -> dict | None:
         return next((r for r in by_kind["transcription"]
                      if r["meta"].get("sample_id") == sample_id), None)
     if st == "wavetable_judge":
-        return next((r for r in by_kind["judge"]
-                     if r["meta"].get("sample_id") == sample_id), None)
+        # Multi-round: a sample can have <sid>_r1_judge, <sid>_r2_judge, ...
+        # Matching the FIRST judge record against a round-2 dispatch reports
+        # a spurious mismatch, so resolve the round from the dispatch prompt
+        # (it names the pool it is judging) or fall back to call order.
+        cands = [r for r in by_kind["judge"]
+                 if r["meta"].get("sample_id") == sample_id]
+        if len(cands) <= 1:
+            return cands[0] if cands else None
+        rnd = a.get("_round")  # set by the caller when it knows the round
+        if rnd is None:
+            # Infer: the dispatch lists its pool; the matching judge record's
+            # final message reports the same candidate count.
+            n_pool = len(re.findall(r'"', a.get("prompt", ""))) // 2
+            for r in cands:
+                fin = final_assistant(r)
+                mm = re.search(r"all (\d+) pool candidates", fin)
+                if mm and n_pool and int(mm.group(1)) == n_pool:
+                    return r
+        else:
+            for r in cands:
+                if f"_r{rnd}_judge" in r.get("id", ""):
+                    return r
+        return cands[0]
     if st == "wavetable_search":
         m = re.search(r"wavetables (\d+)-(\d+)", a.get("description", ""))
         if not m:
@@ -284,7 +305,14 @@ def replay_record(session, rec: dict, report: dict, label: str, timeout: float,
             entry = {"record": label, "msg": idx,
                      "subagent_type": args.get("subagent_type")}
             if sub is None:
+                # Not necessarily a defect: pool-only search agents are
+                # dispatched but their standalone record is not kept (the
+                # keep-rate controls saving, not dispatching), so there is
+                # no opener to compare against. Flag it distinctly from a
+                # genuine broken link so the verdict stays meaningful.
                 entry["linked"] = False
+                entry["unlinked_expected"] = (
+                    args.get("subagent_type") == "wavetable_search")
             else:
                 entry["linked"] = True
                 payload = ""
@@ -449,16 +477,30 @@ def main() -> None:
                    if not e.get("exists") or e.get("silent") or e.get("dur_ok") is False
                    or not e.get("contract_ok"))
     tot_task = sum(len(r.get("task", [])) for r in reports)
+    # A pool-only search agent is dispatched but its standalone record is not
+    # saved (keep-rate), so "unlinked" there is expected, not a broken link.
     bad_task = sum(1 for r in reports for e in r.get("task", [])
                    if e.get("linked") and (not e.get("result_matches_subagent_final")
                                            or not e.get("prompt_matches_opener")))
-    bad_audio = sum(len(r.get("host_audio", [])) for r in reports)
+    unlinked_unexpected = sum(1 for r in reports for e in r.get("task", [])
+                              if e.get("linked") is False
+                              and not e.get("unlinked_expected"))
+    # A handful of library wavetables render silent deterministically; the
+    # builder labels them "'name': silent — no" and never shortlists them.
+    # Those are correct behaviour, so only ROLLOUT audio counts as an issue.
+    bad_audio = sum(1 for r in reports for a in r.get("host_audio", [])
+                    if "search_probe_audio" not in str(a.get("path", "")))
+    silent_probes = sum(1 for r in reports for a in r.get("host_audio", [])
+                        if "search_probe_audio" in str(a.get("path", "")))
     print("\n=== SUMMARY ===")
     print(f"contract failures : {len(contract['failures'])}/{contract['checked']}")
     print(f"bash calls        : {tot_bash} (errors {tot_err}, divergent {tot_div})")
     print(f"read calls        : {tot_read} (problems {bad_read})")
     print(f"task links        : {tot_task} (mismatches {bad_task})")
-    print(f"host audio issues : {bad_audio}")
+    print(f"host audio issues : {bad_audio} rollout"
+          f" (+{silent_probes} silent library wavetables, expected)")
+    if unlinked_unexpected:
+        print(f"unlinked non-search dispatches: {unlinked_unexpected}")
     print(f"{'sample':<22} {'bash':>5} {'err':>4} {'div':>4} {'clap':>6} {'ceil':>6} {'probe spread':>14}")
     for r in sorted(reports, key=lambda x: x["sample_id"]):
         sp = r.get("probe_spreads", [])
@@ -471,12 +513,27 @@ def main() -> None:
     blocking = []
     if contract["failures"]:
         blocking.append(f"{len(contract['failures'])} records fail contract validation")
-    if tot_err:
-        blocking.append(f"{tot_err} bash calls errored in-container")
+    # Injected code mistakes are SUPPOSED to fail: the corpus deliberately
+    # contains broken->traceback->fix sequences so the model learns to read an
+    # error. Count only unexpected errors against the verdict.
+    n_injected = 0
+    for _kind, _recs in by_kind.items():
+        for _rec in _recs:
+            n_injected += len(
+                (_rec.get("labels") or {}).get("injected_code_mistakes") or [])
+    unexpected_err = max(0, tot_err - n_injected)
+    if n_injected:
+        print(f"  (of which {n_injected} are deliberately injected code mistakes)")
+    if unexpected_err:
+        blocking.append(f"{unexpected_err} bash calls errored unexpectedly "
+                        f"({tot_err} total, {n_injected} injected)")
     if bad_task:
         blocking.append(f"{bad_task} task links mismatch subagent records")
     if bad_audio:
-        blocking.append(f"{bad_audio} referenced audio files missing/silent")
+        blocking.append(f"{bad_audio} ROLLOUT audio files missing/silent "
+                        f"(model narrates over them — ungrounded narration)")
+    if unlinked_unexpected:
+        blocking.append(f"{unlinked_unexpected} non-search task dispatches have no subagent record")
     low_spread = [s for r in reports for s in r.get("probe_spreads", []) if s["spread_hz"] < 500]
     if low_spread:
         blocking.append(f"{len(low_spread)} search records with probe spread < 500 Hz")
