@@ -84,6 +84,11 @@ from scripts.build_main_agent_sft_v3 import (
     _REAPER_PARAM_DUMP,
     _VITAL_DISPLAY_NAMES,
     build_batch_action_snippet,
+    compute_round_coverage,
+    slices_for_regions,
+    select_and_apply_mutation,
+    execute_for_traceback,
+    oc_emit_code_mistake_sequence,
     build_batches_from_diff,
     build_diagnosis_subsystem_truth,
     denormalize_batch_params,
@@ -428,21 +433,75 @@ def build_record(
     # gaps, no GT-targeted slice adjustment. (The old stride grid left ~1/3
     # of the library unsearchable and teleported one slice onto the GT when
     # needed — a structural label leak: the off-grid slice held the answer.)
-    slice_starts = compute_search_partition(total_named, slice_size)
-    n_agents = len(slice_starts)
+    # Honest partial coverage: round 1 auditions a contiguous (wrapped)
+    # window of the library, round 2 auditions exactly the remainder. When
+    # a GT wavetable falls outside round 1 it is genuinely never heard, so
+    # the pool genuinely lacks it and the judge's no_match is truthful.
+    # (The old forced miss made an agent audition a GT and decline to
+    # shortlist it — impossible to reconcile with evidence-derived labels,
+    # where a GT probe scores 1.0 against itself.)
+    _round1_coverage = float(getattr(args, "round1_coverage", 0.6) or 0.6)
+    _r1_regions, _r2_regions = compute_round_coverage(
+        total_named, _round1_coverage, sample_rng)
+    _regions_by_round = [_r1_regions, _r2_regions]
 
-    def _slice_ranges_str(starts: list[int]) -> str:
-        return ", ".join(
-            f"{s}-{min(s + slice_size, total_named) - 1}" for s in starts
-        )
+    def _regions_for_round(r: int) -> list[tuple[int, int]]:
+        """Round 1 -> window, round 2 -> remainder, round 3+ -> full library
+        (a genuinely fresh audition once both halves have been heard)."""
+        if 1 <= r <= len(_regions_by_round) and _regions_by_round[r - 1]:
+            return _regions_by_round[r - 1]
+        return [(0, total_named)]
+
+    round_slices = slices_for_regions(_regions_for_round(1), slice_size)
+    n_agents = len(round_slices)
+
+    def _slice_ranges_str(slices: list[tuple[int, int]]) -> str:
+        return ", ".join(f"{s}-{e - 1}" for s, e in slices)
 
     gt_idxs = [name_to_idx_full[n] for n in gt_names_list if n in name_to_idx_full]
-    force_research_rate = float(getattr(args, "force_research_rate", 0.30))
-    # Forced re-search now happens at the SHORTLIST level: in round 1 the
-    # search agent covering a GT auditions it but doesn't shortlist it (the
-    # realistic inference failure — imperfect ears, not bad slicing), so the
-    # judge reports no_match and round 2 re-dispatches the same partition.
-    force_miss = sample_rng.random() < force_research_rate
+
+    # ---- Code-mistake injection (real tracebacks, never fabricated) ----
+    _code_mistake_rate = float(getattr(args, "code_mistake_rate", 0.08) or 0.0)
+    _injected_code_mistakes: list[dict] = []
+
+    def _maybe_code_mistake(site: str, snippet_name: str, correct_cmd: str) -> bool:
+        """With probability --code-mistake-rate, emit broken -> REAL traceback
+        -> diagnosis immediately before the caller's correct tool_call.
+
+        The broken command is EXECUTED (in the rollout's own container when
+        one exists) and only emitted if it genuinely failed — a fabricated
+        traceback would teach the model an error message the environment
+        never produces. Silently skips when no mutation fits the snippet or
+        the mutated code unexpectedly succeeds.
+        """
+        if _code_mistake_rate <= 0.0 or sample_rng.random() >= _code_mistake_rate:
+            return False
+        sel = select_and_apply_mutation(
+            snippet_name, correct_cmd, sample_rng,
+            reaper_available=ctx is not None,
+        )
+        if sel is None:
+            return False
+        mutation, broken_cmd = sel
+        try:
+            if ctx is not None:
+                # Same lock real_exec uses: reapy allows one client at a time.
+                with ctx.lock:
+                    tb = execute_for_traceback(
+                        broken_cmd, cwd=str(ROOT), session=ctx.session,
+                        as_bash=True, timeout=60.0)
+            else:
+                tb = execute_for_traceback(
+                    broken_cmd, cwd=str(ROOT), as_bash=True, timeout=30.0)
+        except Exception as exc:  # never let injection break a rollout
+            _log(f"code-mistake injection at {site} failed: {exc}")
+            return False
+        if not tb:
+            return False
+        oc_emit_code_mistake_sequence(messages, broken_cmd, tb, mutation)
+        _injected_code_mistakes.append({"site": site, "mutation_kind": mutation.name})
+        _log(f"injected code mistake at {site}: {mutation.name}")
+        return True
 
     # ---- Begin messages ----
     from scripts import opencode_contract as _oc
@@ -799,8 +858,8 @@ def build_record(
 
     # Pre-render probes for search agents
     all_slice_names: list[str] = []
-    for s in slice_starts:
-        for i in range(s, min(s + slice_size, total_named)):
+    for s, e in round_slices:
+        for i in range(s, e):
             if i in idx_to_name_full:
                 all_slice_names.append(idx_to_name_full[i])
     all_slice_names = list(dict.fromkeys(all_slice_names))
@@ -829,7 +888,9 @@ def build_record(
 
     while rounds_used < max_rounds:
         rounds_used += 1
-        round_offsets_used.append(list(slice_starts))
+        round_slices = slices_for_regions(_regions_for_round(rounds_used), slice_size)
+        n_agents = len(round_slices)
+        round_offsets_used.append([s for s, _ in round_slices])
 
         # Pool management on re-search (round 2+):
         #   no_match     → full reset (nothing was useful)
@@ -839,18 +900,29 @@ def build_record(
                 pool = []
 
         # Announce round
+        _round_covered = sum(e - s for s, e in round_slices)
         if rounds_used == 1:
             intro = (
                 f"Library has {total_named} wavetables. Dispatching {n_agents} search "
-                f"agents in parallel across contiguous slices covering the full library "
-                f"[{_slice_ranges_str(slice_starts)}]."
+                f"agents in parallel across contiguous slices covering "
+                f"{_round_covered} of them "
+                f"[{_slice_ranges_str(round_slices)}]."
             )
+        elif rounds_used == 2 and _r2_regions:
+            _r1_covered = sum(e - s for s, e in _r1_regions)
+            intro = (
+                f"{_research_prefix}"
+                f"Round 1 covered {_r1_covered} of {total_named} wavetables and found "
+                f"no match. Dispatching {n_agents} search agents across the remaining "
+                f"{_round_covered}: [{_slice_ranges_str(round_slices)}]."
+            )
+            _research_prefix = ""
         else:
             intro = (
                 f"{_research_prefix}"
                 f"Re-dispatching {n_agents} search agents across the full library for "
                 f"a fresh audition: "
-                f"[{_slice_ranges_str(slice_starts)}]."
+                f"[{_slice_ranges_str(round_slices)}]."
             )
             _research_prefix = ""
         messages.append({"role": "assistant", "content": intro})
@@ -863,8 +935,7 @@ def build_record(
         # Build search agent call specs (parallel-safe — each agent
         # gets its own shard and output file; shared state is read-only).
         _search_specs: list[tuple[int, int, int, str]] = []
-        for ai, start in enumerate(slice_starts):
-            end = min(start + slice_size, total_named)
+        for ai, (start, end) in enumerate(round_slices):
             if end <= start:
                 continue
             agent_id = make_agent_id(sample_id, "wavetable_search", rounds_used, ai)
@@ -872,12 +943,11 @@ def build_record(
 
         def _run_search(spec: tuple[int, int, int, str]) -> tuple[int, str, SearchResult]:
             ai, start, end, agent_id = spec
-            # Round-1 forced miss: the agent whose shard holds a GT auditions
-            # it but leaves it off the shortlist (realistic perceptual miss).
+            # No forced misses: a round-1 miss now happens only because the
+            # GT lies outside this round's coverage window (compute_round_coverage),
+            # i.e. it was never auditioned — an honest miss the evidence labels
+            # agree with.
             _fm_names = None
-            if force_miss and rounds_used == 1:
-                _fm_names = [n for n in gt_names_list
-                             if start <= name_to_idx_full.get(n, -1) < end] or None
             # Data-mix control: emit the GT-holding shard's record always,
             # others at --search-record-keep-rate (pool-only otherwise).
             _has_gt = any(start <= name_to_idx_full.get(n, -1) < end for n in gt_names_list)
@@ -1172,18 +1242,23 @@ def build_record(
                 )
             else:
                 _carried_locked_slots.clear()
+                _next_regions = _regions_for_round(rounds_used + 1)
+                _unheard = sum(e - s for s, e in _next_regions)
                 _research_prefix = (
                     f"The judge reports the pool of {len(pool)} candidates doesn't contain "
                     f"any wavetable with the {missing_character} of the target. "
-                    f"Re-dispatching the search for a fresh audition of the library. "
+                    + (f"{_unheard} wavetables in the library haven't been auditioned "
+                       f"yet — searching those next. "
+                       if rounds_used == 1 and _r2_regions else
+                       f"Re-dispatching the search for a fresh audition of the library. ")
                 )
-            # Same full partition — re-search means a fresh audition, not new
-            # regions (there are none: the slices already cover everything).
-
-            # Pre-render probes for next round
+            # Pre-render probes for the NEXT round's coverage (round 2 is the
+            # remainder the first round never auditioned; round 3+ is a fresh
+            # full-library pass).
             next_slice_names: list[str] = []
-            for s in slice_starts:
-                for i in range(s, min(s + slice_size, total_named)):
+            for s, e in slices_for_regions(
+                    _regions_for_round(rounds_used + 1), slice_size):
+                for i in range(s, e):
                     if i in idx_to_name_full:
                         next_slice_names.append(idx_to_name_full[i])
             next_slice_names = list(dict.fromkeys(next_slice_names))
@@ -1343,6 +1418,7 @@ def build_record(
         f"print(json.dumps({{'status': 'ok', 'applied': {json.dumps(apply_names)}}}))"
     )
     messages.append({"role": "assistant", "content": selection_text})
+    _maybe_code_mistake("wavetable_apply", "tuple", _wrap_as_bash(apply_snippet))
     messages.append(_tool_call("Bash", {"command": _wrap_as_bash(apply_snippet)}))
     if ctx is not None:
         _apply_stdout = ctx.real_exec(_wrap_as_bash(apply_snippet), "wavetable apply").stdout
@@ -1482,6 +1558,8 @@ def build_record(
 
         for sq in search_queries:
             search_snippet = _wrap_as_bash(build_param_search_snippet(sq))
+            _maybe_code_mistake(f"param_lookup:{b.subsystem}", "param_search",
+                                search_snippet)
             messages.append(_tool_call("Bash", {"command": search_snippet}))
             if ctx is not None:
                 messages.append(_bash_tool_response(
@@ -1498,6 +1576,7 @@ def build_record(
                 messages.append(_bash_tool_response(search_stdout))
 
         messages.append({"role": "assistant", "content": f"Applying {b.subsystem} changes."})
+        _maybe_code_mistake(f"batch_apply:{b.subsystem}", "tuple", action_snippet)
         messages.append(_tool_call("Bash", {"command": action_snippet}))
         if ctx is not None:
             _action_stdout = ctx.real_exec(action_snippet, f"{b.subsystem} apply").stdout
@@ -1513,6 +1592,8 @@ def build_record(
         messages.append({"role": "assistant", "content": f"Listening after {b.subsystem} batch."})
         _batch_render_cmd = _wrap_as_bash(build_reaper_render_snippet(
             out_path=ctx.cw(batch_wav) if ctx is not None else str(batch_wav)))
+        _maybe_code_mistake(f"batch_render:{b.subsystem}", "reaper_render",
+                            _batch_render_cmd)
         messages.append(_tool_call("Bash", {"command": _batch_render_cmd}))
         if ctx is not None:
             _bt = _time.monotonic()
@@ -1857,6 +1938,12 @@ def build_record(
             "search_judge_verdicts": verdicts_by_round,
             "search_final_verdict": verdicts_by_round[-1] if verdicts_by_round else None,
             "search_rounds_exhausted_on_no_match": judge_exhausted_fallback,
+            "search_round1_coverage": _round1_coverage,
+            "search_round_regions": {"round1": _r1_regions, "round2": _r2_regions},
+            "gt_in_round1_coverage": all(
+                any(s <= i < e for s, e in _r1_regions) for i in gt_idxs
+            ) if gt_idxs else None,
+            "injected_code_mistakes": _injected_code_mistakes,
         },
         "meta": {
             "pipeline_version": "v4_unified",
@@ -2059,11 +2146,23 @@ def main() -> None:
     ap.add_argument("--candidates-per-batch", type=int, default=8)
     ap.add_argument("--max-search-rounds", type=int, default=3)
     ap.add_argument("--force-research-rate", type=float, default=0.20,
-                    help="Reduced from 0.30 — real CLAP thresholding causes natural misses.")
+                    help="DEPRECATED / no-op. Forcing an agent to audition a GT "
+                         "and not shortlist it contradicts evidence-derived labels. "
+                         "Re-search is now driven by --round1-coverage (honest "
+                         "partial coverage) plus natural judge no_match verdicts.")
     ap.add_argument("--no-audio-rate", type=float, default=0.05)
     ap.add_argument("--probe-dir", type=Path, default=Path("outputs/agent_sft/candidate_probes"))
     ap.add_argument("--per-param-mistake-rate", type=float, default=0.10,
         help="Independent per-param mistake probability (default 0.10).")
+    ap.add_argument("--code-mistake-rate", type=float, default=0.08,
+        help="Probability that an eligible bash call is first emitted broken, "
+             "with its REAL traceback and a fix (default 0.08; 0 disables). "
+             "Without this the corpus contains no failed commands at all.")
+    ap.add_argument("--round1-coverage", type=float, default=0.6,
+        help="Fraction of the wavetable library auditioned in search round 1 "
+             "(default 0.6). When the GT falls outside it the judge's no_match "
+             "is honest and round 2 auditions exactly the remainder. 1.0 means "
+             "full coverage every round (no coverage-driven re-search).")
     ap.add_argument("--mistake-rate", type=float, default=None,
         help="Deprecated alias for --per-param-mistake-rate.")
     ap.add_argument("--max-correction-turns", type=int, default=3,
