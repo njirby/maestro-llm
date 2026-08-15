@@ -647,6 +647,160 @@ def read_vital_preset(track_idx=0, fx_idx=0):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# opencode-contract emission layer (new builders route through these; the
+# legacy claw-code helpers below remain for old scripts)
+# ---------------------------------------------------------------------------
+
+from scripts import opencode_contract as oc  # noqa: E402
+
+
+def oc_tool_call_msg(name: str, arguments: dict) -> dict:
+    return {"role": "tool_call", "content": oc.tool_call(name, arguments)}
+
+
+def oc_bash_call_msg(command: str, timeout_ms: int | None = None,
+                     workdir: str | None = None) -> dict:
+    return {"role": "tool_call", "content": oc.bash_call(command, timeout_ms, workdir)}
+
+
+def oc_bash_response_msg(stdout: str, exit_code: int = 0, stderr: str = "") -> dict:
+    return {"role": "tool_response",
+            "content": oc.bash_output(stdout, exit_code=exit_code, stderr=stderr)}
+
+
+def oc_read_call_msg(file_path: str) -> dict:
+    return {"role": "tool_call", "content": oc.read_call(file_path)}
+
+
+def oc_read_audio_response_msg(audio_path: str | Path,
+                               display_path: str | None = None) -> dict:
+    """Audio read result: <audio> placeholder + attachment notice. The
+    placeholder aligns positionally with the record's `audios` list; at
+    serving time the harness sends the clip as an input_audio part."""
+    p = Path(audio_path)
+    duration, sr = 0.0, 44100
+    try:
+        info = sf.info(str(p))
+        duration, sr = float(info.duration), int(info.samplerate)
+    except Exception:
+        pass
+    fname = Path(display_path).name if display_path else p.name
+    return {"role": "tool_response",
+            "content": "<audio>\n" + oc.read_output_audio(fname, duration, sr)}
+
+
+def oc_task_call_msg(description: str, prompt: str, subagent_type: str) -> dict:
+    return {"role": "tool_call",
+            "content": oc.task_call(description, prompt, subagent_type)}
+
+
+def oc_task_result_msg(session_id: str, final_text: str,
+                       state: str = "completed") -> dict:
+    return {"role": "tool_response", "content": oc.task_result(session_id, final_text, state)}
+
+
+def oc_emit_listen_sequence(
+    messages: list[dict],
+    audio_assets: list[str],
+    audio_path: str | Path,
+    probe_stdout: str | None = None,
+    display_path: str | None = None,
+) -> None:
+    """New-contract render-listen: plain-string bash result -> read -> audio.
+    Call AFTER the assistant text and bash render tool_call; ``audio_path``
+    must already be appended to ``audio_assets``."""
+    path_str = str(display_path or audio_path)
+    if probe_stdout is None:
+        try:
+            info = sf.info(str(audio_path))
+            probe_stdout = (f"Rendered {path_str} "
+                            f"({info.duration:.2f}s, {int(info.samplerate)} Hz)")
+        except Exception:
+            probe_stdout = f"Rendered {path_str}"
+    messages.append(oc_bash_response_msg(probe_stdout))
+    messages.append(oc_read_call_msg(path_str))
+    messages.append(oc_read_audio_response_msg(audio_path, display_path=path_str))
+
+
+OC_ALLOWED_ROLES = {"system", "user", "assistant", "tool_call", "tool_response"}
+
+
+def validate_oc_record(record: dict[str, Any]) -> list[str]:
+    """Validator for opencode-contract records: leading system turn, lowercase
+    tool names, plain-string contents, audio-tag/audios alignment."""
+    errors: list[str] = []
+    rid = str(record.get("id", ""))
+    messages = record.get("messages")
+    audios = record.get("audios")
+    if not rid:
+        errors.append("id_missing")
+    if not isinstance(messages, list) or len(messages) < 3:
+        errors.append("messages_missing_or_too_short")
+        return errors
+    if not isinstance(audios, list):
+        errors.append("audios_missing_or_not_list")
+        audios = []
+    if messages[0].get("role") != "system":
+        errors.append("first_message_not_system")
+    if messages[1].get("role") != "user":
+        errors.append("second_message_not_user")
+    if messages[-1].get("role") != "assistant":
+        errors.append("last_message_not_assistant")
+    seen_tool_call = False
+    audio_tag_count = 0
+    prev_role: str | None = None
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            errors.append(f"message_{i}_not_object")
+            continue
+        role = msg.get("role")
+        if role not in OC_ALLOWED_ROLES:
+            errors.append(f"message_{i}_invalid_role:{role}")
+        if role == "system" and i != 0:
+            errors.append(f"message_{i}_system_not_first")
+        if role == "tool_call":
+            seen_tool_call = True
+            try:
+                payload = json.loads(msg.get("content", ""))
+                if payload.get("name") not in oc.TOOL_NAMES:
+                    errors.append(f"message_{i}_unknown_tool:{payload.get('name')}")
+            except Exception:
+                errors.append(f"message_{i}_tool_call_not_json")
+        if role == "tool_response" and not seen_tool_call:
+            errors.append(f"message_{i}_tool_response_before_tool_call")
+        if prev_role == role and role not in {"tool_call", "tool_response"}:
+            errors.append(f"message_{i}_duplicate_adjacent_role:{role}")
+        prev_role = str(role) if role is not None else None
+        content = msg.get("content")
+        if not isinstance(content, str):
+            errors.append(f"message_{i}_content_not_string")
+            continue
+        tags = content.count("<audio>")
+        if tags > 1 and role in {"user", "assistant"}:
+            errors.append(f"message_{i}_multiple_audio_tags")
+        if tags and role in {"assistant", "system"}:
+            errors.append(f"message_{i}_audio_tag_in_{role}_turn")
+        audio_tag_count += tags
+    if audio_tag_count != len(audios):
+        errors.append(f"audio_tag_mismatch:tags={audio_tag_count}:audios={len(audios)}")
+    for i, path in enumerate(audios):
+        if not isinstance(path, str) or not path.strip():
+            errors.append(f"audio_{i}_invalid_path")
+    return errors
+
+
+def assert_valid_oc_record(record: dict[str, Any]) -> None:
+    errors = validate_oc_record(record)
+    if errors:
+        raise ValueError(f"{record.get('id', 'unknown')}: " + "; ".join(errors))
+
+
+def build_probe_render_snippet(*args, **kwargs) -> str:
+    """Alias for build_render_probes_snippet (opencode-era name)."""
+    return build_render_probes_snippet(*args, **kwargs)
+
+
 def _tool_call(name: str, arguments: dict) -> dict:
     """Build a tool_call message matching claw-code's format."""
     return {"role": "tool_call", "content": json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)}
@@ -935,8 +1089,26 @@ _WT_DISCOVER_SNIPPET = (
     "lib.sort(key=lambda w: w.get('name',''))\n"
 )
 
-_DAWDREAMER_RENDER_HELPER = """\
-import json, os, re, tempfile
+_DAWDREAMER_RENDER_HELPER = r"""
+import ctypes, ctypes.util, json, os, re, struct, tempfile
+
+def _install_x11_error_handler():
+    # MUST run before importing dawdreamer: Vital's state load touches the
+    # GUI layer and an unhandled X error aborts the process under Xvfb.
+    _path = ctypes.util.find_library("X11")
+    if not _path:
+        return
+    _libx11 = ctypes.CDLL(_path)
+    _libx11.XInitThreads()
+    _H = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    _ign = _H(lambda d, e: 0)
+    _libx11.XSetErrorHandler(_ign)
+    _IOH = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
+    _io_ign = _IOH(lambda d: 0)
+    _libx11.XSetIOErrorHandler(_io_ign)
+    _install_x11_error_handler._keep = (_ign, _io_ign)
+
+_install_x11_error_handler()
 import numpy as np
 import soundfile as sf
 import dawdreamer as daw
@@ -945,8 +1117,43 @@ VITAL_VST3 = os.environ.get("VITAL_VST3", os.path.expanduser("~/.vst3/Vital.vst3
 SAMPLE_RATE = 44100
 BLOCK_SIZE = 512
 
+_JUCE_B64 = ".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
+
+def _juce_b64_encode(data):
+    size = len(data)
+    out = []
+    for i in range(((size * 8) + 5) // 6):
+        bit = i * 6
+        byte, off = bit >> 3, bit & 7
+        if byte + 1 < size:
+            word = data[byte] | (data[byte + 1] << 8)
+        else:
+            word = data[byte] if byte < size else 0
+        out.append(_JUCE_B64[(word >> off) & 0x3F])
+    return str(size) + "." + "".join(out)
+
+def _build_vst3_state(preset):
+    # Vital VST3 state blob (VC2! magic + XML + JUCE-b64 IComponent). Raw
+    # preset JSON is NOT a valid load_state input — passing it silently
+    # renders the default wavetable (2026-08-15 postmortem).
+    json_bytes = json.dumps(preset, separators=(",", ":")).encode() + b"\x00"
+    chunk = json_bytes + b"\x00" * 16 + b"JUCEPrivateData"
+    body = 4 + 4 + 4 + 4 + 4 + 128 + 4 + len(chunk)
+    icomp = (b"VstW" + struct.pack(">III", 8, 1, 0)
+             + b"CcnK" + struct.pack(">i", body)
+             + b"FBCh" + struct.pack(">i", 2)
+             + b"Vita" + struct.pack(">i", 0x00010600)
+             + struct.pack(">i", 0) + b"\x00" * 128
+             + struct.pack(">i", len(chunk)) + chunk)
+    xml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           "<VST3PluginState><IComponent>" + _juce_b64_encode(icomp)
+           + "</IComponent></VST3PluginState>").encode() + b"\x00"
+    return struct.pack("<II", 0x21324356, len(xml)) + xml
+
 _engine = daw.RenderEngine(SAMPLE_RATE, BLOCK_SIZE)
 _synth = _engine.make_plugin_processor("vital", VITAL_VST3)
+_engine.load_graph([(_synth, [])])
+_STATE_PATH = os.path.join(tempfile.gettempdir(), "dd_state_%d" % os.getpid())
 
 def load_midi_notes(path):
     with open(path) as f:
@@ -955,18 +1162,13 @@ def load_midi_notes(path):
     return [(n["pitch"], n["velocity"], n["start_s"], n["dur_s"]) for n in notes]
 
 def render_vital_preset(preset_dict, out_path, midi_notes):
-    with tempfile.NamedTemporaryFile(suffix=".vital", mode="w", delete=False) as f:
-        json.dump(preset_dict, f, separators=(",", ":"))
-        tmp = f.name
-    try:
-        _synth.load_state(tmp)
-    finally:
-        os.unlink(tmp)
+    with open(_STATE_PATH, "wb") as f:
+        f.write(_build_vst3_state(preset_dict))
+    _synth.load_state(_STATE_PATH)
     _synth.clear_midi()
     for pitch, vel, start, dur in midi_notes:
         _synth.add_midi_note(int(pitch), int(vel), float(start), float(dur))
     duration = max((start + dur for _, _, start, dur in midi_notes), default=10.0) + 1.0
-    _engine.load_graph([(_synth, [])])
     _engine.render(duration)
     audio = _synth.get_audio()
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
