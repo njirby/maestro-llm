@@ -182,11 +182,50 @@ def invalid_arguments_error(tool: str, detail: str) -> str:
 # System message
 # ---------------------------------------------------------------------------
 
-def system_message(agent_prompt: str, cwd: str, platform: str = "linux") -> str:
-    """Leading system turn: agent prompt + environment block (opencode-style)."""
+def tools_block(tools: list[dict[str, Any]] | None = None) -> str:
+    """The hermes tool-schema block, byte-identical to what ms-swift's hermes
+    agent template appends to the system message at TRAINING time.
+
+    This exists because serving cannot be trusted to produce it: the stock
+    Qwen2.5-Omni chat template has no tool support at all, so an engine given
+    `tools=[...]` silently drops them. A model trained WITH this block and
+    served WITHOUT it emits a malformed tool call — it has never seen the
+    format described anywhere else (verified 2026-08-15: with the block the
+    3B emits perfect `<tool_call>\\n{"name": "bash", ...}`; without it, an
+    unparseable `<tool_call>'python - <<'PY'...`).
+
+    Deriving both sides from this one function makes the chat template
+    irrelevant and keeps train/serve byte-identical.
+    """
+    ts = TOOLS if tools is None else tools
+    sigs = "\n".join(json.dumps(t, ensure_ascii=False) for t in ts)
+    return (
+        "# Tools\n\n"
+        "You may call one or more functions to assist with the user query.\n\n"
+        "You are provided with function signatures within <tools></tools> XML tags:\n"
+        f"<tools>\n{sigs}\n</tools>\n\n"
+        "For each function call, return a json object with function name and "
+        "arguments within <tool_call></tool_call> XML tags:\n"
+        "<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n"
+        "</tool_call>"
+    )
+
+
+def system_message(agent_prompt: str, cwd: str, platform: str = "linux",
+                   include_tools: bool = False) -> str:
+    """Leading system turn: agent prompt + environment block (opencode-style).
+
+    `include_tools=False` (default) is for BUILDERS: the record carries a
+    `tools` field and ms-swift's hermes template appends the block itself, so
+    including it here would duplicate it.
+
+    `include_tools=True` is for SERVING: inline the block so the prompt matches
+    training regardless of what the engine's chat template does with `tools`.
+    """
     env = (f"<env>\n  Working directory: {cwd}\n  Platform: {platform}\n"
            f"  Shell: bash\n</env>")
-    return f"{agent_prompt.rstrip()}\n\n{env}"
+    base = f"{agent_prompt.rstrip()}\n\n{env}"
+    return f"{base}\n\n{tools_block()}" if include_tools else base
 
 
 AGENT_PROMPTS = {

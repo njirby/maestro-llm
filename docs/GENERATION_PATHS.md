@@ -72,3 +72,28 @@ The legacy builders should eventually be collapsed: move the handful of helpers
 v4 imports from `build_main_agent_sft_v2/v3` and `build_search_agent_sft_v2`
 into `agent_sft_common.py`, then delete or archive the standalone scripts. Not
 done yet because the legacy 8k corpus tooling still references them.
+
+## Tool-call format conformance (verified 2026-08-15)
+
+Our records use hermes-style JSON tool calls:
+`<tool_call>\n{"name": "bash", "arguments": {...}}\n</tool_call>`, with the
+schema block rendered into the system message inside `<tools></tools>`.
+
+That IS the canonical format for our production model: Qwen3-Omni-30B's own
+chat template ships `<tools>` and `<tool_call>` support, and vLLM's `hermes`
+tool parser consumes exactly this. No regeneration is needed for conformance.
+(vLLM also ships `qwen3xml` / `qwen3coder` parsers, but those expect the Coder
+line's `<function=...><parameter=...>` XML convention — not what Omni emits.)
+
+**Serving requires BOTH halves** (each without the other fails silently):
+1. the hermes tools block INLINED in the system message
+   (`opencode_contract.system_message(..., include_tools=True)`), because a
+   model's chat template may ignore `tools=` entirely — Qwen2.5-Omni-3B's
+   stock template has zero tool support, so the schema never reaches the
+   prompt and the model emits an unparseable call; and
+2. `tools=[...]` on the request, because vLLM only activates its tool parser
+   when tools are present — otherwise a perfectly-formed call arrives as plain
+   text in `content`, the harness sees no tool call, and the loop stops after
+   one turn.
+Measured: block-only -> perfect markup, unparsed. tools=-only -> malformed
+markup. Both -> `finish_reason=tool_calls`, structured call, loop runs.
