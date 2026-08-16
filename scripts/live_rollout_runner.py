@@ -34,6 +34,12 @@ cfg = AppConfig(
     model="maestro-main",
     cwd="/work/live_cwd",
     enable_sub_agents=True,
+    # Greedy. AppConfig.temperature defaults to None, which omits the field and
+    # lets vLLM apply its own default (0.7) — so every "deterministic" rollout
+    # was actually sampling. For a memorized model driving a known sequence
+    # that is the difference between reproducing the rollout and inventing a
+    # plausible-looking one.
+    temperature=0.0,
 )
 app = ChatApp(config=cfg)
 # The tools block is inlined by the harness itself (build_system_prompt,
