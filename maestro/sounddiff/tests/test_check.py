@@ -254,3 +254,17 @@ def test_echo_on_release_edit_flagged():  # slot 06 narration
          "solid.")
     p = check_delta(t, ENV)
     assert "state: reverb/echo on a dry clip" in p and "claims space up, measured unchanged" in p
+
+
+def test_negated_list_of_dimensions():  # slot 06 narrations after the 'unchanged' wording
+    d = {"mode": "self_edit", "overall": "clear", "dirs": {k: 0 for k in ("brightness", "level", "space", "distortion",
+                                                                          "movement")}, "flags": {"dry": True}}
+    for t in ("The part just has a slightly different color to it now, and I can hear it, but it isn't sitting louder, "
+              "brighter, grittier, or more open.",
+              "The sound's color has shifted a little. It's not louder, brighter, more echoey, grittier, or moving "
+              "differently, just a subtle change in the tone itself.",
+              "Its overall tone has a slight colour shift that changes the character without making it louder, "
+              "brighter, or more spacious."):
+        assert check_delta(t, d) == [], t
+    # a list item after a non-negated opener is still a claim
+    assert check_delta("It got much louder, brighter, and a lot more echoey than before, a really big change.", d)

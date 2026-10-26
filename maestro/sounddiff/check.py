@@ -65,10 +65,28 @@ def _basic(text: str) -> list[str]:
     return probs
 
 
+def negated(text: str, i: int) -> bool:
+    """A negation in the clause before i, or, when the claim sits in a comma list ('it isn't louder, brighter, or more
+    open'), in the clause that opens the list: earlier comma segments of at most 3 words are list items."""
+    if NEG.search(clause_before(text, i)):
+        return True
+    j = i
+    while True:
+        k = text.rfind(",", 0, j)
+        if k < 0 or any(c in text[k:j] for c in ".;:!?—"):
+            return False
+        seg = clause_before(text, k)
+        if NEG.search(seg):
+            return True
+        if len(seg.split()) > 3:
+            return False
+        j = k
+
+
 def _claimed(pat: str, text: str):
     """Non-negated matches of pat."""
     for m in re.finditer(pat, text, re.I):
-        if not NEG.search(clause_before(text, m.start())):
+        if not negated(text, m.start()):
             yield m
 
 

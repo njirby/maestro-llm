@@ -274,7 +274,7 @@ def notes_self_edit(before, after, notes, *, renderer) -> dict:
     elif not overall:
         L.append("- Overall: no audible difference: before and after differ no more than two takes of the same patch.")
         L.append("- Every dimension (brightness, level, space, movement, distortion, stereo, note shape, tone): "
-                 "unchanged.")
+                 "unchanged, same as before.")
     else:
         L.append(f"- Overall: the edit is {AUD[overall]}.")
         if len(unit_aud) > 1:
@@ -296,40 +296,39 @@ def notes_self_edit(before, after, notes, *, renderer) -> dict:
             "floor": floor, "audio": {"before": str(path(a, notes)), "after": str(path(b, notes))} if path else None}
 
 
-# per dimension: (label, more/up, less/down, same) for self_edit (after vs before) and tvc (the target vs your patch);
+# per dimension: (label, more/up, less/down) for self_edit (after vs before) and tvc (the target vs your patch);
 # {s} takes the size word
 LINES = {
     "self_edit": {
-        "brightness": ("Brightness", "{s} brighter", "{s} darker", "same as before"),
-        "level": ("Level", "{s} louder", "{s} quieter", "same"),
-        "space": ("Space", "{s} more reverb/echo", "{s} drier, less reverb/echo", "same"),
-        "movement": ("Movement", "{s} more movement", "{s} steadier, less movement", "same"),
-        "distortion": ("Distortion", "{s} more distortion, grittier", "{s} less distortion, cleaner", "same"),
-        "width": ("Stereo", "{s} wider", "{s} narrower", "same width"),
-        "attack": ("Attack", "{s} slower, softer", "{s} snappier", "same"),
-        "sustain": ("Note length", "notes hold {s} longer", "notes die away {s} faster", "same"),
+        "brightness": ("Brightness", "{s} brighter", "{s} darker"),
+        "level": ("Level", "{s} louder", "{s} quieter"),
+        "space": ("Space", "{s} more reverb/echo", "{s} drier, less reverb/echo"),
+        "movement": ("Movement", "{s} more movement", "{s} steadier, less movement"),
+        "distortion": ("Distortion", "{s} more distortion, grittier", "{s} less distortion, cleaner"),
+        "width": ("Stereo", "{s} wider", "{s} narrower"),
+        "attack": ("Attack", "{s} slower, softer", "{s} snappier"),
+        "sustain": ("Note length", "notes hold {s} longer", "notes die away {s} faster"),
         "tail": ("Ring-out after each note", "{s} longer: the notes themselves ring out longer after they're released "
                  "(the note's own release, not reverb or echo; the space is unchanged)",
                  "{s} shorter: the notes themselves stop sooner after they're released (the note's own release, not "
-                 "less reverb or echo; the space is unchanged)", "same"),
-        "overtones": ("Overtones", "{s} more, buzzier", "{s} fewer, smoother", "same"),
-        "noise": ("Noise", "noisier, hissier", "cleaner, less hiss", "same"),
+                 "less reverb or echo; the space is unchanged)"),
+        "overtones": ("Overtones", "{s} more, buzzier", "{s} fewer, smoother"),
+        "noise": ("Noise", "noisier, hissier", "cleaner, less hiss"),
     },
     "target_vs_current": {
-        "brightness": ("Brightness", "the target is {s} brighter", "the target is {s} darker", "same as yours"),
-        "level": ("Level", "the target is {s} louder", "the target is {s} quieter", "same"),
-        "space": ("Space", "the target has {s} more reverb/echo", "the target is {s} drier", "same"),
-        "movement": ("Movement", "the target moves {s} more", "the target is {s} steadier", "same"),
-        "distortion": ("Distortion", "the target is {s} more distorted", "the target is {s} cleaner", "same"),
-        "width": ("Stereo", "the target is {s} wider", "the target is {s} narrower", "same width"),
-        "attack": ("Attack", "the target's is {s} slower, softer", "the target's is {s} snappier", "same"),
-        "sustain": ("Note length", "the target's notes hold {s} longer", "the target's notes die away {s} faster",
-                    "same"),
+        "brightness": ("Brightness", "the target is {s} brighter", "the target is {s} darker"),
+        "level": ("Level", "the target is {s} louder", "the target is {s} quieter"),
+        "space": ("Space", "the target has {s} more reverb/echo", "the target is {s} drier"),
+        "movement": ("Movement", "the target moves {s} more", "the target is {s} steadier"),
+        "distortion": ("Distortion", "the target is {s} more distorted", "the target is {s} cleaner"),
+        "width": ("Stereo", "the target is {s} wider", "the target is {s} narrower"),
+        "attack": ("Attack", "the target's is {s} slower, softer", "the target's is {s} snappier"),
+        "sustain": ("Note length", "the target's notes hold {s} longer", "the target's notes die away {s} faster"),
         "tail": ("Ring-out after each note", "the target's notes themselves ring out {s} longer after they're "
                  "released (the note's own release, not reverb or echo)", "the target's notes themselves stop {s} "
-                 "sooner after they're released (the note's own release, not reverb or echo)", "same"),
-        "overtones": ("Overtones", "the target has {s} more, buzzier", "the target has {s} fewer, smoother", "same"),
-        "noise": ("Noise", "the target is noisier", "the target is cleaner", "same"),
+                 "sooner after they're released (the note's own release, not reverb or echo)"),
+        "overtones": ("Overtones", "the target has {s} more, buzzier", "the target has {s} fewer, smoother"),
+        "noise": ("Noise", "the target is noisier", "the target is cleaner"),
     },
 }
 STATE_WORDS = {"space": _space_words, "movement": _mv_words,
@@ -340,22 +339,26 @@ def _move_lines(m: dict, A, B, *, tvc=False) -> list[str]:
     """One line per core dimension. self_edit: A = before, B = after. tvc: A = your patch now, B = the target
     (directions are the target relative to yours)."""
     mode = "target_vs_current" if tvc else "self_edit"
+    words = dict(STATE_WORDS, sustain=lambda s: _len_word(s) if s.length() else None)
     L = []
-    for dim, (label, up, down, same) in LINES[mode].items():
+    for dim, (label, up, down) in LINES[mode].items():
         d, n = m.get(dim, (None, 0))
         if dim == "tail" and d is None:  # covered by the space line (the reverb / delay changed), or too small
             continue
-        if d is None:
-            txt = "different in kind" if n == -1 else f"{same} or close to it (too small to call)"
-        elif d == 0:
-            txt = same
+        wa, wb = (words[dim](A), words[dim](B)) if dim in words else (None, None)
+        # unchanged / too-small lines carry the shared state only as 'same as before' / 'in both', so a description
+        # of the state can't read as a change (v5: '(now: notes fade a bit as they hold)' narrated as 'now fade more')
+        if d is None and n != -1 or d == 0:
+            txt = ("unchanged" if d == 0 else "unchanged or too small to call") if not tvc else \
+                  ("same as yours" if d == 0 else "about the same as yours (too small to call)")
+            if wa and wa == wb:
+                txt += f" (in both: {wb})" if tvc else f" ({wb}, same as before)"
         else:
-            txt = (up if d > 0 else down).replace("{s}", _sz(n)).replace("  ", " ")
-        if dim in STATE_WORDS:
-            wa, wb = STATE_WORDS[dim](A), STATE_WORDS[dim](B)
-            txt += f" ({wb})" if wa == wb else (f" (target: {wb}; yours: {wa})" if tvc else f" (before: {wa}; now: {wb})")
-        elif dim == "sustain" and B.length():
-            txt += f" ({'target' if tvc else 'now'}: {_len_word(B)})"
+            txt = "different in kind" if d is None else (up if d > 0 else down).replace("{s}", _sz(n)).replace("  ", " ")
+            if wa and wb and wa != wb:
+                txt += f" (target: {wb}; yours: {wa})" if tvc else f" (before: {wa}; now: {wb})"
+            elif wb:
+                txt += f" ({'target' if tvc else 'now'}: {wb})"
         L.append(f"- {label}: {txt}.")
     if all(m.get(k, (0,))[0] in (0, None) for k in LINES[mode]):
         L.append("- None of these moved clearly: the difference is small and in the overall tone colour.")
