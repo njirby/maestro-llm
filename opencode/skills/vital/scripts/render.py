@@ -6,6 +6,9 @@
 Loads the FULL preset state (wavetables, LFO shapes, mod matrix), sets the host tempo (Vital ignores the preset's
 beats_per_minute inside a host: tempo comes from notes.json "bpm", or --bpm, else 120), plays the notes after a
 silent bar-aligned pre-roll of >= 4 s that is cut from the output, and writes 32-bit float stereo at 44.1 kHz.
+Before the preset is loaded, the fresh Vital instance plays a short chord on the init preset: Vital reads a cross-mod
+(FM/RM) source oscillator's buffer even when that oscillator is off, and in a never-played instance those buffers are
+uninitialized, so a chain like osc 1 RM <- osc 2, osc 2 FM <- osc 3 (off) turns the whole render into digital silence.
 
 Tail: the render always runs a fixed --tail seconds past the last note-off (default 3.0 s).
 
@@ -28,6 +31,7 @@ VITAL = os.environ.get("VITAL_VST3", "/usr/lib/vst3/Vital.vst3")
 SR, BLOCK = 44100, 512
 PREROLL_MIN_S = 4.0  # Vital keeps FX buffers/voices across state loads; the pre-roll flushes them
 DEFAULT_TAIL_S = 3.0
+INIT_PRESET = Path(__file__).resolve().parents[1] / "data" / "init_preset.json"
 
 
 @contextmanager
@@ -104,12 +108,17 @@ def main():
             eng = daw.RenderEngine(SR, BLOCK)
             synth = eng.make_plugin_processor("vital", VITAL)
             eng.load_graph([(synth, [])])
-            with tempfile.NamedTemporaryFile(suffix=".vitalstate", delete=False) as f:
-                f.write(build_state(preset))
-            try:
-                synth.load_state(f.name)
-            finally:
-                os.unlink(f.name)
+            for state, warmup in ((load_preset(INIT_PRESET), True), (preset, False)):
+                with tempfile.NamedTemporaryFile(suffix=".vitalstate", delete=False) as f:
+                    f.write(build_state(state))
+                try:
+                    synth.load_state(f.name)
+                finally:
+                    os.unlink(f.name)
+                if warmup:  # initialize every voice's oscillator buffers (see module docstring)
+                    for p in range(48, 80, 4):
+                        synth.add_midi_note(p, 100, 0.0, 0.1)
+                    eng.render(0.5)
             eng.set_bpm(float(bpm))
             synth.clear_midi()
             for n in notes:

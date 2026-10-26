@@ -683,36 +683,28 @@ def tools_block(tools: list[dict[str, Any]] | None = None) -> str:
 # Divergence here is the D1 contract bug; never compose these ad hoc.
 # ---------------------------------------------------------------------------
 
-def transcription_dispatch_prompt(target_audio_path, track_idx: int) -> str:
-    return (
-        f"Target: {target_audio_path}. Track: {track_idx}. Transcribe the target "
-        f"melody into MIDI notes on that track: write Python (reapy → "
-        f"MIDI_InsertNote) that inserts the notes, then render through the default "
-        f"Vital preset and listen to verify it matches the target melody. If it "
-        f"doesn't match, re-transcribe from scratch."
-    )
+def transcription_dispatch_prompt(target_audio_path, notes_path) -> str:
+    """Parent -> transcriber. The agent prompt (agent/transcriber.md) carries the method: write notes.json in the
+    vital skill's format, render through the default patch, listen next to the target, fix and re-render."""
+    return f"Target: {target_audio_path}. Write the melody to {notes_path}."
 
 
-def search_dispatch_prompt(target_audio_path, midi_path, start: int, end: int) -> str:
-    return (
-        f"Target: {target_audio_path}.\n"
-        f"Transcription MIDI: {midi_path}.\n"
-        f"Evaluate wavetables at indices {start}-{end - 1}. Scan Vital's data "
-        f"directories for candidate names in your range, render all candidates "
-        f"with the transcribed melody, then listen to each and give a terse "
-        f"verdict per candidate. End with your shortlist."
-    )
+def wavetable_slice_label(start: int, end: int) -> str:
+    """Library slice [start, end) (0-based) as `wavetable.py list` ids, e.g. 0, 166 -> "wt001-wt166"."""
+    return f"wt{start + 1:03d}-wt{end:03d}"
 
 
-def judge_dispatch_prompt(target_audio_path, pool: list[str],
-                          locked_section: str = "") -> str:
-    pool_str = ", ".join(f'"{n}"' for n in pool)
-    return (
-        f"Target: {target_audio_path}.\n"
-        f"Pool candidates from search agents: [{pool_str}].\n"
-        f"The target may use up to 3 active oscillators. Render probes for each "
-        f"candidate, listen alongside the target, and select the candidates "
-        f"(1 to 3) that together best capture the target's character. Return "
-        f"your selection as JSON with keys: tuple (list of chosen names), "
-        f"n_osc_slots (how many you chose), reasoning.{locked_section}"
-    )
+def search_dispatch_prompt(target_audio_path, notes_path, start: int, end: int) -> str:
+    """Parent -> searcher: the target, the session notes and a slice [start, end) of the wavetable library."""
+    return (f"Target: {target_audio_path}.\n"
+            f"Notes: {notes_path}.\n"
+            f"Slice: wavetables {wavetable_slice_label(start, end)}.")
+
+
+def judge_dispatch_prompt(target_audio_path, pool: list[str], locked_section: str = "",
+                          notes_path=None) -> str:
+    """Parent -> judge: the target, the session notes and the pooled shortlists. The reply format
+    ({"tuple": [...], "reasoning": "..."}) is in agent/judge.md. `locked_section` is appended verbatim."""
+    pool_str = ", ".join(json.dumps(n, ensure_ascii=False) for n in pool)
+    notes = f"Notes: {notes_path}.\n" if notes_path else ""
+    return f"Target: {target_audio_path}.\n{notes}Pool: [{pool_str}].{locked_section}"

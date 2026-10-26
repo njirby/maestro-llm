@@ -6,7 +6,7 @@
   mod.py preset.json remove SRC DST
 
 list:   one line per used slot: `slot <n>  <src> -> <dst>  <amount %>[  bipolar][  power P][  bypassed]`
-add:    routes SRC into DST with AMOUNT in -1..1 (or -100%..100%): updates the existing SRC->DST slot, else takes the
+add:    routes SRC into DST with AMOUNT in -1..1 (or -100%..100%, e.g. -30%): updates the existing SRC->DST slot, else takes the
         first empty slot. Sets amount, clears bypass. Prints the slot line.
 remove: empties the SRC->DST slot and resets its amount/bipolar/power/stereo/bypass to defaults.
 
@@ -77,7 +77,9 @@ def main():
     pr = sub.add_parser("remove")
     pr.add_argument("src")
     pr.add_argument("dst")
-    a = ap.parse_args()
+    # argparse reads "-30%" as an option; a leading space keeps it a positional (the amount parser strips it)
+    argv = [" " + t if re.fullmatch(r"-\d*\.?\d+%", t) else t for t in sys.argv[1:]]
+    a = ap.parse_args(argv)
 
     preset = load_preset(a.preset)
     s = preset["settings"]

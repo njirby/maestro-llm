@@ -31,7 +31,7 @@ python3 $VITAL_SKILL/scripts/render.py preset.json notes.json out.wav [--bpm N] 
 #  -> out.wav  (notes 2.80 s, 128 bpm)
 python3 $VITAL_SKILL/scripts/set.py preset.json filter_1_on=on filter_1_cutoff=900Hz env_1_release=400ms
 #  -> filter_1_cutoff: 60 (262 Hz) -> 81.1 (900 Hz)          (one line per key)
-python3 $VITAL_SKILL/scripts/wavetable.py list --query saw
+python3 $VITAL_SKILL/scripts/wavetable.py list --query saw        # or --ids wt101-wt166 (a slice)
 python3 $VITAL_SKILL/scripts/wavetable.py set preset.json --osc 2 "Basic Shapes"   # or an id: wt012
 python3 $VITAL_SKILL/scripts/mod.py preset.json add lfo_1 filter_1_cutoff 40%      # list | add | remove
 python3 $VITAL_SKILL/scripts/show.py preset.json [osc|sample|env|filter|lfo|random|mod|fx|macro|global|KEY_PREFIX]
@@ -50,7 +50,7 @@ python3 $VITAL_SKILL/scripts/show.py preset.json [osc|sample|env|filter|lfo|rand
   prefix (`filter_1_`, `reverb_`, `osc_2_unison`) lists keys as `key = raw (human)` with `*` for
   non-default values, ranges/labels, and `! <reason>` for keys that cannot affect the sound.
 - **mod.py** `add` updates an existing SRC→DST route or takes the first free slot, sets the amount
-  (non-zero, -1..1 or ±100%) and clears bypass; `remove` empties the slot. Optional
+  (non-zero, -1..1 or ±100%, e.g. `-30%`) and clears bypass; `remove` empties the slot. Optional
   `--bipolar on|off --power P --stereo on|off`.
 - Things without a script (LFO shapes, sample import, macro labels) are edited in the JSON.
 
