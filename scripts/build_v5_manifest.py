@@ -8,7 +8,8 @@ Lakh clip (sounddiff.edits.load_clips/clip_notes, zero-length notes dropped); th
 render.py in the daw-farm container (exactly what the agent's own renders go through). A render outside
 preset_gen.LOUDNESS_BAND_DBFS gets its master volume normalized (preset_gen.normalize_volume) and is rendered again;
 a candidate failing preset_gen.level_qc (digital silence, non-finite, too quiet) after that is regenerated with the
-next attempt seed.
+next attempt seed. Every GT value is quantized to the precision the agent can write (quantize_to_skill) before its
+first render, so the target is the render of exactly the preset an agent could reproduce.
 
 Writes outputs/v5_manifest/<name>/{manifest.jsonl, presets/, notes/, targets/, qc.jsonl}. Row schema:
   {id, archetype, gt_preset_path, init_preset_path, notes_path, target_wav_path, bpm,
@@ -34,6 +35,8 @@ sys.path.insert(0, str(REPO))
 from maestro.sounddiff.edits import clip_notes, load_clips  # noqa: E402
 from maestro.synth.preset_gen import ARCHETYPES, generate_preset, level_qc, normalize_volume, render_level  # noqa: E402
 from maestro.synth.wavetable_lib import load_wavetable_lib  # noqa: E402
+from maestro.v5.planner import _num, parsed  # noqa: E402  (how the agent types values; parsed = what set.py stores)
+from maestro.v5.planner import params as skill_params  # noqa: E402
 
 SKILL = REPO / "opencode/skills/vital"
 INIT_PRESET = SKILL / "data/init_preset.json"
@@ -50,12 +53,29 @@ def pick_clip(clips: list[dict], rng: random.Random) -> tuple[dict, list[dict]]:
             return c, notes
 
 
+def quantize_to_skill(preset: dict) -> dict:
+    """Round every scalar setting to what the agent can write back: set.py keys to parsed(fmt_value) (planner's
+    agent-typed text through the skill's vitallib.parse_value), live mod slots to mod.py's typed amount (0.1%) and
+    power (0.01). Without this a chaotic key (reverb_size 0.86442 vs a typed 0.864) can fail the audio gate."""
+    s, table = preset["settings"], skill_params()
+    for k, v in s.items():
+        if k in table and not k.startswith("modulation_") and isinstance(v, (int, float)):
+            s[k] = parsed(k, v)
+    for i, m in enumerate(s["modulations"]):
+        if m.get("source"):
+            n = i + 1
+            s[f"modulation_{n}_amount"] = float(_num(s[f"modulation_{n}_amount"] * 100, 1)) / 100
+            s[f"modulation_{n}_power"] = float(_num(s[f"modulation_{n}_power"], 2))
+    return preset
+
+
 def candidate(seed: int, i: int, k: int, archetype: str, lib: list[dict], clips: list[dict]) -> dict:
     """Attempt k of sample i: own RNG per (seed, i, k) so samples do not shift when another one is regenerated."""
     rng = random.Random(f"v5:{seed}:{i}:{k}")
     preset = generate_preset(archetype, rng, wavetable_lib=lib, name=f"v5_{seed}_{i:04d}")
     c, notes = pick_clip(clips, rng)
     preset["settings"]["beats_per_minute"] = c["bpm"] / 60.0  # as sounddiff.edits; Vital takes host tempo anyway
+    quantize_to_skill(preset)
     return {"preset": preset, "clip": c, "notes": notes, "bpm": float(c["bpm"])}
 
 
@@ -163,7 +183,7 @@ def build(a, out, mix, lib, clips, renderer, accepted, tries, current, qc_log) -
                                      "new_volume": new_vol, **lv}) + "\n")
             qc_log.flush()
             if new_vol is not None:  # outside the loudness band: fix the master volume and render again
-                s["volume"] = new_vol
+                s["volume"] = parsed("volume", new_vol)  # skill precision, like every other key
                 cand["normalized"] = True
                 continue
             del current[i]

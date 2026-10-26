@@ -999,8 +999,13 @@ def generate_preset(
     settings["volume"] = _db_to_volume(_clamp(rng.gauss(-6.0, 3.0), -12.0, 6.0))
     settings["beats_per_minute"] = 3.0  # default
     settings["legato"] = float(rng.random() < 0.15)
-    settings["portamento_on"] = float(rng.random() < 0.10)
-    settings["portamento_time"] = rng.uniform(-10.0, -5.0)
+    # portamento_time is log2 seconds (-10 = 1 ms = Vital's default, no glide). In this Vital build portamento_on is
+    # not a gate: the glide follows portamento_time alone, so the old uniform(-10, -5) gave every preset a 1-30 ms
+    # glide. Now ~10% get a deliberate 30-300 ms glide (log-uniform from the same draw), the rest none.
+    glide = rng.random() < 0.10
+    u = (rng.uniform(-10.0, -5.0) + 10.0) / 5.0
+    settings["portamento_on"] = float(glide)
+    settings["portamento_time"] = math.log2(0.03) + u * math.log2(10.0) if glide else -10.0
     settings["voice_priority"] = float(rng.randint(0, 5))
     settings["voice_transpose"] = 0.0
     settings["pitch_wheel"] = 0.0

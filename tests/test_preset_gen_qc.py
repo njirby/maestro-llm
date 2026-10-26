@@ -78,3 +78,28 @@ def test_no_value_reaches_vital_clamped():
         assert len({round(x, 3) for x in stereo if x}) > 50  # a spread of offsets, not a constant
     finally:
         pg._PARAM_RANGES = saved
+
+
+def test_portamento_is_deliberate():
+    times = []
+    for i in range(400):
+        s = pg.generate_preset(pg.ARCHETYPES[i % len(pg.ARCHETYPES)], random.Random(i))["settings"]
+        if s["portamento_on"]:
+            assert 0.03 - 1e-9 <= 2 ** s["portamento_time"] <= 0.3 + 1e-9
+            times.append(s["portamento_time"])
+        else:
+            assert s["portamento_time"] == -10.0  # no glide (portamento_on is not a gate in this Vital build)
+    assert 0.05 < len(times) / 400 < 0.16
+
+
+def test_manifest_quantizes_to_skill_precision():
+    import copy
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from build_v5_manifest import quantize_to_skill
+    from maestro.v5.planner import parsed
+    p = pg.generate_preset("pad", random.Random(3))
+    q = quantize_to_skill(copy.deepcopy(p))
+    assert quantize_to_skill(copy.deepcopy(q)) == q  # idempotent: the GT is a fixed point of what the agent can type
+    s = q["settings"]
+    assert all(parsed(k, s[k]) == s[k] for k in ("reverb_size", "filter_1_cutoff", "env_1_attack", "volume"))
