@@ -122,7 +122,7 @@ def main():
     nar = Narrator(a.url, a.model)
     with ThreadPoolExecutor(nar.workers) as ex:
         preds = list(ex.map(lambda x: nar.call(predict_prompt(x[0]))[0], items))
-    ext = Narrator(a.url, a.model, think=False, temperature=0.0, max_tokens=600)
+    ext = Narrator(a.url, a.model, think=False, max_tokens=600)
     e_pred = extract([(p, it["mode"]) for p, (it, _) in zip(preds, items)], ext)
     e_grnd = extract([(narr[(it["id"], it["mode"])]["text"], it["mode"]) for it, _ in items], ext)
     rows, stats = [], collections.defaultdict(collections.Counter)

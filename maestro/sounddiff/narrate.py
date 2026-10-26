@@ -82,7 +82,6 @@ class Narrator:
     think: bool = True
     effort: str | None = None          # Qwen3.8 template: None -> xhigh (template default), "medium", "low"
     sys_instruction: bool = False      # put the xhigh correctness instruction into the system prompt
-    temperature: float | None = None   # default 1.0 thinking / 0.7 not
     workers: int = 24
     max_tokens: int = 8000
 
@@ -90,13 +89,12 @@ class Narrator:
         return SYSTEM + ("\n\n" + XHIGH if self.sys_instruction else "")
 
     def call(self, prompt: str, system: str | None = None, json_mode=False) -> tuple[str, str]:
-        temp = self.temperature if self.temperature is not None else (1.0 if self.think else 0.7)
         kw = {"enable_thinking": self.think, **({"reasoning_effort": self.effort} if self.effort else {})}
-        body = {"model": self.model, "temperature": temp, "top_p": 0.95 if self.think else 0.8, "top_k": 20,
-                "max_tokens": self.max_tokens, "chat_template_kwargs": kw,
+        body = {"model": self.model, "max_tokens": self.max_tokens, "chat_template_kwargs": kw,
                 "messages": [{"role": "system", "content": system or self.system()}, {"role": "user", "content": prompt}]}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        # no sampling params (temperature/top_p/top_k/...): server defaults only
         r = requests.post(f"{self.url}/chat/completions", json=body, timeout=900)
         r.raise_for_status()
         msg = r.json()["choices"][0]["message"]

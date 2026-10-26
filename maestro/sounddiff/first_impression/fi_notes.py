@@ -88,7 +88,7 @@ ls presets/*.vital | xargs -P 6 -I{{}} sh -c 'b=$(basename {{}} .vital); i=${{b%
 def render():
     (W / "wav").mkdir(exist_ok=True)
     cmd = RENDER.format(w=W, skill=SKILL)
-    subprocess.run(["docker", "run", "--rm", "--user", "1000:1000", "-v", "/home/nate:/home/nate", "-e",
+    subprocess.run(["docker", "run", "--rm", "--network", "none", "--user", "1000:1000", "-v", "/home/nate:/home/nate", "-e",
                     "VITAL_VST3=/usr/lib/vst3/Vital.vst3", "--entrypoint", "bash", "daw-farm/reaper:latest", "-c", cmd],
                    check=True)
 

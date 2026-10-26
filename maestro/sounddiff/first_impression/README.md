@@ -22,7 +22,15 @@ Scratch-era scripts, kept as they ran: `fi_notes.py` (prep / render / notes / ru
 page + audio-only arm), `oscshape.py` (waveform-representation head-to-head: text harmonic profile beat images),
 `iterate.py` (27B narrator loop). Paths inside point at outputs/sounddiff/{probe1,fi_notes,omni_fi,oscshape}.
 
-Known follow-ups: dedupe movement items from multiple LFOs on one target; a "notes run into each other" fact from the
-between-notes measure; extend check.py to brightness / note length / genre labels; relative (normalised) silence gate
-for other modes; ~25% of preset_gen targets are very quiet (generator levels); f000 renders silent through the skill's
-render.py but not render_pairs (renderer bug).
+Library (2026-10-25): `from maestro.sounddiff.first_impression import notes_first_impression, narrate_first_impression`
+(API in `__init__.py`; notes from `maestro/sounddiff/verified.py`, renders through the skill's `render.py` in the daw-farm
+image via `maestro/sounddiff/renderer.py`, checker `maestro/sounddiff/check.py`). Probe CLI for regression:
+`python -m maestro.sounddiff.first_impression notes|regress|run`. Round-4 follow-ups done there: movement items deduped
+(one per heard effect), a continuity fact ("the notes run into each other" / "clean silence between the notes": gap level
+between notes, or a part written back to back whose notes hold - f038), and checks for brightness, note length /
+continuity and genre labels ("pad" on plucky parts, "pluck" on held notes, "bass" on high parts), tested in
+`maestro/sounddiff/tests/`. Switching from render_pairs to the skill's render.py moved a few near-threshold facts
+(`regress` lists them: e.g. f003 "a touch of reverb" -> dry).
+
+Still open: relative (normalised) silence gate for other modes; ~25% of preset_gen targets are very quiet (generator
+levels, WS-C); f000 renders silent through the skill's render.py (WS-C).
