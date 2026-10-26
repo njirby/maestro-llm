@@ -26,7 +26,7 @@ paths and skill scripts are those of `maestro.dawfarm_dd.DawDreamerSession`:
 | container path | host | |
 |---|---|---|
 | `/work/rollouts/<sid>` | `<out>/rollouts/<sid>` (copy of `--init-dir`) | cwd; `<sid>` taken from the record's `Working directory:` |
-| `/tmp/maestro-oc` | `<out>/oc_root` | staging root of `opencode/README.md`, fresh per run |
+| `/tmp/maestro-oc` | `<out>/oc_root` | staging root of `opencode/README.md`, fresh per run; `config/` symlinks every top-level entry of `opencode/` (incl. a future `AGENTS.md`) except `replay/`, `README.md` |
 | `<repo>/opencode` | same (ro) | targets of the staging symlinks; skill = `/tmp/maestro-oc/config/skills/vital` |
 | `/opt/opencode/bin/opencode` | `~/.opencode/bin/opencode` (ro) | |
 | `/usr/local/bin/rg` | `outputs/replay/bin/rg-15.1.0` (ro, sha256-checked) | also copied to `$XDG_CACHE_HOME/opencode/bin/rg` |
@@ -60,10 +60,10 @@ so a rendered clip is compared by the **state that produced it**, not by its sam
 that produced it are compared byte for byte (requests), and so is every non-audio file of the final
 workdir (below); together they pin the preset and notes behind each render. A media item whose sha256
 differs then passes (`whitelisted: media_render`, with its `mel_db` as an informational column) unless
-the record's clip is a file of the initial workdir (exact match required), the lengths differ by more
-than 512 samples, or the mean |log-mel diff| (`audio_eq.py`, the metric of
-`scripts/check_render_parity.py`) exceeds the sanity cap `--max-mel-db` (default 6 dB: catches
-silence, a wrong file, a broken render). The mock saves every media payload to `io/media/<sha256>.<ext>`
+the record's clip is a file of the initial workdir (exact match required) or the clip shows gross
+breakage (`audio_eq.py`): lengths differ by more than one block (512 samples), a silence mismatch (peak
+below -60 dBFS on one side only), or a mean |log-mel diff| (the metric of
+`scripts/check_render_parity.py`) above the loose cap `--max-mel-db` (default 10 dB). Two silent clips match without the mel check. The mock saves every media payload to `io/media/<sha256>.<ext>`
 for this. A message diff that disappears when all numbers are masked is reported as kind `numeric`
 (timing/randomness in tool output), separate from `messages`. `report.md` lists diff counts by kind.
 
@@ -77,8 +77,9 @@ same container gives 0.5-0.8 dB for simple probes but 2.0-2.7 dB (init preset + 
 4.2-4.3 dB (6-12 unison voices, random phase) for others, while a small real edit (osc_2_pan +
 osc_3_tune) moved the clip 4.5 dB. The per-preset noise floor reaches ~4 dB with heavy unison and
 random phase, so no fixed log-mel threshold separates noise from small real edits; equivalence of
-re-rendered audio rests on the byte-identical state that produced it, and the 6 dB cap only catches
-gross breakage.
+re-rendered audio rests on the byte-identical state that produced it. The replays of the four v5
+pilot rollouts reached 5.7 dB (a single-wavetable probe), hence the 10 dB cap; silence and length are
+checked explicitly.
 
 ## Findings
 

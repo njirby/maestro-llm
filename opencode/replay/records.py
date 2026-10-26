@@ -271,8 +271,9 @@ WHITELIST = {
     "glob_order": "glob result lines (mtime order): compared as a sorted list",
     "media_render": "audio produced during the rollout (not in the initial workdir) whose sha256 differs: "
                     "equivalent by state (the producing tool calls and final non-audio workdir are "
-                    "byte-identical); fails only past the sanity cap (length > one block off, mean "
-                    "|log-mel diff| > max_mel_db, default 6 dB; audio_eq)",
+                    "byte-identical); fails only on gross breakage: length > one block off, silence "
+                    "mismatch (peak < -60 dBFS on one side only), mean |log-mel diff| > max_mel_db "
+                    "(default 10 dB); mel_db is informational (audio_eq)",
 }
 
 

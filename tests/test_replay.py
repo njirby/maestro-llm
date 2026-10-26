@@ -291,19 +291,35 @@ def _wav(path, hz, phase=0.0, n=44100, sr=44100, noise=0.0, seed=0):
     return path
 
 
+def _scaled(src, dst, gain):
+    import soundfile as sf
+    x, sr = sf.read(str(src), always_2d=True)
+    sf.write(str(dst), x * gain, sr, subtype="FLOAT")
+    return dst
+
+
 def test_audio_eq(tmp_path):
     from opencode.replay import audio_eq
+    assert audio_eq.DEFAULT_MAX_DB == 10.0 and audio_eq.SILENT_PEAK_DBFS == -60.0
     a = _wav(tmp_path / "a.wav", 110)
     b = _wav(tmp_path / "b.wav", 110, phase=1.3)      # re-render: other oscillator phase
     r = audio_eq.compare(a, b)
-    assert r["equivalent"], r
-    assert not audio_eq.compare(a, _wav(tmp_path / "c.wav", 165), max_db=1.5)["equivalent"]
-    silent = _wav(tmp_path / "s.wav", 110)
-    import soundfile as sf
-    x, sr = sf.read(str(silent), always_2d=True)
-    sf.write(str(silent), x * 0, sr)
-    assert not audio_eq.compare(a, silent)["equivalent"]                       # default 6 dB cap
-    assert not audio_eq.compare(a, _wav(tmp_path / "d.wav", 110, n=44100 + 2000))["equivalent"]
+    assert r["equivalent"] and r["mel_db"] < 1, r
+    # mel_db is informational: another pitch passes the loose default cap, fails a tight one
+    c = _wav(tmp_path / "c.wav", 165)
+    assert audio_eq.compare(a, c)["equivalent"]
+    r = audio_eq.compare(a, c, max_db=1.5)
+    assert not r["equivalent"] and "cap" in r["reason"]
+    # silence mismatch, both directions; silent vs silent is fine
+    silent = _scaled(a, tmp_path / "s.wav", 0.0)
+    quiet = _scaled(a, tmp_path / "q.wav", 10 ** (-70 / 20))   # peak ~ -80 dBFS: silent
+    for x, y in ((a, silent), (silent, a), (a, quiet)):
+        r = audio_eq.compare(x, y)
+        assert not r["equivalent"] and r["reason"].startswith("silence mismatch"), r
+    assert audio_eq.compare(silent, quiet)["equivalent"]
+    # length: beyond one block fails, within passes
+    r = audio_eq.compare(a, _wav(tmp_path / "d.wav", 110, n=44100 + 2000))
+    assert not r["equivalent"] and r["reason"].startswith("length"), r
     assert audio_eq.compare(a, _wav(tmp_path / "e.wav", 110, n=44100 + 300))["equivalent"]
     (tmp_path / "x.wav").write_bytes(b"junk")
     assert not audio_eq.compare(a, tmp_path / "x.wav")["equivalent"]
@@ -397,3 +413,15 @@ def test_compare_workdirs(tmp_path):
     (b / "notes.json").write_text('{"notes": [1]}')
     kinds = [d["kind"] for d in H.compare_workdirs(a, b)["diffs"]]
     assert kinds == ["workdir_files", "workdir_content"]
+
+
+def test_stage_root_stages_all_config(tmp_path):
+    from opencode.replay import harness as H
+    H.stage_root(tmp_path / "r")
+    staged = sorted(p.name for p in (tmp_path / "r" / "config").iterdir())
+    expect = sorted(p.name for p in (REPO / "opencode").iterdir()
+                    if p.name not in H.STAGE_SKIP and not p.name.startswith("."))
+    assert staged == expect and "opencode.json" in staged and "plugin" in staged
+    assert all((tmp_path / "r" / "config" / n).is_symlink() for n in staged)
+    H.stage_root(tmp_path / "s", with_plugin=False)
+    assert "plugin" not in [p.name for p in (tmp_path / "s" / "config").iterdir()]

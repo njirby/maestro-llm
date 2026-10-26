@@ -41,6 +41,7 @@ IMAGE = "daw-farm/reaper:latest"
 OC_ROOT = "/tmp/maestro-oc"
 ROLLOUT_ROOT = "/work/rollouts"
 CONTAINER_PREFIX = "wsd-replay-"
+STAGE_SKIP = {"replay", "README.md", "__pycache__"}  # opencode/ entries that are not OpenCode config
 GOLDEN_PARAMS = REPO / "docs/opencode_capture/goldens/request_params.json"
 # Same as maestro.dawfarm_dd (container-wide there; OpenCode's env -i drops them, so pass explicitly).
 SKILL_ENV = {"DISPLAY": ":99", "VITAL_VST3": "/usr/lib/vst3/Vital.vst3",
@@ -57,14 +58,17 @@ def _sha256(p: Path) -> str:
 
 def stage_root(root: Path, with_plugin: bool = True) -> None:
     """opencode/README.md staging: config dir of symlinks into the repo, HOME/XDG under the root,
-    ripgrep seeded into the cache (also mounted on PATH)."""
+    ripgrep seeded into the cache (also mounted on PATH). Every top-level entry of opencode/ is staged
+    (opencode.json, agent/, skills/, plugin/, AGENTS.md or whatever the config grows) except the
+    replay harness and docs; plugin/ only with_plugin."""
     if root.exists():
         shutil.rmtree(root)
     for d in ("config", "home", "data", "cache/opencode/bin"):
         (root / d).mkdir(parents=True)
-    names = ["opencode.json", "agent", "skills"] + (["plugin"] if with_plugin else [])
-    for n in names:
-        os.symlink(REPO / "opencode" / n, root / "config" / n)
+    skip = STAGE_SKIP | (set() if with_plugin else {"plugin"})
+    for src in sorted((REPO / "opencode").iterdir()):
+        if src.name not in skip and not src.name.startswith("."):
+            os.symlink(src, root / "config" / src.name)
     shutil.copy(RG_BIN, root / "cache/opencode/bin/rg")
 
 
