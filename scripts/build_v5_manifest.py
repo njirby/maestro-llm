@@ -8,7 +8,8 @@ Lakh clip (sounddiff.edits.load_clips/clip_notes, zero-length notes dropped); th
 render.py in the daw-farm container (exactly what the agent's own renders go through). A render outside
 preset_gen.LOUDNESS_BAND_DBFS gets its master volume normalized (preset_gen.normalize_volume) and is rendered again;
 a candidate failing preset_gen.level_qc (digital silence, non-finite, too quiet) after that is regenerated with the
-next attempt seed. Every GT value is quantized to the precision the agent can write (quantize_to_skill) before its
+next attempt seed. A deliberate glide must be audible (transition-local metric vs 4 GT takes); if not, it gets one
+150-400 ms retry, then the preset is redrawn. Every GT value is quantized to the precision the agent can write (quantize_to_skill) before its
 first render, so the target is the render of exactly the preset an agent could reproduce.
 
 Writes outputs/v5_manifest/<name>/{manifest.jsonl, presets/, notes/, targets/, qc.jsonl}. Row schema:
@@ -19,6 +20,7 @@ outcome only depends on the render, so a sample can differ only if a candidate s
 --qc-off accepts every first candidate as rendered (level statistics of the raw generator).
 """
 import argparse
+import math
 import json
 import os
 import random
@@ -86,17 +88,19 @@ def glide_off(preset: dict) -> dict:
     return q
 
 
-def glide_audible(takes: list[np.ndarray], off: np.ndarray) -> dict:
-    """Does switching the glide off change the render beyond the render-noise floor? Same rule as the v5 audio gate
-    (maestro.v5.gate.audio): floor = mean pairwise mel distance of the GT takes; off-vs-GT = mean distance to the takes;
-    audible iff the gate would reject the glide-off patch (off-vs-GT > MEL_SCALE * floor + MEL_MARGIN_DB)."""
-    from itertools import combinations
-    from maestro.sounddiff.verified import mel_d
-    from maestro.v5.gate import MEL_MARGIN_DB, MEL_SCALE
-    floor = float(np.mean([mel_d(a, b) for a, b in combinations(takes, 2)]))
-    d = float(np.mean([mel_d(off, w) for w in takes]))
-    limit = MEL_SCALE * floor + MEL_MARGIN_DB
-    return {"audible": d > limit, "off_vs_gt_db": round(d, 3), "floor_db": round(floor, 3), "limit_db": round(limit, 3)}
+def glide_audible(takes: list[np.ndarray], off: np.ndarray, notes: list[dict]) -> dict:
+    """Does switching the glide off change the render beyond the render-noise floor? The v5 audio gate's rule shape
+    (MEL_SCALE * floor + MEL_MARGIN_DB, floor = mean pairwise distance of the GT takes) on a transition-local metric:
+    log-mel distance over 150 ms after each pitch-change onset (maestro.synth.transition_metric). A whole-clip mean
+    averaged short glides away under busy patches' ~2 dB floor."""
+    from maestro.synth.transition_metric import audible_vs_takes
+    return audible_vs_takes(takes, off, notes)
+
+
+def longer_glide(preset: dict, seed: int, i: int, k: int) -> None:
+    """Second chance for an inaudible glide: a 150-400 ms log-uniform glide time (own RNG, skill precision)."""
+    u = random.Random(f"v5glide:{seed}:{i}:{k}").random()
+    preset["settings"]["portamento_time"] = parsed("portamento_time", math.log2(0.15) + u * math.log2(400 / 150))
 
 
 def candidate(seed: int, i: int, k: int, archetype: str, lib: list[dict], clips: list[dict]) -> dict:
@@ -202,17 +206,21 @@ def build(a, out, mix, lib, clips, renderer, accepted, tries, current, glide, qc
                 takes = [read(out / "targets" / f"{sid}.wav")] + [read(gdir / "targets" / f"{sid}__gt{k}.wav")
                                                                   for k in range(2, GT_TAKES + 1)]
                 off = read(gdir / "targets" / f"{sid}__off.wav")
-                res = glide_audible(takes, off) if off is not None and all(x is not None for x in takes) \
+                res = glide_audible(takes, off, g["notes"]) if off is not None and all(x is not None for x in takes) \
                     else {"audible": False, "error": "render failed"}
                 s = g["preset"]["settings"]
                 qc_log.write(json.dumps({"id": sid, "try": g["try"], "archetype": mix[i], "glide_check": True,
                                          "glide_ms": round(1000 * 2 ** s["portamento_time"], 1),
                                          "portamento_force": s["portamento_force"],
-                                         "overlap_share": round(overlap_share(g["notes"]), 3), **res}) + "\n")
+                                         "overlap_share": round(overlap_share(g["notes"]), 3),
+                                         "lengthened": g.get("lengthened", False), **res}) + "\n")
                 qc_log.flush()
                 del glide[i]
                 if res["audible"]:
                     accepted[i] = g["row"]
+                elif not g.get("lengthened") and "error" not in res:  # once: longer glide, then a fresh preset
+                    longer_glide(g["preset"], a.seed, i, g["try"])
+                    current[i] = {k: v for k, v in g.items() if k != "row"} | {"normalized": False, "lengthened": True}
             shutil.rmtree(gdir)
             if len(accepted) == a.n:
                 break

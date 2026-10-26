@@ -117,9 +117,22 @@ def test_glide_forced_and_audibility_rule():
     assert bm.overlap_share([n(0, 0.6), n(0.5, 0.6), n(1.0, 0.4)]) == 1.0
     off = bm.glide_off(pg.generate_preset("lead", random.Random(1)))["settings"]
     assert (off["portamento_on"], off["portamento_force"], off["portamento_time"]) == (0.0, 0.0, -10.0)
+    # glide check = transition-local metric: a change only in the 150 ms after pitch changes is caught, a change
+    # elsewhere is not; repeated pitches and chord tones are not transitions
+    from maestro.synth.transition_metric import audible_vs_takes, transition_onsets
+    notes = [{"pitch": p, "velocity": 100, "start_s": s, "dur_s": 0.4} for p, s in ((60, 0.0), (60, 0.5), (67, 1.0),
+                                                                                   (64, 1.0), (72, 1.5))]
+    assert transition_onsets(notes) == [1.0, 1.5]
     sr, rng = 44100, np.random.default_rng(0)
-    t = np.arange(sr) / sr
-    tone = lambda f: np.stack([np.sin(2 * np.pi * f * t)] * 2, 1).astype(np.float32) * 0.1  # noqa: E731
-    takes = [tone(220) + 1e-4 * rng.standard_normal((sr, 2)).astype(np.float32) for _ in range(4)]
-    assert not bm.glide_audible(takes, takes[0].copy())["audible"]
-    assert bm.glide_audible(takes, tone(330))["audible"]
+    t = np.arange(2 * sr) / sr
+    base = 0.1 * np.sin(2 * np.pi * 220 * t)
+    takes = [np.stack([base] * 2, 1) + 1e-3 * rng.standard_normal((2 * sr, 2)) for _ in range(4)]
+
+    def bend(where):  # 330 Hz for 80 ms at `where`
+        y = base.copy()
+        m = (t >= where) & (t < where + 0.08)
+        y[m] = 0.1 * np.sin(2 * np.pi * 330 * t[m])
+        return np.stack([y] * 2, 1) + 1e-3 * rng.standard_normal((2 * sr, 2))  # same noise level as the takes
+    assert audible_vs_takes(takes, bend(1.0), notes)["audible"]
+    assert not audible_vs_takes(takes, bend(0.25), notes)["audible"]  # no pitch change at 0.25 s
+    assert bm.glide_audible(takes, bend(1.5), notes)["audible"]
