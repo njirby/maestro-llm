@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import records as R
+from . import audio_eq, records as R
 from .records import unified
 
 REPO = Path(__file__).resolve().parents[2]
@@ -98,14 +98,16 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
            attach: list[str] | None = None, port: int = 8911, timeout_s: int = 1800,
            with_plugin: bool = True, keep_container: bool = False,
            base_dir: str | Path | None = None, expected_params: dict[str, Any] | None = None,
-           extra_records: dict[str, dict[str, Any]] | None = None, max_mel_db: float = 1.5) -> dict[str, Any]:
+           extra_records: dict[str, dict[str, Any]] | None = None, max_mel_db: float = audio_eq.DEFAULT_MAX_DB,
+           final_dir: str | Path | None = None) -> dict[str, Any]:
     """Run one replay and write <run_dir>/report.json. Returns the report.
 
     main/subagents: records (ms-swift dicts). init_dir: files to place in the workdir before the run
     (the rollout's initial state). prompt: user text sent on stdin (default: the main record's first
     user message with media placeholders removed). attach: container paths passed as `-f`.
     base_dir resolves relative `audios` paths. max_mel_db: audio-equivalence threshold for re-rendered
-    clips (audio_eq); clips whose bytes were in init_dir must match exactly."""
+    clips (audio_eq); clips whose bytes were in init_dir must match exactly. final_dir: the rollout's
+    final workdir, compared with the replay's (compare_workdirs)."""
     run_dir = Path(run_dir).resolve()
     if not RG_BIN.is_file() or _sha256(RG_BIN) != RG_SHA256:
         raise RuntimeError(f"ripgrep 15.1.0 missing or wrong at {RG_BIN} (set RG_BIN)")
@@ -180,6 +182,15 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
     elapsed = time.time() - t0
     report = build_report(records, io / "requests.jsonl", base_dir=base_dir, expected_params=expected_params,
                           prompt=prompt, init_shas=set(meta["init_shas"]), max_mel_db=max_mel_db)
+    if final_dir:
+        wd = compare_workdirs(Path(final_dir), wd_host, max_mel_db)
+        report["workdir_check"] = {k: v for k, v in wd.items() if k != "diffs"}
+        if wd["diffs"]:
+            report["rows"].append({"seq": None, "route": "workdir", "kind": "workdir", "step": None,
+                                   "status": "diff", "diffs": wd["diffs"]})
+            report["diffs"] += 1
+            for d in wd["diffs"]:
+                report["by_kind"][d["kind"]] = report["by_kind"].get(d["kind"], 0) + 1
     report.update({"opencode_exit": rc, "elapsed_s": round(elapsed, 1), "container": name,
                    "workdir": workdir, "run_dir": str(run_dir)})
     (run_dir / "report.json").write_text(json.dumps(report, indent=1, ensure_ascii=False))
@@ -199,6 +210,39 @@ def _audio_paths(record: dict[str, Any], base_dir: str | Path | None) -> list[Pa
             p = Path(base_dir) / p
         out.append(p)
     return out
+
+
+AUDIO_EXT = (".wav", ".flac", ".mp3", ".ogg")
+
+
+def compare_workdirs(orig: Path, replayed: Path, max_mel_db: float = audio_eq.DEFAULT_MAX_DB) -> dict[str, Any]:
+    """The rollout's final workdir vs the replay's. Same file set and byte-identical non-audio files
+    (preset.json, notes.json, probe/judge JSON...) are required; audio files are compared with audio_eq
+    and reported (not failed: renders are not bit-identical and same-preset noise can exceed the
+    threshold, see README)."""
+    def files(d: Path) -> dict[str, Path]:
+        return {str(p.relative_to(d)): p for p in d.rglob("*") if p.is_file()}
+    a, b = files(orig), files(replayed)
+    diffs: list[dict[str, Any]] = []
+    if set(a) != set(b):
+        diffs.append({"kind": "workdir_files", "detail": {"missing_in_replay": sorted(set(a) - set(b)),
+                                                          "extra_in_replay": sorted(set(b) - set(a))}})
+    audio, changed = {}, []
+    for rel in sorted(set(a) & set(b)):
+        if R.file_digest(str(a[rel]))["sha256"] == R.file_digest(str(b[rel]))["sha256"]:
+            continue
+        if rel.lower().endswith(AUDIO_EXT):
+            audio[rel] = audio_eq.compare(a[rel], b[rel], max_db=max_mel_db)
+        else:
+            changed.append(rel)
+    if changed:
+        diffs.append({"kind": "workdir_content", "detail": {
+            rel: unified(a[rel].read_text(errors="replace").split("\n"), b[rel].read_text(errors="replace").split("\n"),
+                         "rollout", "replay", max_lines=30) for rel in changed}})
+    return {"files": len(a), "identical": len(a) - len(audio) - len(changed) - len(set(a) - set(b)),
+            "audio_rerendered": {k: v.get("mel_db") for k, v in audio.items()},
+            "audio_over_threshold": sorted(k for k, v in audio.items() if not v.get("equivalent")),
+            "diffs": diffs}
 
 
 def expected_title_request(prompt: str, model: str) -> dict[str, Any] | None:
@@ -225,7 +269,7 @@ def _title_row(body: dict[str, Any], expected: dict[str, Any] | None) -> dict[st
 
 def build_report(records: dict[str, dict[str, Any]], log: Path, base_dir: str | Path | None = None,
                  expected_params: dict[str, Any] | None = None, prompt: str | None = None,
-                 init_shas: set[str] | None = None, max_mel_db: float = 1.5) -> dict[str, Any]:
+                 init_shas: set[str] | None = None, max_mel_db: float = audio_eq.DEFAULT_MAX_DB) -> dict[str, Any]:
     """Diff every logged request against its record. expected_params defaults to the golden
     request_params.json with the main record's model name; the title request is diffed against the
     golden title request with `prompt` (default <log dir>/prompt.txt). A media item whose sha256 differs
@@ -251,7 +295,6 @@ def build_report(records: dict[str, dict[str, Any]], log: Path, base_dir: str | 
             got = sorted(media_dir.glob(got_sha + ".*"))
             if not got:
                 return {"equivalent": False, "reason": "replayed media bytes not saved"}
-            from . import audio_eq
             return audio_eq.compare(paths[key][i], got[0], max_db=max_mel_db)
         return eq
 
@@ -298,7 +341,12 @@ def report_markdown(rep: dict[str, Any]) -> str:
              f"diff: {rep['diffs']}",
              f"- diff/whitelist items by kind: {json.dumps(rep.get('by_kind', {}))}",
              f"- opencode exit: {rep.get('opencode_exit')}, elapsed: {rep.get('elapsed_s')} s",
-             f"- workdir: {rep.get('workdir')}", "", "## Coverage", ""]
+             f"- workdir: {rep.get('workdir')}"]
+    if rep.get("workdir_check"):
+        w = rep["workdir_check"]
+        lines.append(f"- final workdir vs rollout: {w['files']} files, {w['identical']} byte-identical, "
+                     f"re-rendered audio mel dB {json.dumps(w['audio_rerendered'])}")
+    lines += ["", "## Coverage", ""]
     for k, c in rep["coverage"].items():
         lines.append(f"- `{k}`: {c['requested']}/{c['steps']} steps requested"
                      + (f", missing {c['missing']}" if c["missing"] else ""))

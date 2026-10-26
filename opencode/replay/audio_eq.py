@@ -1,9 +1,12 @@
 """Audio equivalence for re-rendered clips (host side; numpy/librosa/soundfile).
 
-Vital renders are not bit-identical run to run (random oscillator phase, free-running LFOs), so a clip
-the rollout rendered and the replay re-rendered match when their lengths agree (within one block)
-and their mean |log-mel difference| is under the render-noise floor (0.2-0.7 dB measured for the same
-preset). The metric is scripts/check_render_parity.py's mel_dist.
+Vital renders are not bit-identical run to run (random oscillator phase, free-running LFOs). A clip the
+rollout rendered and the replay re-rendered are equivalent because the state that produced them is
+byte-identical (identical tool calls + the final-workdir check); this module is only a sanity cap
+against gross breakage (silence, wrong file, length mismatch): lengths within one block and mean
+|log-mel difference| <= DEFAULT_MAX_DB. Same-preset render noise reaches ~4.3 dB with heavy unison and
+random phase, so the cap cannot (and is not meant to) detect small real edits. The metric is
+scripts/check_render_parity.py's mel_dist.
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-DEFAULT_MAX_DB = 1.5
+DEFAULT_MAX_DB = 6.0
 BLOCK = 512  # samples: render block size; lengths may differ by at most this
 
 

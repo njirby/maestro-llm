@@ -270,7 +270,9 @@ WHITELIST = {
                    "entry lies under the skill's base directory are compared",
     "glob_order": "glob result lines (mtime order): compared as a sorted list",
     "media_render": "audio produced during the rollout (not in the initial workdir) whose sha256 differs: "
-                    "equal length within one block and mean |log-mel diff| <= the threshold (audio_eq)",
+                    "equivalent by state (the producing tool calls and final non-audio workdir are "
+                    "byte-identical); fails only past the sanity cap (length > one block off, mean "
+                    "|log-mel diff| > max_mel_db, default 6 dB; audio_eq)",
 }
 
 

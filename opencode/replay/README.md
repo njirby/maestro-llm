@@ -8,6 +8,7 @@ binary executes every tool call for real, and each request it sends is diffed ag
 .venv/bin/python scripts/replay_in_opencode.py golden                      # self-test, with plugin
 .venv/bin/python scripts/replay_in_opencode.py golden --variant '' --out outputs/replay/golden_stock
 .venv/bin/python scripts/replay_in_opencode.py records MAIN.json SUB.json ... --init-dir DIR --out outputs/replay/<name>
+.venv/bin/python scripts/replay_in_opencode.py rollout outputs/v5_rollouts/smoke  # v5 builder output, per sample
 .venv/bin/python scripts/replay_in_opencode.py report outputs/replay/<name>  # re-diff a run's log
 .venv/bin/python -m pytest tests/test_replay.py -q                          # offline; MAESTRO_REPLAY_LIVE=1 adds the live run
 ```
@@ -54,14 +55,30 @@ decoded bytes vs the record's `audios` files, in order) and request params (gold
 `ses_` ids, `tool_` spill ids, `/tmp/tmp*` paths, the `<skill_files>` sample (count and base dir kept),
 and glob result order. Tool-call ids are not compared (records carry none).
 
-Re-rendered audio: Vital renders are not bit-identical (oscillator phase, free-running LFOs). A media
-item whose sha256 differs passes (`whitelisted: media_render` in the report) when the record's clip is
-not a file of the initial workdir (those must match exactly), lengths agree within 512 samples, and the
-mean |log-mel diff| (`audio_eq.py`, the metric of `scripts/check_render_parity.py`) is at most
-`--max-mel-db` (default 1.5 dB; same-preset render noise is 0.2-0.7 dB). The mock saves every media
-payload to `io/media/<sha256>.<ext>` for this. A message diff that disappears when all numbers are
-masked is reported as kind `numeric` (timing/randomness in tool output), separate from `messages`.
-`report.md` lists diff counts by kind.
+Re-rendered audio: Vital renders are not bit-identical (random oscillator phase, free-running LFOs),
+so a rendered clip is compared by the **state that produced it**, not by its samples. The tool calls
+that produced it are compared byte for byte (requests), and so is every non-audio file of the final
+workdir (below); together they pin the preset and notes behind each render. A media item whose sha256
+differs then passes (`whitelisted: media_render`, with its `mel_db` as an informational column) unless
+the record's clip is a file of the initial workdir (exact match required), the lengths differ by more
+than 512 samples, or the mean |log-mel diff| (`audio_eq.py`, the metric of
+`scripts/check_render_parity.py`) exceeds the sanity cap `--max-mel-db` (default 6 dB: catches
+silence, a wrong file, a broken render). The mock saves every media payload to `io/media/<sha256>.<ext>`
+for this. A message diff that disappears when all numbers are masked is reported as kind `numeric`
+(timing/randomness in tool output), separate from `messages`. `report.md` lists diff counts by kind.
+
+Final workdir (`rollout` mode, `final_dir`): the rollout's final workdir (`<run>/_sessions/*/<sample>`)
+is compared with the replay's: same file set and byte-identical non-audio files (preset.json,
+notes.json, probe/judge presets) are required (kinds `workdir_files`, `workdir_content`); audio files
+are only reported with their mel distance.
+
+Render noise (measured on the first v5 smoke rollout): the same preset rendered repeatedly in the
+same container gives 0.5-0.8 dB for simple probes but 2.0-2.7 dB (init preset + one wavetable) and
+4.2-4.3 dB (6-12 unison voices, random phase) for others, while a small real edit (osc_2_pan +
+osc_3_tune) moved the clip 4.5 dB. The per-preset noise floor reaches ~4 dB with heavy unison and
+random phase, so no fixed log-mel threshold separates noise from small real edits; equivalence of
+re-rendered audio rests on the byte-identical state that produced it, and the 6 dB cap only catches
+gross breakage.
 
 ## Findings
 

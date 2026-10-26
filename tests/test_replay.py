@@ -297,7 +297,12 @@ def test_audio_eq(tmp_path):
     b = _wav(tmp_path / "b.wav", 110, phase=1.3)      # re-render: other oscillator phase
     r = audio_eq.compare(a, b)
     assert r["equivalent"], r
-    assert not audio_eq.compare(a, _wav(tmp_path / "c.wav", 165))["equivalent"]
+    assert not audio_eq.compare(a, _wav(tmp_path / "c.wav", 165), max_db=1.5)["equivalent"]
+    silent = _wav(tmp_path / "s.wav", 110)
+    import soundfile as sf
+    x, sr = sf.read(str(silent), always_2d=True)
+    sf.write(str(silent), x * 0, sr)
+    assert not audio_eq.compare(a, silent)["equivalent"]                       # default 6 dB cap
     assert not audio_eq.compare(a, _wav(tmp_path / "d.wav", 110, n=44100 + 2000))["equivalent"]
     assert audio_eq.compare(a, _wav(tmp_path / "e.wav", 110, n=44100 + 300))["equivalent"]
     (tmp_path / "x.wav").write_bytes(b"junk")
@@ -376,3 +381,19 @@ def test_mock_routes_retries_and_sessions(golden, tmp_path):
     finally:
         p.terminate()
         p.wait(timeout=10)
+
+
+def test_compare_workdirs(tmp_path):
+    from opencode.replay import harness as H
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d in (a, b):
+        (d / "probes").mkdir(parents=True)
+        (d / "notes.json").write_text('{"notes": []}')
+    _wav(a / "r01.wav", 110)
+    _wav(b / "r01.wav", 110, phase=1.3)
+    w = H.compare_workdirs(a, b)
+    assert w["diffs"] == [] and w["identical"] == 1 and list(w["audio_rerendered"]) == ["r01.wav"]
+    (b / "preset.json").write_text("{}")
+    (b / "notes.json").write_text('{"notes": [1]}')
+    kinds = [d["kind"] for d in H.compare_workdirs(a, b)["diffs"]]
+    assert kinds == ["workdir_files", "workdir_content"]
