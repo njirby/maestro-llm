@@ -23,6 +23,7 @@ CPU + Docker only: one throwaway daw-farm container per run (name prefix wsd-rep
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -130,6 +131,10 @@ def main() -> int:
                     r = json.loads(line)
                     recs[r["id"]] = r
         index = [json.loads(line) for line in (run / "index.jsonl").open() if line.strip()]
+
+        def inputs_sig() -> dict:
+            return {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(run.glob("*.jsonl"))}
+        sig0 = inputs_sig()
         if a.sample:
             index = [e for e in index if e["sample_id"] in a.sample]
         init_root = Path(a.init_root) if a.init_root else run / "init"
@@ -145,6 +150,9 @@ def main() -> int:
                            timeout_s=a.timeout, keep_container=a.keep_container, max_mel_db=a.max_mel_db,
                            final_dir=finals[0] if len(finals) == 1 else None)
             rc |= summarize(rep)
+            if inputs_sig() != sig0:
+                print(f"ERROR: {run} records changed during the replay (a rebuild in progress?); results invalid")
+                return 2
         return rc
     run = Path(a.run_dir).resolve()
     records = json.loads((run / "io/records.json").read_text())

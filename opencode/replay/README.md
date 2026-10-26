@@ -31,7 +31,7 @@ paths and skill scripts are those of `maestro.dawfarm_dd.DawDreamerSession`:
 | `/opt/opencode/bin/opencode` | `~/.opencode/bin/opencode` (ro) | |
 | `/usr/local/bin/rg` | `outputs/replay/bin/rg-15.1.0` (ro, sha256-checked) | also copied to `$XDG_CACHE_HOME/opencode/bin/rg` |
 
-OpenCode runs as `env -i <README env> opencode run --agent maestro --format json < prompt` with
+OpenCode runs as `env -i <README env> opencode run --format json < prompt` (default agent: stock `build`) with
 `DISPLAY`, `VITAL_VST3`, `VITAL_SKILL` added (as DawDreamerSession sets them container-wide). Since the
 staging root is a bind mount, the host's `/tmp` is not used and concurrent replays never share a root.
 

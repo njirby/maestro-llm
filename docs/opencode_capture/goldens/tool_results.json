@@ -379,7 +379,7 @@
    "name": "glob",
    "arguments": "{\"pattern\":\"**/*.txt\"}"
   },
-  "output": "{WORKDIR}/new.txt\n{WORKDIR}/notes.txt\n{WORKDIR}/longline.txt\n{WORKDIR}/empty.txt\n{WORKDIR}/big.txt\n{WORKDIR}/long.txt\n{WORKDIR}/short.txt\n{WORKDIR}/sub/a.txt\n{WORKDIR}/sub/b.txt\n{WORKDIR}/sub/nested/c.txt"
+  "output": "{WORKDIR}/empty.txt\n{WORKDIR}/big.txt\n{WORKDIR}/long.txt\n{WORKDIR}/short.txt\n{WORKDIR}/new.txt\n{WORKDIR}/notes.txt\n{WORKDIR}/longline.txt\n{WORKDIR}/sub/a.txt\n{WORKDIR}/sub/b.txt\n{WORKDIR}/sub/nested/c.txt"
  },
  {
   "case": "glob_none",

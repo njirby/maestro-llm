@@ -89,6 +89,8 @@ def agent_markers(cfg):
         text = open(os.path.join(cfg, "agent", fn)).read()
         body = text.split("---", 2)[2].strip() if text.startswith("---") else text.strip()
         out[fn[:-3]] = body.splitlines()[0]
+    # no custom main agent: the main agent is OpenCode's default `build` with the stock prompt
+    out.setdefault("maestro", "You are opencode, an interactive CLI tool")
     return out
 
 

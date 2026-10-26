@@ -6,7 +6,8 @@ The agents run in OpenCode 1.19.3 with this directory as the **only** config sou
 
 ```
 opencode.json      provider "maestro" (openai-compatible -> vLLM), defaults, permissions
-agent/*.md         maestro (primary) + transcriber, searcher, judge (subagents)
+AGENTS.md          the producer workflow, appended to every agent's system prompt as instructions
+agent/*.md         transcriber, searcher, judge (subagents); the main agent is OpenCode's stock `build`
 skills/<name>/     SKILL.md skills (vital), auto-discovered from this dir
 plugin/            maestro plugins (audio read), auto-loaded from this dir
 ```
@@ -22,7 +23,8 @@ nothing from `~/.config/opencode`, `~/.claude` or `~/.agents` is read:
 REPO=/path/to/maestro-llm
 R=/tmp/maestro-oc                     # fixed: CONFIG_DIR and DATA_DIR paths are model-visible
 rm -rf $R && mkdir -p $R/config $R/home $R/data $R/cache/opencode/bin
-ln -s $REPO/opencode/opencode.json $REPO/opencode/agent $REPO/opencode/skills $REPO/opencode/plugin $R/config/
+ln -s $REPO/opencode/opencode.json $REPO/opencode/AGENTS.md $REPO/opencode/agent $REPO/opencode/skills \
+  $REPO/opencode/plugin $R/config/
 # ripgrep 15.1.0 on PATH, or: cp <rg 15.1.0> $R/cache/opencode/bin/rg
 env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
   HOME=$R/home XDG_CONFIG_HOME=$R/home/.config XDG_DATA_HOME=$R/data \
@@ -32,7 +34,7 @@ env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
   OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
   NPM_CONFIG_REGISTRY=http://127.0.0.1:9/ \
   MAESTRO_BASE_URL=http://127.0.0.1:8000/v1 MAESTRO_MODEL=maestro \
-  opencode run --agent maestro --format json < prompt.txt      # run from the rollout cwd
+  opencode run --format json < prompt.txt      # default agent `build`; run from the rollout cwd
 ```
 
 `docs/opencode_capture/goldens/capture/capture.sh` stages the config the same way (with
@@ -66,9 +68,10 @@ Notes:
   system prompt then says `The exact model ID is maestro/<MAESTRO_MODEL>`.
 - **Prompt on stdin.** `opencode run "two words"` wraps every positional argument that contains a
   space in double quotes before it reaches the model.
-- **Instruction files.** OpenCode picks up `AGENTS.md`/`CLAUDE.md` from the cwd up to the
-  workspace root, which is `/` outside a git repo. Keep rollout dirs and their parents free of
-  them.
+- **Instruction files.** The config dir's `AGENTS.md` is ours: OpenCode appends it to every agent's
+  system prompt, subagents included, as `Instructions from: $R/config/AGENTS.md`, so it is written
+  for both roles. OpenCode also picks up `AGENTS.md`/`CLAUDE.md` from the cwd up to the workspace
+  root, which is `/` outside a git repo. Keep rollout dirs and their parents free of them.
 - **ripgrep.** glob, grep and skill (its `<skill_files>` sample) shell out to `rg`. OpenCode uses
   `rg` from PATH or `$XDG_CACHE_HOME/opencode/bin/rg`; otherwise it downloads ripgrep 15.1.0 from
   GitHub. Offline without it, those tools return `ripgrep execution failed`.
@@ -78,9 +81,10 @@ Notes:
 - Full stock tool set; nothing is denied. Primary agents get bash, edit, glob, grep, read, skill,
   task, todowrite, webfetch, write. Subagents get the same minus task and todowrite (OpenCode
   default).
-- `general` / `explore` are disabled, so the task tool lists only our subagents.
-- The built-in `customize-opencode` skill is denied, which hides it from `<available_skills>`.
-  The skill tool's "not found" message still names it.
+- Stock main agent: no `default_agent`, so the main agent is `build` with OpenCode's stock prompt
+  (`docs/opencode_capture/goldens/stock_prompt.txt`); the workflow comes from `AGENTS.md` + the skill.
+- Stock built-ins kept: the `general` / `explore` subagents (listed by the task tool next to ours)
+  and the built-in `customize-opencode` skill (listed with location `<built-in>`).
 - `shell: /bin/bash` pins the bash tool description (`Shell: bash`), whatever `$SHELL` is.
 - `compaction.auto: false`, so history is never rewritten mid-rollout. `external_directory: allow`,
   because a headless run can't answer permission prompts.

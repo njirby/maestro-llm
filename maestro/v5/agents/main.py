@@ -17,7 +17,7 @@ from pathlib import Path
 from scripts import opencode_contract as oc
 from scripts.agent_sft_common import compute_round_coverage, slices_for_regions
 
-from .. import narration
+from .. import gate, narration
 from ..ctx import Ctx, OracleRenderer
 from ..mistakes import code_mistake
 from ..planner import Edit, Plan, build_plan, vitallib, wt_ref
@@ -224,7 +224,13 @@ class Main:
         main = rec.finish(narration.final_verdict(target_wav=Path(target_host), final_wav=Path(final_host),
                                                   final_preset=ctx.read_json("preset.json"), gt_preset=self.gt,
                                                   notes=self.notes_d, renderer=self.renderer, log=ctx.note))
-        return {"main": main, **self.sub, "links": self.links}
+        return {"main": main, **self.sub, "links": self.links, "gate": self.gt_gate()}
+
+    def gt_gate(self) -> dict:
+        """Does the rollout land on the GT? Structural + audio gates (maestro/v5/gate.py), host-side."""
+        g = gate.gate(self.renderer, self.gt, self.ctx.read_json("preset.json"), self.notes_d)
+        self.ctx.note(agent=AGENT, event="gt_gate", **g)
+        return g
 
     def coverage(self, gt_tables: list[dict], tries: int = 64) -> list[tuple[int, int]]:
         """compute_round_coverage's round-1 window over the library (coverage 50-100%), redrawn until it is one

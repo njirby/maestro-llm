@@ -68,6 +68,8 @@ def main() -> int:
     ap.add_argument("--mistake-rate", type=float, default=0.10, help="per-param rate for v3 inject_mistakes")
     ap.add_argument("--code-mistake-rate", type=float, default=0.08, help="per edit call")
     ap.add_argument("--no-view", action="store_true")
+    ap.add_argument("--keep-gate-failures", action="store_true",
+                    help="write rollouts that miss the GT gate (flagged in index.jsonl) instead of dropping them")
     ap.add_argument("--fi-url", help="first-impression narrator (Omni), e.g. http://localhost:8000/v1; unset = template")
     ap.add_argument("--fi-model")
     ap.add_argument("--edit-arm", choices=("omni", "text"), default="text",
@@ -98,7 +100,8 @@ def main() -> int:
     files = {f: open(out / f"{f}.jsonl", "a") for f in AGENT_FILES}
     index = open(out / "index.jsonl", "a")
     sizes: dict[str, list[int]] = {f: [] for f in AGENT_FILES}
-    n_ok = n_bad = 0
+    gates: list[dict] = []
+    n_ok = n_bad = n_gate_dropped = 0
 
     (out / "run_meta.json").write_text(json.dumps({
         "opencode_version": oc.OPENCODE_VERSION, "date": DATE, "skill_mount": oc.CONFIG_DIR + "/skills/vital",
@@ -135,6 +138,16 @@ def main() -> int:
                     continue
                 subs = r["transcriber"] + r["searcher"] + r["judge"]
                 errs = validate.validate_rollout(r["main"], subs, r["links"])
+                gate = r["gate"]
+                gates.append({"sample_id": s.id, **gate})
+                if not gate["pass"] and not a.keep_gate_failures:
+                    n_gate_dropped += 1
+                    print(f"{s.id}: GT gate FAILED {gate}; dropped", flush=True)
+                    with lock:
+                        index.write(json.dumps({"sample_id": s.id, "dropped": "gt_gate", "gate": gate,
+                                                "events": r["events"], "sample": s.to_dict()}) + "\n")
+                        index.flush()
+                    continue
                 n_ok += not errs
                 with lock:
                     for f in AGENT_FILES:
@@ -145,11 +158,14 @@ def main() -> int:
                         fh.flush()
                     index.write(json.dumps({"sample_id": s.id, "main_id": r["main"]["id"], "links": r["links"],
                                             "workdir": f"/work/rollouts/{s.id}", "init_dir": r["init_dir"],
-                                            "validation_errors": errs, "events": r["events"],
+                                            "validation_errors": errs, "gate": gate, "events": r["events"],
                                             "sample": s.to_dict()}, ensure_ascii=False) + "\n")
                     index.flush()
                 print(f"{s.id}: main {chars(r['main']):,} chars, {len(r['main']['audios'])} audios, "
-                      f"{len(subs)} subagent records, validation {'OK' if not errs else errs[:5]}", flush=True)
+                      f"{len(subs)} subagent records, validation {'OK' if not errs else errs[:5]}, GT gate "
+                      f"{'pass' if gate['pass'] else 'FAIL'} (structural {gate['structural']['n_param_diffs']} param / "
+                      f"{len(gate['structural']['route_diffs'])} route diffs; mel {gate['audio']['final_vs_gt_db']} "
+                      f"vs floor {gate['audio']['gt_vs_gt_db']} dB; rms {gate['audio']['rms_diff_db']} dB)", flush=True)
                 if not a.no_view:
                     viewer.write_page(out, s.id)
     finally:
@@ -160,10 +176,12 @@ def main() -> int:
     stats = {f: {"n": len(v), "median_chars": int(statistics.median(v)) if v else 0,
                  "mean_chars": int(statistics.mean(v)) if v else 0, "max_chars": max(v, default=0)}
              for f, v in sizes.items()}
-    stats["rollouts"] = {"valid": n_ok, "failed": n_bad, "requested": len(samples)}
+    stats["rollouts"] = {"valid": n_ok, "failed": n_bad, "gate_dropped": n_gate_dropped, "requested": len(samples)}
+    stats["gt_gate"] = {"pass": sum(g["pass"] for g in gates), "structural_pass": sum(g["structural"]["pass"] for g in gates),
+                        "audio_pass": sum(g["audio"]["pass"] for g in gates), "n": len(gates), "rollouts": gates}
     (out / "stats.json").write_text(json.dumps(stats, indent=1))
     print(json.dumps(stats, indent=1))
-    return 0 if n_bad == 0 else 1
+    return 0 if n_bad == 0 and n_gate_dropped == 0 else 1
 
 
 if __name__ == "__main__":

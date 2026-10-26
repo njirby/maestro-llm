@@ -191,6 +191,12 @@ dump("meta.json", meta)
 if SUBDIR:
     print("wrote goldens to", GOLD)
     sys.exit(0)
+# the main agent is OpenCode's default `build`: its stock prompt is everything before the model line
+sys_main = first["maestro"]["messages"][0]["content"]
+dump("stock_prompt.txt", sys_main[:sys_main.index("\nYou are powered by the model named")])
+inst = os.path.join(SB, "cfg/AGENTS.md")
+if os.path.exists(inst):
+    dump("instructions_snapshot/AGENTS.md", open(inst).read())
 shutil.rmtree(os.path.join(GOLD, "agent_snapshot"), ignore_errors=True)
 os.makedirs(os.path.join(GOLD, "agent_snapshot"))
 for fn in os.listdir(os.path.join(SB, "cfg/agent")):

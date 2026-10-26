@@ -70,7 +70,7 @@ def test_skill_files_match_capture_snapshot():
 
 @pytest.mark.parametrize("agent", ("maestro",) + SUBAGENTS)
 def test_system_message(agent):
-    got = oc.system_message(agent, "{WORKDIR}", date="{DATE}", skills=skills_snapshot())
+    got = oc.system_message(agent, "{WORKDIR}", date="{DATE}", skills=skills_snapshot(), config_dir="{CONFIG_DIR}")
     assert got == (G / "system" / f"{agent}.txt").read_text()
 
 
@@ -80,7 +80,9 @@ def test_system_message_legacy_role_names_and_literal_prompt():
     assert oc.AGENT_PROMPTS["main"] == oc.agent_prompt("maestro")
     lit = oc.system_message("Custom prompt.", **kw)
     assert lit.startswith("Custom prompt.\nYou are powered by the model named maestro.")
-    assert lit.endswith("No skills are currently available.")
+    # OpenCode's built-in skill is listed even when no skill is staged
+    assert lit.endswith("</available_skills>") and "<name>customize-opencode</name>" in lit
+    assert oc.system_message("Custom prompt.", **{**kw, "skills": False}, instructions=()).endswith("</env>")
     assert oc.date_string(__import__("datetime").date(2026, 10, 25)) == "Sun Oct 25 2026"
 
 

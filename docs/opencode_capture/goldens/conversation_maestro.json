@@ -684,7 +684,7 @@
  {
   "role": "tool",
   "tool_call_id": "call_maestro_32_0",
-  "content": "{WORKDIR}/new.txt\n{WORKDIR}/notes.txt\n{WORKDIR}/longline.txt\n{WORKDIR}/empty.txt\n{WORKDIR}/big.txt\n{WORKDIR}/long.txt\n{WORKDIR}/short.txt\n{WORKDIR}/sub/a.txt\n{WORKDIR}/sub/b.txt\n{WORKDIR}/sub/nested/c.txt"
+  "content": "{WORKDIR}/empty.txt\n{WORKDIR}/big.txt\n{WORKDIR}/long.txt\n{WORKDIR}/short.txt\n{WORKDIR}/new.txt\n{WORKDIR}/notes.txt\n{WORKDIR}/longline.txt\n{WORKDIR}/sub/a.txt\n{WORKDIR}/sub/b.txt\n{WORKDIR}/sub/nested/c.txt"
  },
  {
   "role": "assistant",

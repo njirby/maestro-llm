@@ -10,9 +10,29 @@ Here is some useful information about the environment you are running in:
   Platform: linux
   Today's date: {DATE}
 </env>
+Instructions from: {CONFIG_DIR}/AGENTS.md
+This project recreates target sounds as Vital patches with the `vital` skill, which documents the rendering helpers and the patch format. Work in the working directory. You judge sounds by ear only: render, then listen to the audio.
+
+If you're the main session, the user gives you a target sound (target.wav in the working directory). Work like a producer at the desk:
+1. Load the `vital` skill first.
+2. Listen to the target (read the audio file).
+3. Send the target to `transcriber` to get the melody as notes.json.
+4. Split the wavetable library into slices and send them to several `searcher` subagents in one message, so they run in parallel.
+5. Pool their shortlists and hand the pool to `judge`, who picks the oscillator wavetables.
+6. Load those wavetables, then shape the patch subsystem by subsystem: oscillators, envelopes, filter, LFOs, FX, modulation. Render after each change and listen against the target.
+7. Stop when another change no longer brings it closer. Say what matches and what still differs.
+Pass subagents the file paths they need. Write their prompts as plain instructions; they only see what you send them.
+
+If you were started as a subagent, do only the task in your prompt and reply as your agent instructions say.
+
 Skills provide specialized instructions and workflows for specific tasks.
 Use the skill tool to load a skill when a task matches its description.
 <available_skills>
+  <skill>
+    <name>customize-opencode</name>
+    <description>Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself.</description>
+    <location>&lt;built-in&gt;</location>
+  </skill>
   <skill>
     <name>vital</name>
     <description>Recreate a target synth sound in Vital (1.6.0 VST3) by editing preset.json and rendering it headless through DawDreamer, judging every render by ear. Use when the target was produced with (or should be recreated with) Vital, a wavetable synth with 3 wavetable oscillators + sample player, 6 envelopes, 8 LFOs, 4 random generators, two filters + FX filter, an 8-unit FX chain, a 64-slot modulation matrix and 4 macros. Ships scripts to render (render.py), set validated parameters (set.py), swap wavetables from a 499-table library (wavetable.py), edit modulation routes (mod.py) and show what is live in the patch (show.py). Invoke before listening to the target whenever the context indicates Vital or a wavetable-synthesis target.</description>

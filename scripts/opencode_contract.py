@@ -572,12 +572,31 @@ def unavailable_tool(name: str, tools: Iterable[str] | None = None) -> tuple[str
 # ---------------------------------------------------------------------------
 
 AGENT_DIR = OPENCODE_DIR / "agent"
+# The main agent is OpenCode's default primary agent `build`, unchanged: its prompt is OpenCode's stock prompt
+# (captured verbatim into goldens/stock_prompt.txt). Our workflow reaches it as instructions (INSTRUCTIONS_FILE).
+# "maestro" stays the main agent's name in this module and in the records' bookkeeping.
+MAIN_AGENT = "maestro"
+STOCK_PROMPT = (GOLDENS_DIR / "stock_prompt.txt").read_text()
+# Config-dir AGENTS.md: OpenCode appends it to EVERY agent's system prompt (main and subagents) as
+# "Instructions from: <OPENCODE_CONFIG_DIR>/AGENTS.md\n<text>".
+INSTRUCTIONS_FILE = OPENCODE_DIR / "AGENTS.md"
+# Skills OpenCode ships built in (listed for every agent, location "<built-in>").
+BUILTIN_SKILLS = [{
+    "name": "customize-opencode",
+    "description": ("Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, "
+                    "opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when "
+                    "creating or fixing opencode agents, subagents, skills, plugins, MCP servers, or permission "
+                    "rules. Do not use for the user's own application code, or for any project that is not "
+                    "configuring opencode itself."),
+    "location": "<built-in>"}]
 # Pre-OpenCode role names used by the v3/v4 builders.
 LEGACY_AGENT_NAMES = {"main": "maestro", "melody_transcription": "transcriber",
-                      "wavetable_search": "searcher", "wavetable_judge": "judge"}
+                      "wavetable_search": "searcher", "wavetable_judge": "judge", "build": "maestro"}
 
 
 def _agent_file(agent: str) -> tuple[dict[str, Any], str]:
+    if agent == MAIN_AGENT:
+        return {"mode": "primary"}, STOCK_PROMPT
     meta, body = _split_frontmatter((AGENT_DIR / f"{agent}.md").read_text())
     return meta, body.strip()
 
@@ -592,8 +611,8 @@ def agent_prompt(agent: str) -> str:
     return _agent_file(LEGACY_AGENT_NAMES.get(agent, agent))[1]
 
 
-AGENTS = sorted(p.stem for p in AGENT_DIR.glob("*.md"))
-AGENT_PROMPTS = {a: agent_prompt(a) for a in AGENTS}
+AGENTS = sorted(p.stem for p in AGENT_DIR.glob("*.md"))      # our agent files (the subagents)
+AGENT_PROMPTS = {a: agent_prompt(a) for a in AGENTS + [MAIN_AGENT]}
 AGENT_PROMPTS.update({old: AGENT_PROMPTS[new] for old, new in LEGACY_AGENT_NAMES.items()
                       if new in AGENT_PROMPTS})
 
@@ -625,7 +644,7 @@ def system_message(agent: str, cwd: str, date: _dt.date | str | None = None,
                    model: str = DEFAULT_MODEL, provider: str = DEFAULT_PROVIDER,
                    skills: list[dict[str, str]] | None | bool = None, *,
                    config_dir: str | None = None, worktree: str = "/", git: bool = False,
-                   instructions: Iterable[tuple[str, str]] = (), user_system: str | None = None,
+                   instructions: Iterable[tuple[str, str]] | None = None, user_system: str | None = None,
                    include_tools: bool = False) -> str:
     """The system message OpenCode sends for `agent`.
 
@@ -638,17 +657,25 @@ def system_message(agent: str, cwd: str, date: _dt.date | str | None = None,
     `config_dir`/skills (config_dir = the serving process's
     OPENCODE_CONFIG_DIR, default CONFIG_DIR); pass a list from
     discover_skills() to override, or False to omit the block (skill tool
-    denied). `date` defaults to today, so pass it for reproducible records.
+    denied). OpenCode's built-in skills (BUILTIN_SKILLS) are always listed
+    with them. `instructions=None` = the config-dir AGENTS.md (every agent
+    gets it); pass () for none. `date` defaults to today, so pass it for
+    reproducible records.
 
     `include_tools=True` appends the legacy hermes tools block (tools_block()).
     """
-    if agent in AGENTS or agent in LEGACY_AGENT_NAMES:
+    if agent in AGENTS or agent in LEGACY_AGENT_NAMES or agent == MAIN_AGENT:
         prompt = agent_prompt(agent)
     else:
         prompt = agent
+    root = str(config_dir or CONFIG_DIR)
     if skills is None:
-        root = str(config_dir or CONFIG_DIR)
         skills = discover_skills(OPENCODE_DIR / "skills", location_root=f"{root}/skills")
+    if skills is not False:
+        skills = list(skills) + [s for s in BUILTIN_SKILLS if s["name"] not in {x["name"] for x in skills}]
+    if instructions is None:
+        instructions = ([(f"{root}/AGENTS.md", INSTRUCTIONS_FILE.read_text())]
+                        if INSTRUCTIONS_FILE.exists() else [])
     parts = [prompt, env_block(cwd, date, model, provider, worktree, git)]
     parts += [f"Instructions from: {p}\n{text}" for p, text in instructions]
     if skills is not False:

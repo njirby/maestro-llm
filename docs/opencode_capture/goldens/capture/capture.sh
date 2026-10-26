@@ -27,8 +27,15 @@ if [ -n "${RG_BIN:-}" ]; then mkdir -p "$SB/home/.cache/opencode/bin"; cp "$RG_B
 # Same staging as the launcher recipe in opencode/README.md: the config dir
 # OpenCode loads (and writes .gitignore/package.json into) is a throwaway dir
 # of symlinks into the repo's opencode/ (OC_SRC overrides that source).
+# Every top-level entry of opencode/ is staged (opencode.json, AGENTS.md, agent/, skills/, ...) except replay/
+# (WS-D's mock), README.md and dotfiles -- the same rule as the replay launcher's stage_root; plugin/ only with
+# WITH_PLUGIN=1 (the top-level goldens are stock behaviour).
 SRC=${OC_SRC:-$REPO/opencode}
-ln -s "$SRC/opencode.json" "$SRC/agent" "$SB/cfg/"
+for e in "$SRC"/*; do
+  n=$(basename "$e")
+  case "$n" in replay|README.md|plugin|skills) continue;; esac
+  ln -s "$e" "$SB/cfg/$n"
+done
 if [ -f "$SRC/skills/vital/SKILL.md" ]; then ln -s "$SRC/skills" "$SB/cfg/skills"
 else echo "WARN: $SRC/skills/vital missing; staging $REPO/skills instead" >&2; ln -s "$REPO/skills" "$SB/cfg/skills"; fi
 if [ "${WITH_PLUGIN:-0}" = 1 ]; then ln -s "${PLUGIN_SRC:-$SRC/plugin}" "$SB/cfg/plugin"; fi
@@ -79,7 +86,7 @@ env -i "${OFFLINE_ENV[@]}" PATH=/usr/local/bin:/usr/bin:/bin TERM=dumb LANG=C.UT
   OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
   OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
   MAESTRO_BASE_URL="http://127.0.0.1:$PORT/v1" MAESTRO_MODEL=maestro \
-  timeout 300 "$OC" run --agent maestro --format json \
+  timeout 300 "$OC" run ${AGENT:+--agent "$AGENT"} --format json \
   < "$SB/prompt.txt" > "$SB/run.jsonl" 2> "$SB/run.err" || echo "opencode exited $?" >&2
 echo "captured $(wc -l < "$SB/captured.jsonl") requests -> $SB/captured.jsonl"
 echo "$PORT" > "$SB/port"

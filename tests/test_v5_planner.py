@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from maestro.v5 import mistakes, planner as pl
+from maestro.v5 import gate, mistakes, planner as pl
 from maestro.v5.agents.main import Main  # noqa: F401  (import check: the builder modules load)
 
 INIT = json.loads((pl.SKILL_DIR / "data" / "init_preset.json").read_text())
@@ -57,6 +57,9 @@ def test_plan_rebuilds_gt(tmp_path, seed, rate):
     assert live(got) == live(s)
     for n, e in plan.wavetables:
         assert pl._wt_hash(got["wavetables"][n - 1]) == pl._wt_hash(s["wavetables"][n - 1])
+    st = gate.structural(gt, json.loads((tmp_path / "preset.json").read_text()))  # the builder's GT gate
+    assert st["pass"], st
+    assert not gate.structural(gt, INIT)["pass"]
 
 
 def test_code_mistakes_fail_for_real(tmp_path):

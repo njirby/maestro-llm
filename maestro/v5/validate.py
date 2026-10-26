@@ -37,7 +37,7 @@ _CWD_RE = re.compile(r"^  Working directory: (.*)$", re.M)
 def agent_of(record: dict) -> str | None:
     """The agent whose prompt opens the system message."""
     sys_msg = record["messages"][0]["content"]
-    for a in oc.AGENTS:
+    for a in [oc.MAIN_AGENT] + oc.AGENTS:
         if sys_msg.startswith(oc.agent_prompt(a) + "\n"):
             return a
     return None

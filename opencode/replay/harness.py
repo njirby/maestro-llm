@@ -103,7 +103,7 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
            with_plugin: bool = True, keep_container: bool = False,
            base_dir: str | Path | None = None, expected_params: dict[str, Any] | None = None,
            extra_records: dict[str, dict[str, Any]] | None = None, max_mel_db: float = audio_eq.DEFAULT_MAX_DB,
-           final_dir: str | Path | None = None) -> dict[str, Any]:
+           final_dir: str | Path | None = None, agent: str | None = None) -> dict[str, Any]:
     """Run one replay and write <run_dir>/report.json. Returns the report.
 
     main/subagents: records (ms-swift dicts). init_dir: files to place in the workdir before the run
@@ -111,7 +111,8 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
     user message with media placeholders removed). attach: container paths passed as `-f`.
     base_dir resolves relative `audios` paths. max_mel_db: audio-equivalence threshold for re-rendered
     clips (audio_eq); clips whose bytes were in init_dir must match exactly. final_dir: the rollout's
-    final workdir, compared with the replay's (compare_workdirs)."""
+    final workdir, compared with the replay's (compare_workdirs). agent: `opencode run --agent`
+    (default none: the config's default primary agent, stock `build`)."""
     run_dir = Path(run_dir).resolve()
     if not RG_BIN.is_file() or _sha256(RG_BIN) != RG_SHA256:
         raise RuntimeError(f"ripgrep 15.1.0 missing or wrong at {RG_BIN} (set RG_BIN)")
@@ -173,7 +174,7 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
             raise RuntimeError("mock server did not come up")
         env = [f"{k}={v}" for k, v in opencode_env(port, model).items()]
         cmd = ["exec", "-i", "-w", workdir, name, "env", "-i", *env, "timeout", str(timeout_s),
-               "/opt/opencode/bin/opencode", "run", "--agent", "maestro", "--format", "json"]
+               "/opt/opencode/bin/opencode", "run", *(["--agent", agent] if agent else []), "--format", "json"]
         for a in attach or []:
             cmd += ["-f", a]
         with open(io / "prompt.txt", "rb") as fin, open(io / "run.jsonl", "wb") as fout, \

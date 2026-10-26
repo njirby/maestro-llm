@@ -2,11 +2,12 @@
   "$schema": "https://opencode.ai/config.json",
   "model": "maestro/{env:MAESTRO_MODEL}",
   "small_model": "maestro/{env:MAESTRO_MODEL}",
-  "default_agent": "maestro",
   "shell": "/bin/bash",
   "autoupdate": false,
   "share": "disabled",
-  "compaction": { "auto": false },
+  "compaction": {
+    "auto": false
+  },
   "provider": {
     "maestro": {
       "npm": "@ai-sdk/openai-compatible",
@@ -20,18 +21,24 @@
           "name": "maestro",
           "tool_call": true,
           "attachment": true,
-          "modalities": { "input": ["text", "audio"], "output": ["text"] },
-          "limit": { "context": 65536, "output": 4096 }
+          "modalities": {
+            "input": [
+              "text",
+              "audio"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 65536,
+            "output": 4096
+          }
         }
       }
     }
   },
   "permission": {
-    "external_directory": "allow",
-    "skill": { "customize-opencode": "deny" }
-  },
-  "agent": {
-    "general": { "disable": true },
-    "explore": { "disable": true }
+    "external_directory": "allow"
   }
 }
