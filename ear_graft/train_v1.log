@@ -1,0 +1,321 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.09 (build 453215200)
+PyTorch Version 2.14.0a0+b2c75dd
+Container image Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+WARNING: CUDA Minor Version Compatibility mode ENABLED.
+  Using driver version 580.178.04 which has support for CUDA 13.0.  This container
+  was built with CUDA 13.4 and will be run in Minor Version Compatibility mode.
+  CUDA Forward Compatibility is preferred over Minor Version Compatibility for use
+  with this container but was unavailable:
+  [[]]
+  See https://docs.nvidia.com/deploy/cuda-compatibility/ for details.
+
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+W1025 00:53:01.228000 453 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:53:01.228000 452 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:53:01.235000 451 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:53:01.239000 454 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:53:01.250000 452 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:53:01.250000 453 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:53:01.257000 451 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:53:01.261000 454 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 1/723 [00:00<04:20,  2.77it/s]Loading weights:   0%|          | 1/723 [00:00<05:09,  2.33it/s]Loading weights:   0%|          | 1/723 [00:00<04:59,  2.41it/s]Loading weights:   3%|▎         | 19/723 [00:00<00:13, 52.54it/s]Loading weights:   0%|          | 1/723 [00:00<05:57,  2.02it/s]Loading weights:   3%|▎         | 20/723 [00:00<00:13, 50.40it/s]Loading weights:   3%|▎         | 21/723 [00:00<00:13, 51.19it/s]Loading weights:   6%|▌         | 40/723 [00:00<00:07, 92.89it/s]Loading weights:   3%|▎         | 19/723 [00:00<00:17, 40.98it/s]Loading weights:   5%|▍         | 35/723 [00:00<00:09, 72.67it/s]Loading weights:   6%|▌         | 41/723 [00:00<00:07, 87.34it/s]Loading weights:   7%|▋         | 54/723 [00:00<00:06, 103.10it/s]Loading weights:   5%|▍         | 36/723 [00:00<00:09, 70.09it/s]Loading weights:   9%|▊         | 62/723 [00:00<00:05, 119.17it/s]Loading weights:   7%|▋         | 48/723 [00:00<00:08, 81.70it/s]Loading weights:  10%|█         | 75/723 [00:00<00:04, 130.01it/s]Loading weights:   7%|▋         | 49/723 [00:00<00:08, 81.15it/s]Loading weights:  11%|█         | 79/723 [00:00<00:05, 128.24it/s]Loading weights:   9%|▉         | 66/723 [00:00<00:06, 106.92it/s]Loading weights:  13%|█▎        | 93/723 [00:00<00:04, 142.89it/s]Loading weights:   9%|▉         | 65/723 [00:00<00:06, 99.25it/s]Loading weights:  13%|█▎        | 95/723 [00:00<00:04, 132.14it/s]Loading weights:  15%|█▌        | 110/723 [00:01<00:04, 148.49it/s]Loading weights:  11%|█         | 80/723 [00:00<00:05, 110.13it/s]Loading weights:  11%|█         | 81/723 [00:01<00:05, 111.35it/s]Loading weights:  16%|█▌        | 115/723 [00:01<00:04, 150.43it/s]Loading weights:  18%|█▊        | 127/723 [00:01<00:04, 147.94it/s]Loading weights:  14%|█▎        | 98/723 [00:01<00:05, 118.90it/s]Loading weights:  13%|█▎        | 95/723 [00:01<00:05, 118.33it/s]Loading weights:  18%|█▊        | 133/723 [00:01<00:03, 158.38it/s]Loading weights:  20%|██        | 145/723 [00:01<00:03, 154.54it/s]Loading weights:  16%|█▋        | 118/723 [00:01<00:04, 136.57it/s]Loading weights:  16%|█▌        | 113/723 [00:01<00:04, 126.83it/s]Loading weights:  21%|██        | 152/723 [00:01<00:03, 156.12it/s]Loading weights:  18%|█▊        | 133/723 [00:01<00:04, 139.44it/s]Loading weights:  22%|██▏       | 162/723 [00:01<00:04, 136.86it/s]Loading weights:  18%|█▊        | 130/723 [00:01<00:04, 135.85it/s]Loading weights:  24%|██▍       | 177/723 [00:01<00:03, 181.88it/s]Loading weights:  20%|██        | 148/723 [00:01<00:04, 139.22it/s]Loading weights:  25%|██▌       | 181/723 [00:01<00:03, 145.57it/s]Loading weights:  20%|██        | 146/723 [00:01<00:04, 139.67it/s]Loading weights:  27%|██▋       | 197/723 [00:01<00:02, 178.50it/s]Loading weights:  23%|██▎       | 166/723 [00:01<00:03, 144.94it/s]Loading weights:  27%|██▋       | 197/723 [00:01<00:03, 147.55it/s]Loading weights:  23%|██▎       | 166/723 [00:01<00:03, 153.42it/s]Loading weights:  25%|██▌       | 181/723 [00:01<00:03, 146.20it/s]Loading weights:  30%|██▉       | 216/723 [00:01<00:03, 161.20it/s]Loading weights:  29%|██▉       | 213/723 [00:01<00:03, 141.35it/s]Loading weights:  25%|██▌       | 182/723 [00:01<00:03, 152.16it/s]Loading weights:  27%|██▋       | 198/723 [00:01<00:03, 150.74it/s]Loading weights:  32%|███▏      | 233/723 [00:01<00:03, 159.14it/s]Loading weights:  33%|███▎      | 235/723 [00:01<00:03, 160.22it/s]Loading weights:  27%|██▋       | 198/723 [00:01<00:03, 149.82it/s]Loading weights:  35%|███▍      | 251/723 [00:01<00:02, 163.98it/s]Loading weights:  30%|██▉       | 214/723 [00:01<00:03, 131.25it/s]Loading weights:  35%|███▍      | 252/723 [00:01<00:03, 152.12it/s]Loading weights:  30%|██▉       | 214/723 [00:01<00:03, 142.61it/s]Loading weights:  37%|███▋      | 268/723 [00:01<00:02, 162.58it/s]Loading weights:  32%|███▏      | 228/723 [00:02<00:03, 130.87it/s]Loading weights:  38%|███▊      | 273/723 [00:02<00:02, 164.64it/s]Loading weights:  32%|███▏      | 229/723 [00:02<00:03, 141.91it/s]Loading weights:  40%|███▉      | 288/723 [00:02<00:02, 170.59it/s]Loading weights:  33%|███▎      | 242/723 [00:02<00:03, 130.49it/s]Loading weights:  40%|████      | 291/723 [00:02<00:02, 165.86it/s]Loading weights:  34%|███▍      | 247/723 [00:02<00:03, 146.59it/s]Loading weights:  42%|████▏     | 306/723 [00:02<00:02, 168.57it/s]Loading weights:  35%|███▌      | 256/723 [00:02<00:03, 132.16it/s]Loading weights:  43%|████▎     | 308/723 [00:02<00:02, 157.17it/s]Loading weights:  45%|████▌     | 327/723 [00:02<00:02, 178.12it/s]Loading weights:  36%|███▌      | 262/723 [00:02<00:03, 132.68it/s]Loading weights:  37%|███▋      | 271/723 [00:02<00:03, 129.78it/s]Loading weights:  45%|████▌     | 326/723 [00:02<00:02, 155.68it/s]Loading weights:  48%|████▊     | 345/723 [00:02<00:02, 174.89it/s]Loading weights:  38%|███▊      | 278/723 [00:02<00:03, 130.78it/s]Loading weights:  40%|████      | 291/723 [00:02<00:03, 141.21it/s]Loading weights:  48%|████▊     | 344/723 [00:02<00:02, 162.01it/s]Loading weights:  50%|█████     | 363/723 [00:02<00:02, 170.49it/s]Loading weights:  42%|████▏     | 301/723 [00:02<00:02, 149.00it/s]Loading weights:  42%|████▏     | 306/723 [00:02<00:03, 138.49it/s]Loading weights:  50%|████▉     | 361/723 [00:02<00:02, 147.10it/s]Loading weights:  53%|█████▎    | 384/723 [00:02<00:01, 171.38it/s]Loading weights:  44%|████▍     | 317/723 [00:02<00:03, 134.02it/s]Loading weights:  45%|████▌     | 326/723 [00:02<00:02, 148.78it/s]Loading weights:  53%|█████▎    | 380/723 [00:02<00:02, 157.90it/s]Loading weights:  56%|█████▌    | 402/723 [00:02<00:01, 171.66it/s]Loading weights:  47%|████▋     | 343/723 [00:02<00:02, 150.30it/s]Loading weights:  46%|████▌     | 332/723 [00:02<00:02, 131.32it/s]Loading weights:  55%|█████▌    | 398/723 [00:02<00:02, 159.79it/s]Loading weights:  58%|█████▊    | 420/723 [00:02<00:01, 160.59it/s]Loading weights:  48%|████▊     | 346/723 [00:02<00:02, 131.06it/s]Loading weights:  58%|█████▊    | 416/723 [00:02<00:01, 162.59it/s]Loading weights:  50%|████▉     | 359/723 [00:02<00:02, 132.76it/s]Loading weights:  72%|███████▏  | 518/723 [00:02<00:00, 379.31it/s]Loading weights:  50%|█████     | 362/723 [00:03<00:02, 138.60it/s]Loading weights:  65%|██████▌   | 470/723 [00:03<00:00, 267.12it/s]Loading weights:  53%|█████▎    | 380/723 [00:03<00:02, 151.45it/s]Loading weights:  88%|████████▊ | 635/723 [00:03<00:00, 597.18it/s]Loading weights:  52%|█████▏    | 379/723 [00:03<00:02, 146.65it/s]Loading weights:  82%|████████▏ | 590/723 [00:03<00:00, 531.77it/s]Loading weights: 100%|██████████| 723/723 [00:03<00:00, 228.19it/s]
+Loading weights:  55%|█████▍    | 397/723 [00:03<00:02, 152.39it/s]Loading weights:  99%|█████████▉| 718/723 [00:03<00:00, 737.26it/s]Loading weights: 100%|██████████| 723/723 [00:03<00:00, 220.27it/s]
+Loading weights:  55%|█████▌    | 398/723 [00:03<00:02, 147.90it/s]Loading weights:  58%|█████▊    | 417/723 [00:03<00:01, 162.50it/s]Loading weights:  61%|██████    | 441/723 [00:03<00:01, 223.71it/s]Loading weights:  78%|███████▊  | 566/723 [00:03<00:00, 524.48it/s]Loading weights:  89%|████████▉ | 645/723 [00:03<00:00, 727.94it/s]Loading weights: 100%|██████████| 723/723 [00:03<00:00, 207.82it/s]
+Loading weights: 100%|██████████| 723/723 [00:03<00:00, 206.63it/s]
+[rank2]:W1025 00:53:13.256000 453 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank2]:W1025 00:53:13.256000 453 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank2]:W1025 00:53:13.256000 453 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank2]:W1025 00:53:13.257000 453 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank2]:W1025 00:53:13.257000 453 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank2]:W1025 00:53:13.257000 453 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank2]:W1025 00:53:13.258000 453 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank2]:W1025 00:53:13.258000 453 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank2]:W1025 00:53:13.258000 453 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank2]:W1025 00:53:13.259000 453 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank2]:W1025 00:53:13.259000 453 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank2]:W1025 00:53:13.259000 453 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank0]:W1025 00:53:13.370000 451 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank0]:W1025 00:53:13.370000 451 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank0]:W1025 00:53:13.370000 451 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank0]:W1025 00:53:13.371000 451 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank0]:W1025 00:53:13.371000 451 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank0]:W1025 00:53:13.371000 451 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank0]:W1025 00:53:13.372000 451 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank0]:W1025 00:53:13.372000 451 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank0]:W1025 00:53:13.372000 451 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank0]:W1025 00:53:13.373000 451 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank0]:W1025 00:53:13.373000 451 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank0]:W1025 00:53:13.373000 451 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank1]:W1025 00:53:13.407000 452 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank1]:W1025 00:53:13.407000 452 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank1]:W1025 00:53:13.407000 452 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank1]:W1025 00:53:13.408000 452 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank1]:W1025 00:53:13.408000 452 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank1]:W1025 00:53:13.408000 452 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank1]:W1025 00:53:13.409000 452 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank1]:W1025 00:53:13.409000 452 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank1]:W1025 00:53:13.409000 452 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank1]:W1025 00:53:13.410000 452 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank1]:W1025 00:53:13.410000 452 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank1]:W1025 00:53:13.410000 452 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank3]:W1025 00:53:13.434000 454 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank3]:W1025 00:53:13.434000 454 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank3]:W1025 00:53:13.434000 454 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank3]:W1025 00:53:13.435000 454 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank3]:W1025 00:53:13.435000 454 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank3]:W1025 00:53:13.435000 454 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank3]:W1025 00:53:13.436000 454 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank3]:W1025 00:53:13.436000 454 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank3]:W1025 00:53:13.436000 454 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+[rank3]:W1025 00:53:13.436000 454 torch/_library/opaque_object.py:381] is_opaque_value_type is deprecated, use is_opaque_constant_type instead
+[rank3]:W1025 00:53:13.437000 454 torch/_library/opaque_object.py:288] register_opaque_type is deprecated, use register_custom_class instead
+[rank3]:W1025 00:53:13.437000 454 torch/_library/opaque_object.py:211] typ='value' is deprecated, use typ='constant' instead
+/usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+/home/nate/Documents/maestro-llm/ear_graft/train.py:155: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:155: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:155: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:155: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/nate/.netrc.
+wandb: Currently logged in as: njirby (njirby-na) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run yd63q6jz
+wandb: Tracking run with wandb version 0.30.0
+wandb: Run data is saved locally in ear_graft/out/v1-mlp-lora/wandb/run-20261025_005319-yd63q6jz
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run v1-mlp-lora
+wandb: ⭐️ View project at https://wandb.ai/njirby-na/ear-graft
+wandb: 🚀 View run at https://wandb.ai/njirby-na/ear-graft/runs/yd63q6jz
+trainable params 54080000; 43124 train rows; world 4 x micro 4 x accum 2 = 32/step; 1347 steps; starting at 0
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+step 0/1347 loss 0.9060 gn 0.391 lr 1.25e-05 3.00 rows/s
+step 10/1347 loss 0.9232 gn 0.409 lr 1.38e-04 4.84 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 20/1347 loss 0.8820 gn 0.352 lr 2.63e-04 4.58 rows/s
+step 30/1347 loss 0.8033 gn 0.329 lr 3.88e-04 4.95 rows/s
+step 40/1347 loss 0.8718 gn 0.391 lr 5.00e-04 5.03 rows/s
+step 50/1347 loss 0.8299 gn 0.408 lr 5.00e-04 5.02 rows/s
+step 60/1347 loss 0.8112 gn 0.370 lr 5.00e-04 4.84 rows/s
+step 70/1347 loss 0.8830 gn 0.500 lr 4.99e-04 4.85 rows/s
+step 80/1347 loss 0.8333 gn 0.410 lr 4.99e-04 4.93 rows/s
+step 90/1347 loss 0.7629 gn 0.379 lr 4.98e-04 5.01 rows/s
+step 100/1347 loss 0.8340 gn 0.517 lr 4.98e-04 5.08 rows/s
+eval 100: loss audio 0.8445 zeroed 0.9483 gain 0.1038 audio-norm 21.793
+/usr/local/lib/python3.12/dist-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+step 110/1347 loss 0.8654 gn 0.385 lr 4.97e-04 3.83 rows/s
+step 120/1347 loss 0.8187 gn 0.405 lr 4.96e-04 3.93 rows/s
+step 130/1347 loss 0.8297 gn 0.434 lr 4.95e-04 4.01 rows/s
+step 140/1347 loss 0.7426 gn 0.338 lr 4.94e-04 4.08 rows/s
+step 150/1347 loss 0.8236 gn 0.462 lr 4.92e-04 4.14 rows/s
+step 160/1347 loss 0.8105 gn 0.467 lr 4.91e-04 4.13 rows/s
+step 170/1347 loss 0.7779 gn 0.437 lr 4.89e-04 4.20 rows/s
+step 180/1347 loss 0.8159 gn 0.408 lr 4.87e-04 4.26 rows/s
+step 190/1347 loss 0.7865 gn 0.374 lr 4.86e-04 4.24 rows/s
+step 200/1347 loss 0.7702 gn 0.443 lr 4.84e-04 4.25 rows/s
+eval 200: loss audio 0.8087 zeroed 0.8786 gain 0.0699 audio-norm 23.631
+step 210/1347 loss 0.8134 gn 0.444 lr 4.81e-04 3.76 rows/s
+step 220/1347 loss 0.7484 gn 0.374 lr 4.79e-04 3.82 rows/s
+step 230/1347 loss 0.7916 gn 0.417 lr 4.77e-04 3.89 rows/s
+step 240/1347 loss 0.7644 gn 0.361 lr 4.74e-04 3.96 rows/s
+step 250/1347 loss 0.7907 gn 0.546 lr 4.72e-04 4.01 rows/s
+step 260/1347 loss 0.7804 gn 0.433 lr 4.69e-04 4.03 rows/s
+step 270/1347 loss 0.7966 gn 0.444 lr 4.66e-04 4.09 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 280/1347 loss 0.7058 gn 0.282 lr 4.64e-04 4.09 rows/s
+step 290/1347 loss 0.7442 gn 0.277 lr 4.61e-04 4.12 rows/s
+step 300/1347 loss 0.7889 gn 0.482 lr 4.57e-04 4.17 rows/s
+eval 300: loss audio 0.7898 zeroed 0.8588 gain 0.0691 audio-norm 23.239
+step 310/1347 loss 0.7797 gn 0.392 lr 4.54e-04 3.83 rows/s
+step 320/1347 loss 0.7751 gn 0.405 lr 4.51e-04 3.88 rows/s
+step 330/1347 loss 0.7089 gn 0.307 lr 4.48e-04 3.90 rows/s
+step 340/1347 loss 0.7448 gn 0.473 lr 4.44e-04 3.94 rows/s
+step 350/1347 loss 0.7510 gn 0.433 lr 4.40e-04 3.96 rows/s
+step 360/1347 loss 0.7362 gn 0.444 lr 4.37e-04 4.00 rows/s
+step 370/1347 loss 0.7525 gn 0.318 lr 4.33e-04 3.99 rows/s
+step 380/1347 loss 0.7700 gn 0.494 lr 4.29e-04 4.02 rows/s
+step 390/1347 loss 0.8114 gn 0.431 lr 4.25e-04 4.05 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 400/1347 loss 0.7330 gn 0.362 lr 4.21e-04 4.08 rows/s
+eval 400: loss audio 0.7759 zeroed 0.8429 gain 0.0670 audio-norm 24.675
+step 410/1347 loss 0.7833 gn 0.376 lr 4.17e-04 3.83 rows/s
+step 420/1347 loss 0.7365 gn 0.429 lr 4.12e-04 3.87 rows/s
+step 430/1347 loss 0.7295 gn 0.346 lr 4.08e-04 3.88 rows/s
+step 440/1347 loss 0.7380 gn 0.377 lr 4.04e-04 3.91 rows/s
+step 450/1347 loss 0.7531 gn 0.367 lr 3.99e-04 3.89 rows/s
+step 460/1347 loss 0.7516 gn 0.391 lr 3.95e-04 3.91 rows/s
+step 470/1347 loss 0.7800 gn 0.378 lr 3.90e-04 3.93 rows/s
+step 480/1347 loss 0.7848 gn 0.424 lr 3.85e-04 3.95 rows/s
+step 490/1347 loss 0.7022 gn 0.374 lr 3.81e-04 3.97 rows/s
+step 500/1347 loss 0.7973 gn 0.469 lr 3.76e-04 3.99 rows/s
+eval 500: loss audio 0.7625 zeroed 0.8317 gain 0.0693 audio-norm 23.353
+step 510/1347 loss 0.7275 gn 0.421 lr 3.71e-04 3.79 rows/s
+step 520/1347 loss 0.7078 gn 0.358 lr 3.66e-04 3.80 rows/s
+step 530/1347 loss 0.7649 gn 0.325 lr 3.61e-04 3.81 rows/s
+step 540/1347 loss 0.7553 gn 0.400 lr 3.56e-04 3.83 rows/s
+step 550/1347 loss 0.7372 gn 0.322 lr 3.51e-04 3.85 rows/s
+step 560/1347 loss 0.7559 gn 0.483 lr 3.46e-04 3.87 rows/s
+step 570/1347 loss 0.7546 gn 0.385 lr 3.41e-04 3.89 rows/s
+step 580/1347 loss 0.6966 gn 0.362 lr 3.36e-04 3.90 rows/s
+step 590/1347 loss 0.7111 gn 0.429 lr 3.30e-04 3.93 rows/s
+step 600/1347 loss 0.6812 gn 0.381 lr 3.25e-04 3.95 rows/s
+eval 600: loss audio 0.7537 zeroed 0.8227 gain 0.0690 audio-norm 22.961
+step 610/1347 loss 0.7034 gn 0.402 lr 3.20e-04 3.79 rows/s
+step 620/1347 loss 0.6961 gn 0.414 lr 3.15e-04 3.81 rows/s
+step 630/1347 loss 0.7376 gn 0.345 lr 3.09e-04 3.82 rows/s
+step 640/1347 loss 0.7412 gn 0.284 lr 3.04e-04 3.83 rows/s
+step 650/1347 loss 0.7696 gn 0.422 lr 2.98e-04 3.84 rows/s
+step 660/1347 loss 0.7120 gn 0.428 lr 2.93e-04 3.86 rows/s
+step 670/1347 loss 0.7560 gn 0.424 lr 2.88e-04 3.87 rows/s
+step 680/1347 loss 0.7032 gn 0.429 lr 2.82e-04 3.88 rows/s
+step 690/1347 loss 0.6496 gn 0.351 lr 2.77e-04 3.89 rows/s
+step 700/1347 loss 0.7384 gn 0.288 lr 2.71e-04 3.91 rows/s
+eval 700: loss audio 0.7457 zeroed 0.8163 gain 0.0706 audio-norm 22.628
+step 710/1347 loss 0.7611 gn 0.355 lr 2.66e-04 3.77 rows/s
+step 720/1347 loss 0.7425 gn 0.346 lr 2.61e-04 3.78 rows/s
+step 730/1347 loss 0.7919 gn 0.437 lr 2.55e-04 3.80 rows/s
+step 740/1347 loss 0.7037 gn 0.500 lr 2.50e-04 3.81 rows/s
+step 750/1347 loss 0.7493 gn 0.428 lr 2.45e-04 3.81 rows/s
+step 760/1347 loss 0.7137 gn 0.410 lr 2.39e-04 3.83 rows/s
+step 770/1347 loss 0.7648 gn 0.493 lr 2.34e-04 3.84 rows/s
+step 780/1347 loss 0.6968 gn 0.384 lr 2.29e-04 3.86 rows/s
+step 790/1347 loss 0.7230 gn 0.468 lr 2.23e-04 3.88 rows/s
+step 800/1347 loss 0.7150 gn 0.401 lr 2.18e-04 3.89 rows/s
+eval 800: loss audio 0.7402 zeroed 0.8132 gain 0.0730 audio-norm 22.231
+step 810/1347 loss 0.6998 gn 0.371 lr 2.13e-04 3.76 rows/s
+step 820/1347 loss 0.7256 gn 0.390 lr 2.08e-04 3.78 rows/s
+step 830/1347 loss 0.7243 gn 0.362 lr 2.02e-04 3.79 rows/s
+step 840/1347 loss 0.7530 gn 0.393 lr 1.97e-04 3.80 rows/s
+step 850/1347 loss 0.7027 gn 0.464 lr 1.92e-04 3.81 rows/s
+step 860/1347 loss 0.6894 gn 0.388 lr 1.87e-04 3.83 rows/s
+step 870/1347 loss 0.7762 gn 0.384 lr 1.82e-04 3.83 rows/s
+step 880/1347 loss 0.6474 gn 0.365 lr 1.77e-04 3.84 rows/s
+step 890/1347 loss 0.7005 gn 0.384 lr 1.73e-04 3.85 rows/s
+step 900/1347 loss 0.7197 gn 0.397 lr 1.68e-04 3.86 rows/s
+eval 900: loss audio 0.7355 zeroed 0.8089 gain 0.0734 audio-norm 21.929
+step 910/1347 loss 0.7718 gn 0.363 lr 1.63e-04 3.76 rows/s
+step 920/1347 loss 0.7800 gn 0.564 lr 1.58e-04 3.77 rows/s
+step 930/1347 loss 0.7208 gn 0.366 lr 1.54e-04 3.78 rows/s
+step 940/1347 loss 0.7372 gn 0.400 lr 1.49e-04 3.79 rows/s
+step 950/1347 loss 0.6770 gn 0.411 lr 1.45e-04 3.80 rows/s
+step 960/1347 loss 0.7533 gn 0.401 lr 1.41e-04 3.81 rows/s
+step 970/1347 loss 0.6437 gn 0.273 lr 1.36e-04 3.82 rows/s
+step 980/1347 loss 0.7163 gn 0.371 lr 1.32e-04 3.82 rows/s
+step 990/1347 loss 0.7309 gn 0.470 lr 1.28e-04 3.83 rows/s
+step 1000/1347 loss 0.6697 gn 0.386 lr 1.24e-04 3.84 rows/s
+eval 1000: loss audio 0.7317 zeroed 0.8065 gain 0.0748 audio-norm 21.730
+step 1010/1347 loss 0.7554 gn 0.399 lr 1.20e-04 3.75 rows/s
+step 1020/1347 loss 0.7317 gn 0.499 lr 1.16e-04 3.76 rows/s
+step 1030/1347 loss 0.7161 gn 0.392 lr 1.12e-04 3.77 rows/s
+step 1040/1347 loss 0.7481 gn 0.460 lr 1.09e-04 3.79 rows/s
+step 1050/1347 loss 0.6694 gn 0.253 lr 1.05e-04 3.79 rows/s
+step 1060/1347 loss 0.6614 gn 0.396 lr 1.01e-04 3.80 rows/s
+step 1070/1347 loss 0.7025 gn 0.341 lr 9.81e-05 3.81 rows/s
+step 1080/1347 loss 0.7494 gn 0.423 lr 9.48e-05 3.82 rows/s
+step 1090/1347 loss 0.6839 gn 0.434 lr 9.16e-05 3.83 rows/s
+step 1100/1347 loss 0.7220 gn 0.330 lr 8.85e-05 3.84 rows/s
+eval 1100: loss audio 0.7299 zeroed 0.8059 gain 0.0759 audio-norm 21.419
+step 1110/1347 loss 0.7156 gn 0.390 lr 8.55e-05 3.76 rows/s
+step 1120/1347 loss 0.6955 gn 0.469 lr 8.27e-05 3.77 rows/s
+step 1130/1347 loss 0.7680 gn 0.389 lr 7.99e-05 3.78 rows/s
+step 1140/1347 loss 0.7413 gn 0.344 lr 7.73e-05 3.78 rows/s
+step 1150/1347 loss 0.7143 gn 0.424 lr 7.48e-05 3.79 rows/s
+step 1160/1347 loss 0.7049 gn 0.414 lr 7.23e-05 3.79 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1804] error: dequantization failed!
+step 1170/1347 loss 0.7250 gn 0.362 lr 7.01e-05 3.80 rows/s
+step 1180/1347 loss 0.7463 gn 0.391 lr 6.79e-05 3.81 rows/s
+step 1190/1347 loss 0.7132 gn 0.352 lr 6.58e-05 3.81 rows/s
+step 1200/1347 loss 0.7650 gn 0.552 lr 6.39e-05 3.82 rows/s
+eval 1200: loss audio 0.7279 zeroed 0.8037 gain 0.0757 audio-norm 21.189
+step 1210/1347 loss 0.7211 gn 0.438 lr 6.21e-05 3.75 rows/s
+step 1220/1347 loss 0.6552 gn 0.453 lr 6.04e-05 3.76 rows/s
+step 1230/1347 loss 0.7166 gn 0.441 lr 5.88e-05 3.77 rows/s
+step 1240/1347 loss 0.7106 gn 0.340 lr 5.74e-05 3.78 rows/s
+step 1250/1347 loss 0.6783 gn 0.344 lr 5.61e-05 3.79 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 1260/1347 loss 0.7001 gn 0.354 lr 5.49e-05 3.80 rows/s
+step 1270/1347 loss 0.7060 gn 0.496 lr 5.38e-05 3.80 rows/s
+step 1280/1347 loss 0.7121 gn 0.422 lr 5.29e-05 3.81 rows/s
+step 1290/1347 loss 0.6833 gn 0.386 lr 5.21e-05 3.81 rows/s
+step 1300/1347 loss 0.7122 gn 0.479 lr 5.14e-05 3.82 rows/s
+eval 1300: loss audio 0.7265 zeroed 0.8025 gain 0.0760 audio-norm 21.065
+step 1310/1347 loss 0.7381 gn 0.341 lr 5.09e-05 3.75 rows/s
+step 1320/1347 loss 0.6735 gn 0.339 lr 5.05e-05 3.76 rows/s
+step 1330/1347 loss 0.7038 gn 0.294 lr 5.02e-05 3.76 rows/s
+step 1340/1347 loss 0.6989 gn 0.363 lr 5.00e-05 3.76 rows/s
+step 1346/1347 loss 0.6945 gn 0.394 lr 5.00e-05 3.76 rows/s
+eval 1346: loss audio 0.7262 zeroed 0.8025 gain 0.0763 audio-norm 20.957
+wandb: uploading artifact run-yd63q6jz-samples
+wandb: uploading media/table/samples_1346_d729ca1e1c9dbaff72ce.table.json; uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: 
+wandb: Run history:
+wandb:      perf/gpu_mem_gb ▁▂▂▂▂▂▂▂▂▂▂▂▂▅▅▅▅▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇█
+wandb:      perf/rows_per_s ▁▇██▄▅▅▅▄▅▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+wandb:       perf/tok_per_s ▆█▇▆▆▂▃▃▃▂▁▂▂▂▂▁▁▁▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂
+wandb:          train/epoch ▁▁▁▁▂▂▂▂▂▂▃▃▃▃▃▄▄▄▄▄▄▅▅▅▅▅▅▆▆▆▆▆▇▇▇▇▇███
+wandb:      train/grad_norm ▄▇▅▅▄▁▄▄▆▅▂▆▅▃▄▃▄▄▅▅▁▆▄▃▄▄█▃▄▄▄▃▂▆▃▄▅▃▆▃
+wandb:           train/loss ▇█▇█▇▇▅▅▅▆▅▄▃▄▅▃▅▆▄▁▃▅▄▃▃▂▁▄▂▄▂▃▅▄▄▅▄▄▄▃
+wandb:             train/lr ▄█████████▇▇▇▇▇▆▆▆▆▆▅▅▅▄▄▃▃▃▃▂▂▂▂▂▁▁▁▁▁▁
+wandb: val/audio_embed_norm ▃▆▅█▆▅▄▃▃▂▂▁▁▁
+wandb:       val/audio_gain █▂▁▁▁▁▂▂▂▂▃▃▃▃
+wandb:       val/loss_audio █▆▅▄▃▃▂▂▂▁▁▁▁▁
+wandb:                  +26 ...
+wandb: 
+wandb: Run summary:
+wandb:        best_val_loss 0.72619
+wandb:      perf/gpu_mem_gb 18.78063
+wandb:      perf/rows_per_s 3.76366
+wandb:       perf/tok_per_s 2545.07223
+wandb:          train/epoch 0.99926
+wandb:      train/grad_norm 0.39419
+wandb:           train/loss 0.69451
+wandb:             train/lr 5e-05
+wandb: val/audio_embed_norm 20.95682
+wandb:       val/audio_gain 0.07628
+wandb:                  +27 ...
+wandb: 
+wandb: 🚀 View run v1-mlp-lora at: https://wandb.ai/njirby-na/ear-graft/runs/yd63q6jz
+wandb: ⭐️ View project at: https://wandb.ai/njirby-na/ear-graft
+wandb: Synced 5 W&B file(s), 14 media file(s), 28 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ear_graft/out/v1-mlp-lora/wandb/run-20261025_005319-yd63q6jz/logs

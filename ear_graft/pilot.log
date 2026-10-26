@@ -1,0 +1,89 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.09 (build 453215200)
+PyTorch Version 2.14.0a0+b2c75dd
+Container image Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+WARNING: CUDA Minor Version Compatibility mode ENABLED.
+  Using driver version 580.178.04 which has support for CUDA 13.0.  This container
+  was built with CUDA 13.4 and will be run in Minor Version Compatibility mode.
+  CUDA Forward Compatibility is preferred over Minor Version Compatibility for use
+  with this container but was unavailable:
+  [[]]
+  See https://docs.nvidia.com/deploy/cuda-compatibility/ for details.
+
+W1024 21:29:05.970000 1 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:29:05.990000 1 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 1/723 [00:00<01:13,  9.84it/s]Loading weights:   7%|▋         | 47/723 [00:00<00:02, 268.42it/s]Loading weights:  14%|█▎        | 98/723 [00:00<00:01, 372.16it/s]Loading weights:  20%|██        | 148/723 [00:00<00:01, 420.57it/s]Loading weights:  28%|██▊       | 201/723 [00:00<00:01, 453.37it/s]Loading weights:  35%|███▍      | 253/723 [00:00<00:00, 471.91it/s]Loading weights:  42%|████▏     | 302/723 [00:00<00:00, 476.97it/s]Loading weights:  48%|████▊     | 350/723 [00:00<00:00, 458.64it/s]Loading weights:  55%|█████▍    | 396/723 [00:00<00:00, 458.11it/s]Loading weights:  70%|██████▉   | 505/723 [00:01<00:00, 647.90it/s]Loading weights: 100%|██████████| 723/723 [00:01<00:00, 656.55it/s]
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/nate/.netrc.
+wandb: Currently logged in as: njirby (njirby-na) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run pzlh0h22
+wandb: Tracking run with wandb version 0.30.0
+wandb: Run data is saved locally in ear_graft/out/pilot2/wandb/run-20261024_212915-pzlh0h22
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run pilot2
+wandb: ⭐️ View project at https://wandb.ai/njirby-na/ear-graft
+wandb: 🚀 View run at https://wandb.ai/njirby-na/ear-graft/runs/pzlh0h22
+trainable params 5250560; 44009 train rows; world 1 x micro 4 x accum 8 = 32/step; 30 steps
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+step 0/30 loss 1.4766 gn 15.990 lr 1.00e-03 1.46 rows/s
+step 10/30 loss 1.3309 gn 0.682 lr 8.03e-04 1.43 rows/s
+step 20/30 loss 1.5444 gn 3.097 lr 3.39e-04 1.79 rows/s
+step 29/30 loss 1.2543 gn 0.752 lr 1.03e-04 1.89 rows/s
+eval 29: loss audio 1.1493 zeroed 1.2210 gain 0.0717 audio-norm 2.256
+wandb: uploading artifact run-pzlh0h22-samples; updating run metadata
+wandb: uploading artifact run-pzlh0h22-samples
+wandb: uploading media/table/samples_29_2696b71a49783f9ad1bd.table.json; uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: 
+wandb: Run history:
+wandb:      perf/gpu_mem_gb ▁███
+wandb:      perf/rows_per_s ▁▁▇█
+wandb:       perf/tok_per_s ▁▄▇█
+wandb:          train/epoch ▁▃▆█
+wandb:      train/grad_norm █▁▂▁
+wandb:           train/loss ▆▃█▁
+wandb:             train/lr █▆▃▁
+wandb: val/audio_embed_norm ▁
+wandb:       val/audio_gain ▁
+wandb:       val/loss_audio ▁
+wandb:                  +22 ...
+wandb: 
+wandb: Run summary:
+wandb:        best_val_loss 1.14933
+wandb:      perf/gpu_mem_gb 17.88976
+wandb:      perf/rows_per_s 1.8866
+wandb:       perf/tok_per_s 1290.859
+wandb:          train/epoch 0.02109
+wandb:      train/grad_norm 0.7521
+wandb:           train/loss 1.25426
+wandb:             train/lr 0.0001
+wandb: val/audio_embed_norm 2.25609
+wandb:       val/audio_gain 0.0717
+wandb:                  +23 ...
+wandb: 
+wandb: 🚀 View run pilot2 at: https://wandb.ai/njirby-na/ear-graft/runs/pzlh0h22
+wandb: ⭐️ View project at: https://wandb.ai/njirby-na/ear-graft
+wandb: Synced 5 W&B file(s), 1 media file(s), 2 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ear_graft/out/pilot2/wandb/run-20261024_212915-pzlh0h22/logs

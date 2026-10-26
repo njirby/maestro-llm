@@ -1,0 +1,123 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.09 (build 453215200)
+PyTorch Version 2.14.0a0+b2c75dd
+Container image Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+WARNING: CUDA Minor Version Compatibility mode ENABLED.
+  Using driver version 580.178.04 which has support for CUDA 13.0.  This container
+  was built with CUDA 13.4 and will be run in Minor Version Compatibility mode.
+  CUDA Forward Compatibility is preferred over Minor Version Compatibility for use
+  with this container but was unavailable:
+  [[]]
+  See https://docs.nvidia.com/deploy/cuda-compatibility/ for details.
+
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+W1025 00:37:43.864000 454 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:37:43.864000 451 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:37:43.864000 452 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:37:43.864000 453 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:37:43.888000 453 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:37:43.888000 454 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:37:43.888000 452 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1025 00:37:43.888000 451 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 1/723 [00:00<04:28,  2.69it/s]Loading weights:   0%|          | 1/723 [00:00<04:37,  2.60it/s]Loading weights:   0%|          | 1/723 [00:00<04:40,  2.57it/s]Loading weights:   0%|          | 1/723 [00:00<04:41,  2.56it/s]Loading weights:   3%|▎         | 22/723 [00:00<00:11, 59.50it/s]Loading weights:   3%|▎         | 23/723 [00:00<00:11, 61.02it/s]Loading weights:   3%|▎         | 20/723 [00:00<00:13, 52.41it/s]Loading weights:   3%|▎         | 22/723 [00:00<00:12, 57.20it/s]Loading weights:   6%|▌         | 40/723 [00:00<00:07, 86.69it/s]Loading weights:   6%|▌         | 41/723 [00:00<00:07, 89.40it/s]Loading weights:   6%|▌         | 40/723 [00:00<00:08, 80.87it/s]Loading weights:   6%|▌         | 40/723 [00:00<00:08, 83.52it/s]Loading weights:   7%|▋         | 54/723 [00:00<00:06, 97.51it/s]Loading weights:   8%|▊         | 61/723 [00:00<00:05, 114.82it/s]Loading weights:   8%|▊         | 61/723 [00:00<00:05, 112.23it/s]Loading weights:   9%|▊         | 62/723 [00:00<00:05, 118.09it/s]Loading weights:  11%|█         | 79/723 [00:00<00:04, 129.71it/s]Loading weights:  10%|█         | 75/723 [00:00<00:05, 124.49it/s]Loading weights:  11%|█         | 79/723 [00:00<00:05, 127.43it/s]Loading weights:  11%|█         | 77/723 [00:00<00:05, 110.04it/s]Loading weights:  13%|█▎        | 92/723 [00:00<00:04, 136.69it/s]Loading weights:  13%|█▎        | 95/723 [00:00<00:04, 127.40it/s]Loading weights:  13%|█▎        | 95/723 [00:00<00:04, 130.37it/s]Loading weights:  14%|█▎        | 99/723 [00:00<00:04, 133.30it/s]Loading weights:  15%|█▍        | 108/723 [00:01<00:04, 131.49it/s]Loading weights:  15%|█▌        | 112/723 [00:01<00:04, 136.00it/s]Loading weights:  16%|█▌        | 115/723 [00:01<00:04, 147.49it/s]Loading weights:  16%|█▋        | 118/723 [00:01<00:04, 146.53it/s]Loading weights:  18%|█▊        | 132/723 [00:01<00:03, 151.58it/s]Loading weights:  18%|█▊        | 128/723 [00:01<00:04, 147.37it/s]Loading weights:  18%|█▊        | 132/723 [00:01<00:04, 147.74it/s]Loading weights:  19%|█▊        | 135/723 [00:01<00:04, 143.69it/s]Loading weights:  20%|██        | 146/723 [00:01<00:03, 155.97it/s]Loading weights:  20%|██        | 148/723 [00:01<00:03, 144.10it/s]Loading weights:  21%|██        | 149/723 [00:01<00:04, 142.54it/s]Loading weights:  21%|██        | 151/723 [00:01<00:03, 147.87it/s]Loading weights:  23%|██▎       | 163/723 [00:01<00:03, 153.89it/s]Loading weights:  23%|██▎       | 168/723 [00:01<00:03, 157.58it/s]Loading weights:  23%|██▎       | 168/723 [00:01<00:03, 153.46it/s]Loading weights:  24%|██▎       | 171/723 [00:01<00:03, 157.49it/s]Loading weights:  25%|██▌       | 182/723 [00:01<00:03, 162.26it/s]Loading weights:  26%|██▌       | 185/723 [00:01<00:03, 156.42it/s]Loading weights:  26%|██▌       | 185/723 [00:01<00:03, 159.41it/s]Loading weights:  26%|██▌       | 188/723 [00:01<00:03, 154.61it/s]Loading weights:  28%|██▊       | 199/723 [00:01<00:03, 161.46it/s]Loading weights:  28%|██▊       | 202/723 [00:01<00:03, 154.24it/s]Loading weights:  28%|██▊       | 202/723 [00:01<00:03, 152.25it/s]Loading weights:  28%|██▊       | 205/723 [00:01<00:03, 151.51it/s]Loading weights:  30%|██▉       | 216/723 [00:01<00:03, 158.14it/s]Loading weights:  31%|███       | 221/723 [00:01<00:03, 162.49it/s]Loading weights:  31%|███       | 223/723 [00:01<00:03, 165.75it/s]Loading weights:  31%|███       | 225/723 [00:01<00:03, 162.89it/s]Loading weights:  32%|███▏      | 234/723 [00:01<00:03, 158.11it/s]Loading weights:  33%|███▎      | 238/723 [00:01<00:03, 159.88it/s]Loading weights:  33%|███▎      | 242/723 [00:01<00:02, 163.50it/s]Loading weights:  33%|███▎      | 240/723 [00:01<00:03, 150.41it/s]Loading weights:  35%|███▍      | 253/723 [00:01<00:02, 161.41it/s]Loading weights:  35%|███▌      | 255/723 [00:01<00:02, 160.51it/s]Loading weights:  36%|███▌      | 258/723 [00:01<00:02, 155.51it/s]Loading weights:  36%|███▌      | 259/723 [00:02<00:03, 154.54it/s]Loading weights:  38%|███▊      | 273/723 [00:02<00:02, 170.68it/s]Loading weights:  38%|███▊      | 275/723 [00:02<00:02, 169.66it/s]Loading weights:  38%|███▊      | 278/723 [00:02<00:02, 163.71it/s]Loading weights:  39%|███▊      | 279/723 [00:02<00:02, 165.18it/s]Loading weights:  40%|████      | 291/723 [00:02<00:02, 160.05it/s]Loading weights:  41%|████      | 295/723 [00:02<00:02, 164.19it/s]Loading weights:  41%|████      | 293/723 [00:02<00:02, 152.11it/s]Loading weights:  42%|████▏     | 301/723 [00:02<00:02, 170.83it/s]Loading weights:  43%|████▎     | 308/723 [00:02<00:02, 157.09it/s]Loading weights:  43%|████▎     | 311/723 [00:02<00:02, 156.08it/s]Loading weights:  43%|████▎     | 312/723 [00:02<00:02, 151.15it/s]Loading weights:  44%|████▍     | 319/723 [00:02<00:02, 160.37it/s]Loading weights:  46%|████▌     | 329/723 [00:02<00:02, 171.31it/s]Loading weights:  46%|████▌     | 332/723 [00:02<00:02, 163.94it/s]Loading weights:  46%|████▌     | 331/723 [00:02<00:02, 158.61it/s]Loading weights:  47%|████▋     | 343/723 [00:02<00:02, 178.33it/s]Loading weights:  48%|████▊     | 347/723 [00:02<00:02, 161.04it/s]Loading weights:  48%|████▊     | 350/723 [00:02<00:02, 167.84it/s]Loading weights:  49%|████▉     | 355/723 [00:02<00:02, 179.83it/s]Loading weights:  50%|█████     | 362/723 [00:02<00:02, 169.24it/s]Loading weights:  50%|█████     | 364/723 [00:02<00:02, 152.53it/s]Loading weights:  51%|█████     | 368/723 [00:02<00:02, 168.45it/s]Loading weights:  52%|█████▏    | 374/723 [00:02<00:02, 170.97it/s]Loading weights:  53%|█████▎    | 382/723 [00:02<00:01, 176.25it/s]Loading weights:  53%|█████▎    | 384/723 [00:02<00:02, 163.30it/s]Loading weights:  54%|█████▍    | 393/723 [00:02<00:01, 183.32it/s]Loading weights:  54%|█████▍    | 394/723 [00:02<00:01, 175.73it/s]Loading weights:  55%|█████▌    | 400/723 [00:02<00:01, 164.95it/s]Loading weights:  56%|█████▋    | 408/723 [00:02<00:01, 184.10it/s]Loading weights:  57%|█████▋    | 412/723 [00:02<00:01, 171.59it/s]Loading weights:  57%|█████▋    | 412/723 [00:02<00:01, 169.21it/s]Loading weights:  58%|█████▊    | 417/723 [00:02<00:01, 160.96it/s]Loading weights:  59%|█████▉    | 427/723 [00:02<00:01, 167.08it/s]Loading weights:  60%|██████    | 434/723 [00:02<00:01, 184.30it/s]Loading weights:  59%|█████▉    | 430/723 [00:02<00:01, 171.60it/s]Loading weights:  68%|██████▊   | 495/723 [00:03<00:00, 327.81it/s]Loading weights:  79%|███████▉  | 572/723 [00:03<00:00, 505.21it/s]Loading weights:  79%|███████▉  | 571/723 [00:03<00:00, 513.61it/s]Loading weights:  79%|███████▉  | 574/723 [00:03<00:00, 524.66it/s]Loading weights:  88%|████████▊ | 636/723 [00:03<00:00, 625.96it/s]Loading weights:  98%|█████████▊| 708/723 [00:03<00:00, 738.32it/s]Loading weights:  98%|█████████▊| 710/723 [00:03<00:00, 758.65it/s]Loading weights:  98%|█████████▊| 708/723 [00:03<00:00, 752.32it/s]Loading weights: 100%|██████████| 723/723 [00:03<00:00, 225.42it/s]
+Loading weights: 100%|██████████| 723/723 [00:03<00:00, 225.61it/s]
+Loading weights: 100%|██████████| 723/723 [00:03<00:00, 225.30it/s]
+Loading weights: 100%|██████████| 723/723 [00:03<00:00, 224.52it/s]
+/home/nate/Documents/maestro-llm/ear_graft/train.py:145: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:145: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:145: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:145: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/nate/.netrc.
+wandb: Currently logged in as: njirby (njirby-na) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run nb7o0t55
+wandb: Tracking run with wandb version 0.30.0
+wandb: Run data is saved locally in ear_graft/out/v0-r1400/wandb/run-20261025_003800-nb7o0t55
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run v0-r1400
+wandb: ⭐️ View project at https://wandb.ai/njirby-na/ear-graft
+wandb: 🚀 View run at https://wandb.ai/njirby-na/ear-graft/runs/nb7o0t55
+trainable params 5250560; 44009 train rows; world 4 x micro 4 x accum 2 = 32/step; 2750 steps; starting at 1401
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+step 1410/2750 loss 0.9108 gn 0.110 lr 2.77e-04 5.84 rows/s
+step 1420/2750 loss 1.1293 gn 0.368 lr 5.48e-04 5.64 rows/s
+step 1430/2750 loss 1.0648 gn 0.125 lr 5.43e-04 5.75 rows/s
+step 1440/2750 loss 0.8854 gn 0.110 lr 5.37e-04 5.71 rows/s
+step 1450/2750 loss 0.7112 gn 0.335 lr 5.32e-04 5.84 rows/s
+step 1460/2750 loss 1.0109 gn 0.136 lr 5.27e-04 5.71 rows/s
+step 1470/2750 loss 0.8800 gn 0.143 lr 5.21e-04 5.70 rows/s
+step 1480/2750 loss 0.9335 gn 0.237 lr 5.16e-04 5.85 rows/s
+step 1490/2750 loss 0.8921 gn 0.284 lr 5.11e-04 5.74 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 1500/2750 loss 0.9595 gn 0.160 lr 5.06e-04 5.75 rows/s
+eval 1500: loss audio 0.9213 zeroed 1.1899 gain 0.2686 audio-norm 11.511
+/usr/local/lib/python3.12/dist-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+step 1510/2750 loss 0.8780 gn 0.166 lr 5.00e-04 4.28 rows/s
+W1025 00:51:44.868000 1 torch/distributed/elastic/agent/server/api.py:753] Received 15 death signal, shutting down workers
+W1025 00:51:44.902000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 451 closing signal SIGTERM
+W1025 00:51:44.903000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 452 closing signal SIGTERM
+W1025 00:51:44.903000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 453 closing signal SIGTERM
+W1025 00:51:44.903000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 454 closing signal SIGTERM
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 1142, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 380, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 1138, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 1129, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 197, in __call__
+    return launch_agent(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 377, in launch_agent
+    result = agent.run()
+             ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/metrics/api.py", line 134, in wrapper
+    result = f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/agent/server/api.py", line 745, in run
+    result = self._invoke_run(role)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/agent/server/api.py", line 923, in _invoke_run
+    time.sleep(monitor_interval)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/api.py", line 86, in _terminate_process_handler
+    raise SignalException(f"Process {os.getpid()} got signal: {sigval}", sigval=sigval)
+torch.distributed.elastic.multiprocessing.api.SignalException: Process 1 got signal: 15

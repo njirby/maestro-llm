@@ -1,0 +1,271 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.09 (build 453215200)
+PyTorch Version 2.14.0a0+b2c75dd
+Container image Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+WARNING: CUDA Minor Version Compatibility mode ENABLED.
+  Using driver version 580.178.04 which has support for CUDA 13.0.  This container
+  was built with CUDA 13.4 and will be run in Minor Version Compatibility mode.
+  CUDA Forward Compatibility is preferred over Minor Version Compatibility for use
+  with this container but was unavailable:
+  [[]]
+  See https://docs.nvidia.com/deploy/cuda-compatibility/ for details.
+
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+W1024 21:38:40.478000 454 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:38:40.478000 453 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:38:40.480000 451 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:38:40.480000 452 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:38:40.499000 454 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:38:40.499000 453 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:38:40.501000 451 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+W1024 21:38:40.501000 452 torch/utils/_pytree.py:630] <enum 'ScaleCalculationMode'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 0/723 [00:00<?, ?it/s]Loading weights:   0%|          | 1/723 [00:00<04:26,  2.71it/s]Loading weights:   0%|          | 1/723 [00:00<04:34,  2.63it/s]Loading weights:   0%|          | 1/723 [00:00<05:27,  2.21it/s]Loading weights:   0%|          | 1/723 [00:00<05:51,  2.05it/s]Loading weights:   4%|▎         | 27/723 [00:00<00:09, 72.85it/s]Loading weights:   3%|▎         | 20/723 [00:00<00:13, 51.15it/s]Loading weights:   3%|▎         | 22/723 [00:00<00:13, 50.34it/s]Loading weights:   3%|▎         | 22/723 [00:00<00:14, 47.02it/s]Loading weights:   6%|▌         | 42/723 [00:00<00:07, 91.59it/s]Loading weights:   6%|▌         | 40/723 [00:00<00:07, 88.51it/s]Loading weights:   5%|▌         | 39/723 [00:00<00:08, 79.49it/s]Loading weights:   6%|▌         | 40/723 [00:00<00:08, 76.55it/s]Loading weights:   8%|▊         | 61/723 [00:00<00:05, 113.20it/s]Loading weights:   7%|▋         | 54/723 [00:00<00:06, 97.24it/s]Loading weights:   7%|▋         | 53/723 [00:00<00:07, 86.30it/s]Loading weights:   7%|▋         | 54/723 [00:00<00:07, 89.43it/s]Loading weights:  11%|█         | 79/723 [00:00<00:05, 128.16it/s]Loading weights:  10%|▉         | 72/723 [00:00<00:05, 116.14it/s]Loading weights:  10%|█         | 75/723 [00:00<00:05, 116.76it/s]Loading weights:  10%|█         | 75/723 [00:00<00:05, 119.32it/s]Loading weights:  13%|█▎        | 95/723 [00:00<00:04, 129.00it/s]Loading weights:  13%|█▎        | 93/723 [00:00<00:04, 137.50it/s]Loading weights:  12%|█▏        | 90/723 [00:01<00:05, 121.56it/s]Loading weights:  13%|█▎        | 91/723 [00:01<00:05, 125.90it/s]Loading weights:  16%|█▌        | 114/723 [00:01<00:04, 143.16it/s]Loading weights:  16%|█▌        | 114/723 [00:01<00:04, 150.20it/s]Loading weights:  18%|█▊        | 131/723 [00:01<00:03, 150.29it/s]Loading weights:  15%|█▍        | 105/723 [00:01<00:05, 111.17it/s]Loading weights:  15%|█▍        | 107/723 [00:01<00:04, 124.33it/s]Loading weights:  18%|█▊        | 132/723 [00:01<00:03, 148.13it/s]Loading weights:  18%|█▊        | 128/723 [00:01<00:04, 146.36it/s]Loading weights:  18%|█▊        | 133/723 [00:01<00:04, 141.57it/s]Loading weights:  20%|██        | 148/723 [00:01<00:03, 147.40it/s]Loading weights:  20%|██        | 148/723 [00:01<00:04, 133.73it/s]Loading weights:  23%|██▎       | 168/723 [00:01<00:03, 158.38it/s]Loading weights:  23%|██▎       | 164/723 [00:01<00:04, 139.39it/s]Loading weights:  21%|██        | 152/723 [00:01<00:03, 146.10it/s]Loading weights:  20%|██        | 145/723 [00:01<00:04, 132.75it/s]Loading weights:  26%|██▌       | 185/723 [00:01<00:03, 158.72it/s]Loading weights:  25%|██▌       | 181/723 [00:01<00:03, 178.87it/s]Loading weights:  25%|██▌       | 181/723 [00:01<00:03, 143.89it/s]Loading weights:  22%|██▏       | 160/723 [00:01<00:04, 122.63it/s]Loading weights:  28%|██▊       | 199/723 [00:01<00:03, 149.08it/s]Loading weights:  28%|██▊       | 202/723 [00:01<00:03, 151.54it/s]Loading weights:  28%|██▊       | 201/723 [00:01<00:03, 170.78it/s]Loading weights:  24%|██▍       | 174/723 [00:01<00:04, 126.22it/s]Loading weights:  30%|███       | 220/723 [00:01<00:03, 157.85it/s]Loading weights:  30%|██▉       | 215/723 [00:01<00:03, 146.68it/s]Loading weights:  30%|███       | 219/723 [00:01<00:02, 171.19it/s]Loading weights:  27%|██▋       | 195/723 [00:01<00:03, 146.16it/s]Loading weights:  33%|███▎      | 237/723 [00:01<00:03, 158.96it/s]Loading weights:  32%|███▏      | 234/723 [00:01<00:03, 154.83it/s]Loading weights:  33%|███▎      | 237/723 [00:01<00:02, 171.43it/s]Loading weights:  29%|██▉       | 211/723 [00:01<00:03, 137.52it/s]Loading weights:  35%|███▍      | 250/723 [00:01<00:03, 154.82it/s]Loading weights:  35%|███▌      | 255/723 [00:02<00:02, 164.75it/s]Loading weights:  35%|███▌      | 254/723 [00:01<00:03, 147.93it/s]Loading weights:  31%|███▏      | 226/723 [00:02<00:03, 135.53it/s]Loading weights:  38%|███▊      | 273/723 [00:02<00:02, 159.06it/s]Loading weights:  38%|███▊      | 273/723 [00:02<00:02, 168.16it/s]Loading weights:  37%|███▋      | 266/723 [00:02<00:03, 141.82it/s]Loading weights:  34%|███▍      | 249/723 [00:02<00:03, 157.39it/s]Loading weights:  40%|████      | 292/723 [00:02<00:02, 162.02it/s]Loading weights:  39%|███▉      | 281/723 [00:02<00:03, 142.15it/s]Loading weights:  40%|████      | 291/723 [00:02<00:02, 156.87it/s]Loading weights:  37%|███▋      | 266/723 [00:02<00:03, 151.71it/s]Loading weights:  43%|████▎     | 309/723 [00:02<00:02, 161.79it/s]Loading weights:  41%|████      | 296/723 [00:02<00:02, 143.83it/s]Loading weights:  42%|████▏     | 307/723 [00:02<00:02, 150.47it/s]Loading weights:  39%|███▉      | 284/723 [00:02<00:02, 159.17it/s]Loading weights:  46%|████▌     | 329/723 [00:02<00:02, 169.92it/s]Loading weights:  45%|████▌     | 327/723 [00:02<00:02, 162.71it/s]Loading weights:  43%|████▎     | 311/723 [00:02<00:03, 125.12it/s]Loading weights:  42%|████▏     | 301/723 [00:02<00:02, 157.34it/s]Loading weights:  48%|████▊     | 347/723 [00:02<00:02, 155.21it/s]Loading weights:  48%|████▊     | 345/723 [00:02<00:02, 162.68it/s]Loading weights:  46%|████▌     | 331/723 [00:02<00:02, 132.42it/s]Loading weights:  44%|████▍     | 317/723 [00:02<00:02, 137.83it/s]Loading weights:  50%|█████     | 363/723 [00:02<00:02, 153.32it/s]Loading weights:  50%|█████     | 363/723 [00:02<00:02, 161.48it/s]Loading weights:  48%|████▊     | 346/723 [00:02<00:02, 135.16it/s]Loading weights:  47%|████▋     | 339/723 [00:02<00:02, 149.99it/s]Loading weights:  53%|█████▎    | 384/723 [00:02<00:02, 161.40it/s]Loading weights:  53%|█████▎    | 383/723 [00:02<00:02, 167.82it/s]Loading weights:  50%|████▉     | 360/723 [00:02<00:02, 135.73it/s]Loading weights:  49%|████▉     | 357/723 [00:02<00:02, 154.45it/s]Loading weights:  57%|█████▋    | 410/723 [00:02<00:01, 179.97it/s]Loading weights:  55%|█████▌    | 400/723 [00:02<00:02, 153.56it/s]Loading weights:  52%|█████▏    | 377/723 [00:02<00:02, 138.73it/s]Loading weights:  59%|█████▉    | 429/723 [00:03<00:01, 177.99it/s]Loading weights:  52%|█████▏    | 373/723 [00:03<00:02, 134.11it/s]Loading weights:  58%|█████▊    | 417/723 [00:03<00:01, 154.31it/s]Loading weights:  54%|█████▍    | 393/723 [00:03<00:02, 140.39it/s]Loading weights:  78%|███████▊  | 562/723 [00:03<00:00, 490.80it/s]Loading weights:  68%|██████▊   | 494/723 [00:03<00:00, 319.17it/s]Loading weights:  54%|█████▍    | 393/723 [00:03<00:02, 144.78it/s]Loading weights:  57%|█████▋    | 411/723 [00:03<00:02, 148.04it/s]Loading weights:  95%|█████████▍| 686/723 [00:03<00:00, 697.29it/s]Loading weights:  85%|████████▍ | 614/723 [00:03<00:00, 560.87it/s]Loading weights:  57%|█████▋    | 410/723 [00:03<00:02, 149.97it/s]Loading weights: 100%|██████████| 723/723 [00:03<00:00, 222.83it/s]
+Loading weights:  59%|█████▉    | 426/723 [00:03<00:02, 139.00it/s]Loading weights: 100%|██████████| 723/723 [00:03<00:00, 216.51it/s]
+Loading weights:  59%|█████▉    | 426/723 [00:03<00:01, 151.23it/s]Loading weights:  83%|████████▎ | 600/723 [00:03<00:00, 569.37it/s]Loading weights:  86%|████████▌ | 623/723 [00:03<00:00, 642.90it/s]Loading weights: 100%|██████████| 723/723 [00:03<00:00, 211.03it/s]
+Loading weights: 100%|██████████| 723/723 [00:03<00:00, 207.36it/s]
+/home/nate/Documents/maestro-llm/ear_graft/train.py:134: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:134: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:134: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+/home/nate/Documents/maestro-llm/ear_graft/train.py:134: FutureWarning: `broadcast_buffers` is deprecated. Use `forward_sync_buffers` instead. IMPORTANT: unlike `broadcast_buffers=False`, `forward_sync_buffers=False` still syncs buffers at init. If you rely on buffers NOT being synced at init (e.g. rank-local buffers), keep using `broadcast_buffers=False` until `init_sync_buffers` is available.
+  net = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dev.index], broadcast_buffers=False) if ddp else model
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/nate/.netrc.
+wandb: Currently logged in as: njirby (njirby-na) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run fwtemx0h
+wandb: Tracking run with wandb version 0.30.0
+wandb: Run data is saved locally in ear_graft/out/v0/wandb/run-20261024_213856-fwtemx0h
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run v0
+wandb: ⭐️ View project at https://wandb.ai/njirby-na/ear-graft
+wandb: 🚀 View run at https://wandb.ai/njirby-na/ear-graft/runs/fwtemx0h
+trainable params 5250560; 44009 train rows; world 4 x micro 4 x accum 2 = 32/step; 2750 steps
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+[transformers] `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.
+step 0/2750 loss 1.4042 gn 15.779 lr 1.22e-05 4.76 rows/s
+step 10/2750 loss 1.4254 gn 1.563 lr 1.34e-04 4.63 rows/s
+step 20/2750 loss 1.8654 gn 24.052 lr 2.56e-04 5.26 rows/s
+step 30/2750 loss 1.3897 gn 1.484 lr 3.78e-04 5.62 rows/s
+step 40/2750 loss 1.3469 gn 7.063 lr 5.00e-04 5.05 rows/s
+step 50/2750 loss 1.3687 gn 1.987 lr 6.22e-04 5.11 rows/s
+step 60/2750 loss 1.2366 gn 1.758 lr 7.44e-04 5.43 rows/s
+step 70/2750 loss 1.3130 gn 0.547 lr 8.66e-04 5.45 rows/s
+step 80/2750 loss 1.1847 gn 1.075 lr 9.88e-04 5.23 rows/s
+step 90/2750 loss 1.1115 gn 0.362 lr 1.00e-03 5.27 rows/s
+step 100/2750 loss 1.0237 gn 0.585 lr 1.00e-03 5.37 rows/s
+eval 100: loss audio 1.0890 zeroed 1.1838 gain 0.0948 audio-norm 3.415
+/usr/local/lib/python3.12/dist-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+step 110/2750 loss 1.0838 gn 0.450 lr 1.00e-03 4.06 rows/s
+step 120/2750 loss 1.2164 gn 0.658 lr 1.00e-03 4.13 rows/s
+step 130/2750 loss 1.1654 gn 0.378 lr 9.99e-04 4.22 rows/s
+step 140/2750 loss 1.0190 gn 0.378 lr 9.99e-04 4.37 rows/s
+step 150/2750 loss 1.0541 gn 0.604 lr 9.99e-04 4.43 rows/s
+step 160/2750 loss 1.1113 gn 0.503 lr 9.98e-04 4.55 rows/s
+step 170/2750 loss 1.0143 gn 0.597 lr 9.98e-04 4.60 rows/s
+step 180/2750 loss 1.0824 gn 0.336 lr 9.97e-04 4.71 rows/s
+step 190/2750 loss 0.9457 gn 0.454 lr 9.96e-04 4.77 rows/s
+step 200/2750 loss 0.9842 gn 0.417 lr 9.96e-04 4.84 rows/s
+eval 200: loss audio 0.9994 zeroed 1.1727 gain 0.1733 audio-norm 5.469
+step 210/2750 loss 0.9926 gn 0.716 lr 9.95e-04 4.27 rows/s
+step 220/2750 loss 1.2044 gn 0.960 lr 9.94e-04 4.33 rows/s
+step 230/2750 loss 1.0699 gn 0.335 lr 9.93e-04 4.37 rows/s
+step 240/2750 loss 1.0884 gn 0.529 lr 9.92e-04 4.43 rows/s
+step 250/2750 loss 0.9870 gn 0.310 lr 9.91e-04 4.47 rows/s
+step 260/2750 loss 0.9579 gn 0.397 lr 9.90e-04 4.48 rows/s
+step 270/2750 loss 1.0305 gn 0.396 lr 9.89e-04 4.54 rows/s
+step 280/2750 loss 1.0411 gn 0.277 lr 9.88e-04 4.59 rows/s
+step 290/2750 loss 0.9739 gn 0.452 lr 9.87e-04 4.59 rows/s
+step 300/2750 loss 0.9912 gn 0.341 lr 9.85e-04 4.60 rows/s
+eval 300: loss audio 0.9766 zeroed 1.1808 gain 0.2041 audio-norm 6.899
+step 310/2750 loss 1.1839 gn 0.270 lr 9.84e-04 4.22 rows/s
+step 320/2750 loss 0.9212 gn 0.285 lr 9.82e-04 4.27 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 330/2750 loss 1.0157 gn 0.396 lr 9.81e-04 4.31 rows/s
+step 340/2750 loss 1.0230 gn 0.332 lr 9.79e-04 4.30 rows/s
+step 350/2750 loss 1.0611 gn 0.398 lr 9.78e-04 4.35 rows/s
+step 360/2750 loss 0.9545 gn 0.354 lr 9.76e-04 4.39 rows/s
+step 370/2750 loss 0.9733 gn 0.347 lr 9.74e-04 4.42 rows/s
+step 380/2750 loss 1.0074 gn 0.232 lr 9.73e-04 4.46 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 390/2750 loss 1.0630 gn 0.246 lr 9.71e-04 4.50 rows/s
+step 400/2750 loss 1.0342 gn 0.201 lr 9.69e-04 4.54 rows/s
+eval 400: loss audio 0.9609 zeroed 1.1792 gain 0.2182 audio-norm 7.998
+step 410/2750 loss 0.9858 gn 0.214 lr 9.67e-04 4.26 rows/s
+step 420/2750 loss 1.0181 gn 0.180 lr 9.65e-04 4.30 rows/s
+step 430/2750 loss 0.8590 gn 0.313 lr 9.63e-04 4.33 rows/s
+step 440/2750 loss 0.8824 gn 0.287 lr 9.61e-04 4.33 rows/s
+step 450/2750 loss 0.9888 gn 0.289 lr 9.58e-04 4.32 rows/s
+step 460/2750 loss 0.9891 gn 0.258 lr 9.56e-04 4.35 rows/s
+step 470/2750 loss 0.9670 gn 0.126 lr 9.54e-04 4.37 rows/s
+step 480/2750 loss 0.9592 gn 0.258 lr 9.51e-04 4.38 rows/s
+step 490/2750 loss 1.1257 gn 0.586 lr 9.49e-04 4.41 rows/s
+step 500/2750 loss 0.9979 gn 0.271 lr 9.47e-04 4.43 rows/s
+eval 500: loss audio 0.9565 zeroed 1.1904 gain 0.2339 audio-norm 8.725
+step 510/2750 loss 0.9361 gn 0.211 lr 9.44e-04 4.23 rows/s
+step 520/2750 loss 1.0019 gn 0.160 lr 9.41e-04 4.26 rows/s
+step 530/2750 loss 1.0871 gn 0.195 lr 9.39e-04 4.30 rows/s
+step 540/2750 loss 0.9013 gn 0.132 lr 9.36e-04 4.31 rows/s
+step 550/2750 loss 0.8882 gn 0.214 lr 9.33e-04 4.32 rows/s
+step 560/2750 loss 0.9472 gn 0.176 lr 9.31e-04 4.35 rows/s
+step 570/2750 loss 0.9098 gn 0.243 lr 9.28e-04 4.37 rows/s
+step 580/2750 loss 1.2143 gn 0.284 lr 9.25e-04 4.41 rows/s
+step 590/2750 loss 1.1696 gn 0.304 lr 9.22e-04 4.42 rows/s
+step 600/2750 loss 0.9836 gn 0.157 lr 9.19e-04 4.45 rows/s
+eval 600: loss audio 0.9465 zeroed 1.1851 gain 0.2386 audio-norm 9.386
+step 610/2750 loss 0.9573 gn 0.212 lr 9.16e-04 4.28 rows/s
+step 620/2750 loss 0.9422 gn 0.161 lr 9.13e-04 4.29 rows/s
+step 630/2750 loss 0.9373 gn 0.284 lr 9.10e-04 4.30 rows/s
+step 640/2750 loss 0.9587 gn 0.162 lr 9.06e-04 4.33 rows/s
+step 650/2750 loss 1.0699 gn 0.151 lr 9.03e-04 4.34 rows/s
+step 660/2750 loss 0.9522 gn 0.187 lr 9.00e-04 4.35 rows/s
+step 670/2750 loss 1.0330 gn 0.204 lr 8.96e-04 4.36 rows/s
+step 680/2750 loss 0.9584 gn 0.260 lr 8.93e-04 4.37 rows/s
+step 690/2750 loss 1.0126 gn 0.150 lr 8.90e-04 4.38 rows/s
+step 700/2750 loss 0.9294 gn 0.167 lr 8.86e-04 4.39 rows/s
+eval 700: loss audio 0.9424 zeroed 1.1871 gain 0.2448 audio-norm 9.846
+step 710/2750 loss 0.9009 gn 0.106 lr 8.82e-04 4.24 rows/s
+step 720/2750 loss 0.9600 gn 0.259 lr 8.79e-04 4.25 rows/s
+step 730/2750 loss 0.8263 gn 0.239 lr 8.75e-04 4.28 rows/s
+step 740/2750 loss 0.8721 gn 0.200 lr 8.72e-04 4.30 rows/s
+step 750/2750 loss 0.9184 gn 0.181 lr 8.68e-04 4.30 rows/s
+step 760/2750 loss 0.9435 gn 0.197 lr 8.64e-04 4.32 rows/s
+step 770/2750 loss 0.8922 gn 0.182 lr 8.60e-04 4.32 rows/s
+step 780/2750 loss 0.8810 gn 0.101 lr 8.56e-04 4.34 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1804] error: dequantization failed!
+step 790/2750 loss 0.9817 gn 0.176 lr 8.52e-04 4.36 rows/s
+step 800/2750 loss 1.0327 gn 0.234 lr 8.49e-04 4.38 rows/s
+eval 800: loss audio 0.9387 zeroed 1.1891 gain 0.2504 audio-norm 10.275
+step 810/2750 loss 1.0231 gn 0.228 lr 8.45e-04 4.25 rows/s
+step 820/2750 loss 1.0675 gn 0.169 lr 8.41e-04 4.27 rows/s
+step 830/2750 loss 0.9421 gn 0.140 lr 8.36e-04 4.30 rows/s
+step 840/2750 loss 1.1174 gn 0.159 lr 8.32e-04 4.31 rows/s
+step 850/2750 loss 1.1048 gn 0.538 lr 8.28e-04 4.33 rows/s
+step 860/2750 loss 0.7489 gn 0.343 lr 8.24e-04 4.34 rows/s
+step 870/2750 loss 1.0150 gn 0.324 lr 8.20e-04 4.35 rows/s
+step 880/2750 loss 1.7770 gn 0.504 lr 8.16e-04 4.37 rows/s
+step 890/2750 loss 0.9891 gn 0.123 lr 8.11e-04 4.38 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 900/2750 loss 0.7770 gn 0.109 lr 8.07e-04 4.39 rows/s
+eval 900: loss audio 0.9357 zeroed 1.1888 gain 0.2531 audio-norm 10.640
+step 910/2750 loss 0.9535 gn 0.234 lr 8.03e-04 4.27 rows/s
+step 920/2750 loss 1.0092 gn 0.247 lr 7.98e-04 4.29 rows/s
+step 930/2750 loss 0.8519 gn 0.127 lr 7.94e-04 4.29 rows/s
+step 940/2750 loss 0.9293 gn 0.210 lr 7.89e-04 4.30 rows/s
+step 950/2750 loss 0.9509 gn 0.120 lr 7.85e-04 4.31 rows/s
+step 960/2750 loss 0.9385 gn 0.690 lr 7.80e-04 4.32 rows/s
+step 970/2750 loss 0.8913 gn 0.202 lr 7.76e-04 4.34 rows/s
+step 980/2750 loss 0.9282 gn 0.137 lr 7.71e-04 4.36 rows/s
+step 990/2750 loss 1.1282 gn 0.175 lr 7.66e-04 4.37 rows/s
+step 1000/2750 loss 0.9537 gn 0.106 lr 7.62e-04 4.38 rows/s
+eval 1000: loss audio 0.9341 zeroed 1.1858 gain 0.2516 audio-norm 10.921
+step 1010/2750 loss 0.9961 gn 0.189 lr 7.57e-04 4.27 rows/s
+step 1020/2750 loss 1.0416 gn 0.330 lr 7.52e-04 4.29 rows/s
+step 1030/2750 loss 0.9233 gn 0.110 lr 7.48e-04 4.30 rows/s
+step 1040/2750 loss 0.8916 gn 0.242 lr 7.43e-04 4.31 rows/s
+step 1050/2750 loss 0.9136 gn 0.114 lr 7.38e-04 4.33 rows/s
+step 1060/2750 loss 0.9349 gn 0.229 lr 7.33e-04 4.33 rows/s
+step 1070/2750 loss 0.9583 gn 0.234 lr 7.28e-04 4.35 rows/s
+step 1080/2750 loss 0.9142 gn 0.181 lr 7.23e-04 4.36 rows/s
+step 1090/2750 loss 0.9025 gn 0.090 lr 7.19e-04 4.38 rows/s
+step 1100/2750 loss 1.1081 gn 0.127 lr 7.14e-04 4.39 rows/s
+eval 1100: loss audio 0.9305 zeroed 1.1839 gain 0.2534 audio-norm 11.181
+step 1110/2750 loss 0.8434 gn 0.281 lr 7.09e-04 4.29 rows/s
+step 1120/2750 loss 0.9480 gn 0.198 lr 7.04e-04 4.30 rows/s
+step 1130/2750 loss 0.9966 gn 0.117 lr 6.99e-04 4.31 rows/s
+step 1140/2750 loss 0.8944 gn 0.108 lr 6.94e-04 4.32 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 1150/2750 loss 0.8998 gn 0.145 lr 6.89e-04 4.33 rows/s
+step 1160/2750 loss 0.9849 gn 0.120 lr 6.84e-04 4.34 rows/s
+step 1170/2750 loss 0.8717 gn 0.194 lr 6.79e-04 4.35 rows/s
+step 1180/2750 loss 0.9513 gn 0.149 lr 6.73e-04 4.36 rows/s
+step 1190/2750 loss 0.9302 gn 0.139 lr 6.68e-04 4.36 rows/s
+step 1200/2750 loss 0.8496 gn 0.152 lr 6.63e-04 4.37 rows/s
+eval 1200: loss audio 0.9283 zeroed 1.1889 gain 0.2606 audio-norm 11.363
+step 1210/2750 loss 0.9095 gn 0.179 lr 6.58e-04 4.29 rows/s
+step 1220/2750 loss 0.9916 gn 0.165 lr 6.53e-04 4.30 rows/s
+step 1230/2750 loss 0.9107 gn 0.206 lr 6.48e-04 4.32 rows/s
+[src/libmpg123/layer3.c:INT123_do_layer3():1844] error: dequantization failed!
+step 1240/2750 loss 1.0010 gn 0.182 lr 6.43e-04 4.33 rows/s
+step 1250/2750 loss 1.2854 gn 0.165 lr 6.37e-04 4.33 rows/s
+step 1260/2750 loss 1.0284 gn 0.131 lr 6.32e-04 4.34 rows/s
+step 1270/2750 loss 0.9311 gn 0.133 lr 6.27e-04 4.35 rows/s
+step 1280/2750 loss 0.8479 gn 0.136 lr 6.22e-04 4.36 rows/s
+step 1290/2750 loss 0.9073 gn 0.117 lr 6.17e-04 4.37 rows/s
+step 1300/2750 loss 0.9118 gn 0.097 lr 6.11e-04 4.38 rows/s
+eval 1300: loss audio 0.9257 zeroed 1.1847 gain 0.2589 audio-norm 11.465
+step 1310/2750 loss 1.1678 gn 0.139 lr 6.06e-04 4.30 rows/s
+step 1320/2750 loss 0.9351 gn 0.145 lr 6.01e-04 4.31 rows/s
+step 1330/2750 loss 0.9431 gn 0.125 lr 5.95e-04 4.31 rows/s
+step 1340/2750 loss 1.0167 gn 0.222 lr 5.90e-04 4.32 rows/s
+step 1350/2750 loss 0.7975 gn 0.157 lr 5.85e-04 4.33 rows/s
+step 1360/2750 loss 1.5016 gn 0.287 lr 5.80e-04 4.34 rows/s
+step 1370/2750 loss 1.0163 gn 0.282 lr 5.74e-04 4.35 rows/s
+step 1380/2750 loss 0.9712 gn 0.214 lr 5.69e-04 4.36 rows/s
+step 1390/2750 loss 0.8176 gn 0.302 lr 5.64e-04 4.37 rows/s
+step 1400/2750 loss 0.8792 gn 0.105 lr 5.58e-04 4.37 rows/s
+eval 1400: loss audio 0.9241 zeroed 1.1862 gain 0.2621 audio-norm 11.522
+W1025 00:33:17.102000 1 torch/distributed/elastic/agent/server/api.py:753] Received 15 death signal, shutting down workers
+W1025 00:33:17.144000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 451 closing signal SIGTERM
+W1025 00:33:17.145000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 452 closing signal SIGTERM
+W1025 00:33:17.145000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 453 closing signal SIGTERM
+W1025 00:33:17.146000 1 torch/distributed/elastic/multiprocessing/api.py:1028] Sending process 454 closing signal SIGTERM
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 1142, in <module>
+    main()
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 380, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 1138, in main
+    run(args)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/run.py", line 1129, in run
+    elastic_launch(
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 197, in __call__
+    return launch_agent(
+           ^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/launcher/api.py", line 377, in launch_agent
+    result = agent.run()
+             ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/metrics/api.py", line 134, in wrapper
+    result = f(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/agent/server/api.py", line 745, in run
+    result = self._invoke_run(role)
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/agent/server/api.py", line 923, in _invoke_run
+    time.sleep(monitor_interval)
+  File "/usr/local/lib/python3.12/dist-packages/torch/distributed/elastic/multiprocessing/api.py", line 86, in _terminate_process_handler
+    raise SignalException(f"Process {os.getpid()} got signal: {sigval}", sigval=sigval)
+torch.distributed.elastic.multiprocessing.api.SignalException: Process 1 got signal: 15
