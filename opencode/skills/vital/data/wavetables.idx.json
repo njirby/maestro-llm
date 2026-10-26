@@ -1,0 +1,4511 @@
+[
+{
+"id": "wt001",
+"name": "Squish Flange",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 0,
+"length": 691693
+},
+{
+"id": "wt002",
+"name": "Acid Rock ft Maynix",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 691693,
+"length": 285578
+},
+{
+"id": "wt003",
+"name": "White Noise",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 977271,
+"length": 178487
+},
+{
+"id": "wt004",
+"name": "(unnamed)",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 1155758,
+"length": 134
+},
+{
+"id": "wt005",
+"name": "Brown Noise",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 1155892,
+"length": 178107
+},
+{
+"id": "wt006",
+"name": "(unnamed)",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 1333999,
+"length": 202
+},
+{
+"id": "wt007",
+"name": "(unnamed)",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 1334201,
+"length": 295
+},
+{
+"id": "wt008",
+"name": "Pink Noise",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 1334496,
+"length": 177847
+},
+{
+"id": "wt009",
+"name": "Harmonic Series",
+"author": "",
+"frames": 16,
+"source": "wave",
+"offset": 1512343,
+"length": 106911
+},
+{
+"id": "wt010",
+"name": "(unnamed)",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 1619254,
+"length": 252
+},
+{
+"id": "wt011",
+"name": "(unnamed)",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 1619506,
+"length": 13167
+},
+{
+"id": "wt012",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 1632673,
+"length": 27022
+},
+{
+"id": "wt013",
+"name": "Jaw Harp",
+"author": "Factory",
+"frames": 2,
+"source": "audio",
+"offset": 1659695,
+"length": 106995
+},
+{
+"id": "wt014",
+"name": "Didg",
+"author": "Factory",
+"frames": 4,
+"source": "audio",
+"offset": 1766690,
+"length": 219009
+},
+{
+"id": "wt015",
+"name": "(unnamed)",
+"author": "",
+"frames": 3,
+"source": "wave",
+"offset": 1985699,
+"length": 341
+},
+{
+"id": "wt016",
+"name": "(unnamed)",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 1986040,
+"length": 327
+},
+{
+"id": "wt017",
+"name": "(unnamed)",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 1986367,
+"length": 8421
+},
+{
+"id": "wt018",
+"name": "MFS - Not The Juice 4real",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 1994788,
+"length": 946368
+},
+{
+"id": "wt019",
+"name": "Stabbed",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 2941156,
+"length": 69081
+},
+{
+"id": "wt020",
+"name": "(unnamed)",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 3010237,
+"length": 203
+},
+{
+"id": "wt021",
+"name": "(unnamed)",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 3010440,
+"length": 248
+},
+{
+"id": "wt022",
+"name": "Stabbed",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 3010688,
+"length": 69129
+},
+{
+"id": "wt023",
+"name": "Vital Sine",
+"author": "",
+"frames": 2,
+"source": "line",
+"offset": 3079817,
+"length": 338
+},
+{
+"id": "wt024",
+"name": "RDMGEN Glitch Table 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 3080155,
+"length": 997300
+},
+{
+"id": "wt025",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 4077455,
+"length": 7079
+},
+{
+"id": "wt026",
+"name": "Crushed 2",
+"author": "WVTM",
+"frames": 2,
+"source": "audio",
+"offset": 4084534,
+"length": 54177
+},
+{
+"id": "wt027",
+"name": "Crushed 1",
+"author": "WVTM",
+"frames": 2,
+"source": "audio",
+"offset": 4138711,
+"length": 34804
+},
+{
+"id": "wt028",
+"name": "Pulse Width",
+"author": "",
+"frames": 2,
+"source": "line",
+"offset": 4173515,
+"length": 253
+},
+{
+"id": "wt029",
+"name": "Classic Blend",
+"author": "",
+"frames": 4,
+"source": "line",
+"offset": 4173768,
+"length": 310
+},
+{
+"id": "wt030",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 4174078,
+"length": 7332
+},
+{
+"id": "wt031",
+"name": "Brown Noise",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 4181410,
+"length": 178095
+},
+{
+"id": "wt032",
+"name": "Harmonic Series",
+"author": "",
+"frames": 16,
+"source": "wave",
+"offset": 4359505,
+"length": 107006
+},
+{
+"id": "wt033",
+"name": "BS2 - Acid",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 4466511,
+"length": 498705
+},
+{
+"id": "wt034",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 4965216,
+"length": 27291
+},
+{
+"id": "wt035",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 4992507,
+"length": 27508
+},
+{
+"id": "wt036",
+"name": "gransparkle 1",
+"author": "AJ",
+"frames": 2,
+"source": "audio",
+"offset": 5020015,
+"length": 153513
+},
+{
+"id": "wt037",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 5173528,
+"length": 15972
+},
+{
+"id": "wt038",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 5189500,
+"length": 25115
+},
+{
+"id": "wt039",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 5214615,
+"length": 15995
+},
+{
+"id": "wt040",
+"name": "Init",
+"author": "woolf",
+"frames": 2,
+"source": "wave",
+"offset": 5230610,
+"length": 314
+},
+{
+"id": "wt041",
+"name": "ESW Digital - Gemini",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 5230924,
+"length": 1042720
+},
+{
+"id": "wt042",
+"name": "ESW Digital - Aries",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 6273644,
+"length": 1053454
+},
+{
+"id": "wt043",
+"name": "Saws for Days",
+"author": "",
+"frames": 4,
+"source": "line",
+"offset": 7327098,
+"length": 491
+},
+{
+"id": "wt044",
+"name": "Init",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 7327589,
+"length": 32497
+},
+{
+"id": "wt045",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "wave",
+"offset": 7360086,
+"length": 24490
+},
+{
+"id": "wt046",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 7384576,
+"length": 8115
+},
+{
+"id": "wt047",
+"name": "Dx04f",
+"author": "Kronos / RK",
+"frames": 2,
+"source": "wave",
+"offset": 7392691,
+"length": 13328
+},
+{
+"id": "wt048",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 7406019,
+"length": 29239
+},
+{
+"id": "wt049",
+"name": "Quad Saw",
+"author": "",
+"frames": 2,
+"source": "line",
+"offset": 7435258,
+"length": 376
+},
+{
+"id": "wt050",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 7435634,
+"length": 8186
+},
+{
+"id": "wt051",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "wave",
+"offset": 7443820,
+"length": 21375
+},
+{
+"id": "wt052",
+"name": "Acid Rock ft Maynix",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 7465195,
+"length": 285639
+},
+{
+"id": "wt053",
+"name": "ESW FM - Advanced",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 7750834,
+"length": 1046422
+},
+{
+"id": "wt054",
+"name": "ESW Air Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 8797256,
+"length": 8622
+},
+{
+"id": "wt055",
+"name": "ESW Fatty",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 8805878,
+"length": 554063
+},
+{
+"id": "wt056",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 9359941,
+"length": 25112
+},
+{
+"id": "wt057",
+"name": "Init",
+"author": "",
+"frames": 5,
+"source": "wave",
+"offset": 9385053,
+"length": 40784
+},
+{
+"id": "wt058",
+"name": "ESW - Dual Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 9425837,
+"length": 27006
+},
+{
+"id": "wt059",
+"name": "ESW - Remakes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 9452843,
+"length": 993724
+},
+{
+"id": "wt060",
+"name": "Post Modern Pulse",
+"author": "",
+"frames": 3,
+"source": "line",
+"offset": 10446567,
+"length": 466
+},
+{
+"id": "wt061",
+"name": "Vital Sine 2",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 10447033,
+"length": 8532
+},
+{
+"id": "wt062",
+"name": "ESW - Reso Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 10455565,
+"length": 108784
+},
+{
+"id": "wt063",
+"name": "Drink the Juice",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 10564349,
+"length": 481030
+},
+{
+"id": "wt064",
+"name": "Dark Crackle",
+"author": "Omi",
+"frames": 2,
+"source": "wave",
+"offset": 11045379,
+"length": 16506
+},
+{
+"id": "wt065",
+"name": "Abnormal Squirrel",
+"author": "SNFK",
+"frames": 2,
+"source": "audio",
+"offset": 11061885,
+"length": 345034
+},
+{
+"id": "wt066",
+"name": "Bright Crackle",
+"author": "Omi",
+"frames": 2,
+"source": "wave",
+"offset": 11406919,
+"length": 15300
+},
+{
+"id": "wt067",
+"name": "Prophet_Saw2",
+"author": "SNFK",
+"frames": 2,
+"source": "audio",
+"offset": 11422219,
+"length": 97201
+},
+{
+"id": "wt068",
+"name": "Low High Fold",
+"author": "",
+"frames": 2,
+"source": "line",
+"offset": 11519420,
+"length": 384
+},
+{
+"id": "wt069",
+"name": "flung square",
+"author": "afro",
+"frames": 2,
+"source": "audio",
+"offset": 11519804,
+"length": 383630
+},
+{
+"id": "wt070",
+"name": "Digital 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 11903434,
+"length": 434166
+},
+{
+"id": "wt071",
+"name": "Pink Noise",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 12337600,
+"length": 177823
+},
+{
+"id": "wt072",
+"name": "ESW Chill - Purple Haze",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 12515423,
+"length": 1052923
+},
+{
+"id": "wt073",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 13568346,
+"length": 25114
+},
+{
+"id": "wt074",
+"name": "Cymatics - Chill Table 25",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 13593460,
+"length": 515125
+},
+{
+"id": "wt075",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 14108585,
+"length": 8237
+},
+{
+"id": "wt076",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 14116822,
+"length": 8265
+},
+{
+"id": "wt077",
+"name": "untitled_2025-04-24 12-22-22_LEAD6_2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 14125087,
+"length": 26506
+},
+{
+"id": "wt078",
+"name": "ESW - Weird Square",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 14151593,
+"length": 1057037
+},
+{
+"id": "wt079",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 15208630,
+"length": 8366
+},
+{
+"id": "wt080",
+"name": "ESW Archangel",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 15216996,
+"length": 820584
+},
+{
+"id": "wt081",
+"name": "Flange Sqrowl",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 16037580,
+"length": 1054710
+},
+{
+"id": "wt082",
+"name": "Acid 6",
+"author": "SNFK",
+"frames": 2,
+"source": "audio",
+"offset": 17092290,
+"length": 305799
+},
+{
+"id": "wt083",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 17398089,
+"length": 321
+},
+{
+"id": "wt084",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 17398410,
+"length": 8205
+},
+{
+"id": "wt085",
+"name": "Resynthesize",
+"author": "Matt Tytel",
+"frames": 2,
+"source": "audio",
+"offset": 17406615,
+"length": 116975
+},
+{
+"id": "wt086",
+"name": "Unwanted Resonance",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 17523590,
+"length": 387834
+},
+{
+"id": "wt087",
+"name": "Fm Vowel 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 17911424,
+"length": 208810
+},
+{
+"id": "wt088",
+"name": "Bell",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 18120234,
+"length": 203616
+},
+{
+"id": "wt089",
+"name": "ESW Analog - Juno 60 Square",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 18323850,
+"length": 8597
+},
+{
+"id": "wt090",
+"name": "ESW Basics - PWM Pulse 01",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 18332447,
+"length": 929022
+},
+{
+"id": "wt091",
+"name": "Bad Moment",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 19261469,
+"length": 387551
+},
+{
+"id": "wt092",
+"name": "VIRUS_SINE",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 19649020,
+"length": 136447
+},
+{
+"id": "wt093",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 1,
+"source": "wave",
+"offset": 19785467,
+"length": 259
+},
+{
+"id": "wt094",
+"name": "Bell_Hit3",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 19785726,
+"length": 183436
+},
+{
+"id": "wt095",
+"name": "Articks - 19",
+"author": "Articks",
+"frames": 2,
+"source": "audio",
+"offset": 19969162,
+"length": 301290
+},
+{
+"id": "wt096",
+"name": "Articks - 19-1",
+"author": "Articks",
+"frames": 2,
+"source": "audio",
+"offset": 20270452,
+"length": 138546
+},
+{
+"id": "wt097",
+"name": "Mioseg - Lightning Strike 01",
+"author": "Mioseg",
+"frames": 1,
+"source": "wave",
+"offset": 20408998,
+"length": 8297
+},
+{
+"id": "wt098",
+"name": "Mioseg - Lightning Strike 02",
+"author": "Mioseg",
+"frames": 2,
+"source": "audio",
+"offset": 20417295,
+"length": 350224
+},
+{
+"id": "wt099",
+"name": "12-Duckorgan",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 20767519,
+"length": 16912
+},
+{
+"id": "wt100",
+"name": "09-Formant Square",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 20784431,
+"length": 33408
+},
+{
+"id": "wt101",
+"name": "ESW Basics - Sine Dwmsmple",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 20817839,
+"length": 669186
+},
+{
+"id": "wt102",
+"name": "advanced organ",
+"author": "bauhausdog",
+"frames": 2,
+"source": "audio",
+"offset": 21487025,
+"length": 350707
+},
+{
+"id": "wt103",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 21837732,
+"length": 15968
+},
+{
+"id": "wt104",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 21853700,
+"length": 7128
+},
+{
+"id": "wt105",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 21860828,
+"length": 27140
+},
+{
+"id": "wt106",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 1,
+"source": "wave",
+"offset": 21887968,
+"length": 3494
+},
+{
+"id": "wt107",
+"name": "Piano L",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 21891462,
+"length": 4457
+},
+{
+"id": "wt108",
+"name": "Piano R",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 21895919,
+"length": 4471
+},
+{
+"id": "wt109",
+"name": "MMG904aOctaveSaws",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 21900390,
+"length": 65428
+},
+{
+"id": "wt110",
+"name": "MMG904a3VCO3",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 21965818,
+"length": 66195
+},
+{
+"id": "wt111",
+"name": "Basic_McB",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 22032013,
+"length": 16513
+},
+{
+"id": "wt112",
+"name": "Dist d00t",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 22048526,
+"length": 1043534
+},
+{
+"id": "wt113",
+"name": "Classic Fade",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 23092060,
+"length": 13277
+},
+{
+"id": "wt114",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 23105337,
+"length": 16535
+},
+{
+"id": "wt115",
+"name": "Rough Sponge",
+"author": "Matt Tytel",
+"frames": 2,
+"source": "audio",
+"offset": 23121872,
+"length": 387691
+},
+{
+"id": "wt116",
+"name": "Three Graces",
+"author": "",
+"frames": 2,
+"source": "line",
+"offset": 23509563,
+"length": 414
+},
+{
+"id": "wt117",
+"name": "01-Square-Saw I",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 23509977,
+"length": 4394
+},
+{
+"id": "wt118",
+"name": "15-AdditiveOctaves",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 23514371,
+"length": 33423
+},
+{
+"id": "wt119",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 23547794,
+"length": 15969
+},
+{
+"id": "wt120",
+"name": "Frosty",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 23563763,
+"length": 1055192
+},
+{
+"id": "wt121",
+"name": "meditation",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 24618955,
+"length": 841562,
+"silent_frame0": true
+},
+{
+"id": "wt122",
+"name": "0 sin x 1",
+"author": "woolf",
+"frames": 5,
+"source": "wave",
+"offset": 25460517,
+"length": 40670
+},
+{
+"id": "wt123",
+"name": "Sax (\u0421C1)",
+"author": "Flamedragonz",
+"frames": 2,
+"source": "audio",
+"offset": 25501187,
+"length": 221233
+},
+{
+"id": "wt124",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 25722420,
+"length": 25644
+},
+{
+"id": "wt125",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 25748064,
+"length": 19330,
+"silent_frame0": true
+},
+{
+"id": "wt126",
+"name": "Resynthesize",
+"author": "Two Or None",
+"frames": 2,
+"source": "audio",
+"offset": 25767394,
+"length": 321488
+},
+{
+"id": "wt127",
+"name": "30_MPWM",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 26088882,
+"length": 134867
+},
+{
+"id": "wt128",
+"name": "ESW Instable Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 26223749,
+"length": 999640
+},
+{
+"id": "wt129",
+"name": "ESW Chill - Purple Haze",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 27223389,
+"length": 1052924
+},
+{
+"id": "wt130",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 28276313,
+"length": 243
+},
+{
+"id": "wt131",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 28276556,
+"length": 8197
+},
+{
+"id": "wt132",
+"name": "Init",
+"author": "woolf",
+"frames": 1,
+"source": "wave",
+"offset": 28284753,
+"length": 8187
+},
+{
+"id": "wt133",
+"name": "Init",
+"author": "woolf",
+"frames": 4,
+"source": "wave",
+"offset": 28292940,
+"length": 32548
+},
+{
+"id": "wt134",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 28325488,
+"length": 4228
+},
+{
+"id": "wt135",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "line",
+"offset": 28329716,
+"length": 7627
+},
+{
+"id": "wt136",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "line",
+"offset": 28337343,
+"length": 8726
+},
+{
+"id": "wt137",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "line",
+"offset": 28346069,
+"length": 443
+},
+{
+"id": "wt138",
+"name": "Clicky Robot",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 28346512,
+"length": 1058458
+},
+{
+"id": "wt139",
+"name": "Clicky Robot",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 29404970,
+"length": 1058459
+},
+{
+"id": "wt140",
+"name": "ESW KY Hybrid Rhodes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 30463429,
+"length": 1004263
+},
+{
+"id": "wt141",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 31467692,
+"length": 25112
+},
+{
+"id": "wt142",
+"name": "Gut-Puncher 01",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 31492804,
+"length": 127751
+},
+{
+"id": "wt143",
+"name": "automaton_wt_1000_four_core_2048w_100s_1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 31620555,
+"length": 413883
+},
+{
+"id": "wt144",
+"name": "automaton_wt_1000_four_core_2048w_100s_1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 32034438,
+"length": 413890
+},
+{
+"id": "wt145",
+"name": "Init",
+"author": "bauhausdog",
+"frames": 1,
+"source": "wave",
+"offset": 32448328,
+"length": 8192
+},
+{
+"id": "wt146",
+"name": "Sub (from touch tone)",
+"author": "Matt Tytel",
+"frames": 6,
+"source": "wave",
+"offset": 32456520,
+"length": 25084
+},
+{
+"id": "wt147",
+"name": "Abnormal - Sin 1",
+"author": "Mioseg",
+"frames": 2,
+"source": "audio",
+"offset": 32481604,
+"length": 353023
+},
+{
+"id": "wt148",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 32834627,
+"length": 27463
+},
+{
+"id": "wt149",
+"name": "Crappy Toilet",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 32862090,
+"length": 1058285
+},
+{
+"id": "wt150",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 33920375,
+"length": 16496
+},
+{
+"id": "wt151",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 33936871,
+"length": 16442
+},
+{
+"id": "wt152",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 33953313,
+"length": 16409
+},
+{
+"id": "wt153",
+"name": "ESW Triple Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 33969722,
+"length": 20982
+},
+{
+"id": "wt154",
+"name": "Thank u False Noise",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 33990704,
+"length": 1056314
+},
+{
+"id": "wt155",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 35047018,
+"length": 8245
+},
+{
+"id": "wt156",
+"name": "Jaw Harp",
+"author": "Factory",
+"frames": 2,
+"source": "audio",
+"offset": 35055263,
+"length": 105869
+},
+{
+"id": "wt157",
+"name": "Analogue 12",
+"author": "David Dumais",
+"frames": 2,
+"source": "audio",
+"offset": 35161132,
+"length": 758421
+},
+{
+"id": "wt158",
+"name": "woolf sun 1",
+"author": "woolf",
+"frames": 3,
+"source": "wave",
+"offset": 35919553,
+"length": 24967
+},
+{
+"id": "wt159",
+"name": "woolf female vox 1",
+"author": "woolf",
+"frames": 2,
+"source": "audio",
+"offset": 35944520,
+"length": 200437
+},
+{
+"id": "wt160",
+"name": "woolf vox X 1",
+"author": "woolf",
+"frames": 2,
+"source": "audio",
+"offset": 36144957,
+"length": 267559
+},
+{
+"id": "wt161",
+"name": "ESW Analog - JP800 Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 36412516,
+"length": 8625
+},
+{
+"id": "wt162",
+"name": "ESW Real - World Japanese Guitar",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 36421141,
+"length": 957229
+},
+{
+"id": "wt163",
+"name": "Diana - Aah",
+"author": "Flamedragonz",
+"frames": 2,
+"source": "audio",
+"offset": 37378370,
+"length": 33494
+},
+{
+"id": "wt164",
+"name": "orbit_vae_v1.17_dims30_rad2.7_7_27_211_free",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 37411864,
+"length": 33483
+},
+{
+"id": "wt165",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 37445347,
+"length": 25112
+},
+{
+"id": "wt166",
+"name": "Shimmer 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 37470459,
+"length": 350779,
+"silent_frame0": true
+},
+{
+"id": "wt167",
+"name": "Shimmer 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 37821238,
+"length": 385351,
+"silent_frame0": true
+},
+{
+"id": "wt168",
+"name": "Shimmer 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 38206589,
+"length": 702503
+},
+{
+"id": "wt169",
+"name": "ESW - Chimes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 38909092,
+"length": 1045994
+},
+{
+"id": "wt170",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 39955086,
+"length": 27110
+},
+{
+"id": "wt171",
+"name": "ESW Minimoog",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 39982196,
+"length": 25051
+},
+{
+"id": "wt172",
+"name": "ESW Basics - Square Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 40007247,
+"length": 8617
+},
+{
+"id": "wt173",
+"name": "WahWah",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 40015864,
+"length": 164617
+},
+{
+"id": "wt174",
+"name": "Flange Sqrowl",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 40180481,
+"length": 1054713
+},
+{
+"id": "wt175",
+"name": "Decoded-1",
+"author": "WVTM",
+"frames": 2,
+"source": "audio",
+"offset": 41235194,
+"length": 41161
+},
+{
+"id": "wt176",
+"name": "Decoded-2",
+"author": "WVTM",
+"frames": 2,
+"source": "audio",
+"offset": 41276355,
+"length": 201131
+},
+{
+"id": "wt177",
+"name": "Resynthesize",
+"author": "Matt Tytel",
+"frames": 2,
+"source": "audio",
+"offset": 41477486,
+"length": 366435
+},
+{
+"id": "wt178",
+"name": "Resynthesize",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 41843921,
+"length": 383065
+},
+{
+"id": "wt179",
+"name": "Basics II",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 42226986,
+"length": 14609
+},
+{
+"id": "wt180",
+"name": "Bender",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 42241595,
+"length": 20276
+},
+{
+"id": "wt181",
+"name": "WT - Wobbly",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 42261871,
+"length": 364086
+},
+{
+"id": "wt182",
+"name": "ESW Metallic - Waves",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 42625957,
+"length": 1056995
+},
+{
+"id": "wt183",
+"name": "Emblem F5 D5",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 43682952,
+"length": 2828492
+},
+{
+"id": "wt184",
+"name": "pad",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 46511444,
+"length": 1656739,
+"silent_frame0": true
+},
+{
+"id": "wt185",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 48168183,
+"length": 27361
+},
+{
+"id": "wt186",
+"name": "White Noise",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 48195544,
+"length": 178485
+},
+{
+"id": "wt187",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 48374029,
+"length": 8164
+},
+{
+"id": "wt188",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 48382193,
+"length": 12610
+},
+{
+"id": "wt189",
+"name": "\u0431\u0435\u0437 \u043d\u0430\u0437\u0432\u0430\u043d\u0438f\u044f",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 48394803,
+"length": 428559
+},
+{
+"id": "wt190",
+"name": "Eerie",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 48823362,
+"length": 534459
+},
+{
+"id": "wt191",
+"name": "Eerie",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 49357821,
+"length": 513937,
+"silent_frame0": true
+},
+{
+"id": "wt192",
+"name": "Eerie",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 49871758,
+"length": 429485
+},
+{
+"id": "wt193",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 50301243,
+"length": 8349
+},
+{
+"id": "wt194",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 50309592,
+"length": 251
+},
+{
+"id": "wt195",
+"name": "Solar Powered",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 50309843,
+"length": 384978
+},
+{
+"id": "wt196",
+"name": "I am a star",
+"author": "Flamedragonz",
+"frames": 2,
+"source": "audio",
+"offset": 50694821,
+"length": 1105753
+},
+{
+"id": "wt197",
+"name": "Are you a star",
+"author": "Flamedragonz",
+"frames": 2,
+"source": "audio",
+"offset": 51800574,
+"length": 871195
+},
+{
+"id": "wt198",
+"name": "ESW - Whoa Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 52671769,
+"length": 85199
+},
+{
+"id": "wt199",
+"name": "12-Screamer",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 52756968,
+"length": 54080
+},
+{
+"id": "wt200",
+"name": "12-Screamer",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 52811048,
+"length": 54079
+},
+{
+"id": "wt201",
+"name": "06-Digigrain I",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 52865127,
+"length": 107784
+},
+{
+"id": "wt202",
+"name": "Flange Sqrowl",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 52972911,
+"length": 1054682
+},
+{
+"id": "wt203",
+"name": "Thank u False Noise",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 54027593,
+"length": 1056202
+},
+{
+"id": "wt204",
+"name": "hell1",
+"author": "Articks",
+"frames": 2,
+"source": "audio",
+"offset": 55083795,
+"length": 1048237
+},
+{
+"id": "wt205",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 56132032,
+"length": 5848
+},
+{
+"id": "wt206",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 56137880,
+"length": 5698
+},
+{
+"id": "wt207",
+"name": "ESW Analog - JP800 Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 56143578,
+"length": 8621
+},
+{
+"id": "wt208",
+"name": "ESW Alesis Andromeda A6",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 56152199,
+"length": 24164
+},
+{
+"id": "wt209",
+"name": "Virus_WT_019",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 56176363,
+"length": 14847
+},
+{
+"id": "wt210",
+"name": "wonder saw 1",
+"author": "woolf",
+"frames": 2,
+"source": "line",
+"offset": 56191210,
+"length": 447
+},
+{
+"id": "wt211",
+"name": "exp",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 56191657,
+"length": 983741,
+"silent_frame0": true
+},
+{
+"id": "wt212",
+"name": "exppd",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 57175398,
+"length": 828887
+},
+{
+"id": "wt213",
+"name": "Creepy Solar",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 58004285,
+"length": 670154
+},
+{
+"id": "wt214",
+"name": "Wavetable - Deathbeat",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 58674439,
+"length": 1059140
+},
+{
+"id": "wt215",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 59733579,
+"length": 15975
+},
+{
+"id": "wt216",
+"name": "Resynthesize",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 59749554,
+"length": 374735
+},
+{
+"id": "wt217",
+"name": "wsp fm",
+"author": "Sonicspore",
+"frames": 2,
+"source": "audio",
+"offset": 60124289,
+"length": 517003
+},
+{
+"id": "wt218",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 60641292,
+"length": 7824
+},
+{
+"id": "wt219",
+"name": "ESW Digital - Deep House",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 60649116,
+"length": 1046104
+},
+{
+"id": "wt220",
+"name": "interesna2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 61695220,
+"length": 1017457
+},
+{
+"id": "wt221",
+"name": "interesna",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 62712677,
+"length": 1044428
+},
+{
+"id": "wt222",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 63757105,
+"length": 8199
+},
+{
+"id": "wt223",
+"name": "SCREE",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 63765304,
+"length": 223497
+},
+{
+"id": "wt224",
+"name": "Init",
+"author": "Reav",
+"frames": 4,
+"source": "wave",
+"offset": 63988801,
+"length": 32591
+},
+{
+"id": "wt225",
+"name": "Init",
+"author": "Reav",
+"frames": 4,
+"source": "wave",
+"offset": 64021392,
+"length": 32874
+},
+{
+"id": "wt226",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 64054266,
+"length": 25112
+},
+{
+"id": "wt227",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 64079378,
+"length": 8234
+},
+{
+"id": "wt228",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 64087612,
+"length": 8276
+},
+{
+"id": "wt229",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 64095888,
+"length": 8346
+},
+{
+"id": "wt230",
+"name": "ALIENDRONE-L",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 64104234,
+"length": 1051616
+},
+{
+"id": "wt231",
+"name": "hitoksporunet",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 65155850,
+"length": 1057840
+},
+{
+"id": "wt232",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 66213690,
+"length": 8156
+},
+{
+"id": "wt233",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 66221846,
+"length": 15972
+},
+{
+"id": "wt234",
+"name": "Zero",
+"author": "Methodub",
+"frames": 2,
+"source": "audio",
+"offset": 66237818,
+"length": 349398
+},
+{
+"id": "wt235",
+"name": "Airhead",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 66587216,
+"length": 1054526
+},
+{
+"id": "wt236",
+"name": "Three Voices",
+"author": "KVBA",
+"frames": 3,
+"source": "line",
+"offset": 67641742,
+"length": 480
+},
+{
+"id": "wt237",
+"name": "Drive",
+"author": "Horizon95",
+"frames": 2,
+"source": "wave",
+"offset": 67642222,
+"length": 15503
+},
+{
+"id": "wt238",
+"name": "woolf - sub sin 1",
+"author": "woolf",
+"frames": 1,
+"source": "wave",
+"offset": 67657725,
+"length": 8294
+},
+{
+"id": "wt239",
+"name": "0 shape morph 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 67666019,
+"length": 917429
+},
+{
+"id": "wt240",
+"name": "sin morph 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 68583448,
+"length": 927848
+},
+{
+"id": "wt241",
+"name": "Creeper [SN]",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 69511296,
+"length": 29149
+},
+{
+"id": "wt242",
+"name": "Growl B [ARTFX]",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 69540445,
+"length": 8622
+},
+{
+"id": "wt243",
+"name": "ICanHasKick",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 69549067,
+"length": 1021883,
+"silent_frame0": true
+},
+{
+"id": "wt244",
+"name": "CrushWub",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 70570950,
+"length": 37448
+},
+{
+"id": "wt245",
+"name": "Drink the Juice",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 70608398,
+"length": 489521
+},
+{
+"id": "wt246",
+"name": "ASONIC_FLOW_SOUNDSCAPE_01_C#",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 71097919,
+"length": 1064617
+},
+{
+"id": "wt247",
+"name": "Corpusbode Phaser",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 72162536,
+"length": 496022
+},
+{
+"id": "wt248",
+"name": "Alternating Harmonics",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 72658558,
+"length": 500804
+},
+{
+"id": "wt249",
+"name": "Clicky Robot",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 73159362,
+"length": 1058459
+},
+{
+"id": "wt250",
+"name": "Clicky Robot",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 74217821,
+"length": 1058458
+},
+{
+"id": "wt251",
+"name": "dying sin 1",
+"author": "woolf",
+"frames": 2,
+"source": "audio",
+"offset": 75276279,
+"length": 1016852
+},
+{
+"id": "wt252",
+"name": "0 saw move vital line 1",
+"author": "woolf",
+"frames": 5,
+"source": "line",
+"offset": 76293131,
+"length": 1031
+},
+{
+"id": "wt253",
+"name": "06-PolySaw I",
+"author": "",
+"frames": 3,
+"source": "line",
+"offset": 76294162,
+"length": 589
+},
+{
+"id": "wt254",
+"name": "07 Saw Dual 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 76294751,
+"length": 227037
+},
+{
+"id": "wt255",
+"name": "01 Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 76521788,
+"length": 6190
+},
+{
+"id": "wt256",
+"name": "ESW Real - Electric Guitar",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 76527978,
+"length": 256139
+},
+{
+"id": "wt257",
+"name": "Alternating Harmonics",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 76784117,
+"length": 500787
+},
+{
+"id": "wt258",
+"name": "PulseWidthMod",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 77284904,
+"length": 11466
+},
+{
+"id": "wt259",
+"name": "ESW Splatter",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 77296370,
+"length": 169915
+},
+{
+"id": "wt260",
+"name": "Charlee",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 77466285,
+"length": 38128
+},
+{
+"id": "wt261",
+"name": "Belle",
+"author": "Databroth",
+"frames": 2,
+"source": "audio",
+"offset": 77504413,
+"length": 349292
+},
+{
+"id": "wt262",
+"name": "Creepy Solar",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 77853705,
+"length": 670143
+},
+{
+"id": "wt263",
+"name": "Granular Upgrade",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 78523848,
+"length": 446896
+},
+{
+"id": "wt264",
+"name": "Init",
+"author": "woolf",
+"frames": 1,
+"source": "wave",
+"offset": 78970744,
+"length": 4782
+},
+{
+"id": "wt265",
+"name": "Init",
+"author": "woolf",
+"frames": 1,
+"source": "wave",
+"offset": 78975526,
+"length": 4228
+},
+{
+"id": "wt266",
+"name": "Init",
+"author": "woolf",
+"frames": 1,
+"source": "wave",
+"offset": 78979754,
+"length": 6375
+},
+{
+"id": "wt267",
+"name": "Squish Flange",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 78986129,
+"length": 691760
+},
+{
+"id": "wt268",
+"name": "Init",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 79677889,
+"length": 15544
+},
+{
+"id": "wt269",
+"name": "woolf saw pwm 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 79693433,
+"length": 1005345
+},
+{
+"id": "wt270",
+"name": "Cymatics - INSTR Leslie Guitar - C",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 80698778,
+"length": 199496
+},
+{
+"id": "wt271",
+"name": "Harmonic Series",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 80898274,
+"length": 12083
+},
+{
+"id": "wt272",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 2,
+"source": "wave",
+"offset": 80910357,
+"length": 8196
+},
+{
+"id": "wt273",
+"name": "Vital Sine 2",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 80918553,
+"length": 8488
+},
+{
+"id": "wt274",
+"name": "saddam hussein",
+"author": "hurb",
+"frames": 2,
+"source": "wave",
+"offset": 80927041,
+"length": 8487
+},
+{
+"id": "wt275",
+"name": "Saws for Days",
+"author": "",
+"frames": 4,
+"source": "line",
+"offset": 80935528,
+"length": 504
+},
+{
+"id": "wt276",
+"name": "FFT_Add_2nds",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 80936032,
+"length": 64903
+},
+{
+"id": "wt277",
+"name": "Init",
+"author": "",
+"frames": 9,
+"source": "line",
+"offset": 81000935,
+"length": 48492
+},
+{
+"id": "wt278",
+"name": "bipole_harmonic",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 81049427,
+"length": 12602
+},
+{
+"id": "wt279",
+"name": "Flange Sqrowl",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 81062029,
+"length": 1054710
+},
+{
+"id": "wt280",
+"name": "Init",
+"author": "woolf",
+"frames": 1,
+"source": "wave",
+"offset": 82116739,
+"length": 8209
+},
+{
+"id": "wt281",
+"name": "x death 1",
+"author": "woolf",
+"frames": 3,
+"source": "line",
+"offset": 82124948,
+"length": 776
+},
+{
+"id": "wt282",
+"name": "woolf tri sin cheap",
+"author": "woolf",
+"frames": 2,
+"source": "line",
+"offset": 82125724,
+"length": 810
+},
+{
+"id": "wt283",
+"name": "Init",
+"author": "woolf",
+"frames": 3,
+"source": "wave",
+"offset": 82126534,
+"length": 17533
+},
+{
+"id": "wt284",
+"name": "woolf wool 1",
+"author": "woolf",
+"frames": 2,
+"source": "line",
+"offset": 82144067,
+"length": 9183
+},
+{
+"id": "wt285",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 82153250,
+"length": 25112
+},
+{
+"id": "wt286",
+"name": "Paper Cut",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 82178362,
+"length": 103240
+},
+{
+"id": "wt287",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 82281602,
+"length": 25111
+},
+{
+"id": "wt288",
+"name": "Pattern 2 (consolidated)_7",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 82306713,
+"length": 153692
+},
+{
+"id": "wt289",
+"name": "Frame Divider",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 82460405,
+"length": 1050602
+},
+{
+"id": "wt290",
+"name": "Electro Pulse",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 83511007,
+"length": 18347
+},
+{
+"id": "wt291",
+"name": "1A - detuned bend bass",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 83529354,
+"length": 447895
+},
+{
+"id": "wt292",
+"name": "ESW Archangel",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 83977249,
+"length": 818032
+},
+{
+"id": "wt293",
+"name": "ESW Basics - Square Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 84795281,
+"length": 8618
+},
+{
+"id": "wt294",
+"name": "Init",
+"author": "Mioseg",
+"frames": 1,
+"source": "wave",
+"offset": 84803899,
+"length": 4270
+},
+{
+"id": "wt295",
+"name": "Analog PWM Square 02",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 84808169,
+"length": 570346
+},
+{
+"id": "wt296",
+"name": "Triangle - 8bit",
+"author": "Monal\u00edciciaKenobii",
+"frames": 2,
+"source": "audio",
+"offset": 85378515,
+"length": 1503,
+"silent_frame0": true
+},
+{
+"id": "wt297",
+"name": "Basic Shapes Scan 01",
+"author": "Sketi",
+"frames": 8,
+"source": "wave",
+"offset": 85380018,
+"length": 27027
+},
+{
+"id": "wt298",
+"name": "ESW - Dual Pulse",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 85407045,
+"length": 918147
+},
+{
+"id": "wt299",
+"name": "ESW - Dual Pulse",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 86325192,
+"length": 918146
+},
+{
+"id": "wt300",
+"name": "ESW - Thick Jumps",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 87243338,
+"length": 198739
+},
+{
+"id": "wt301",
+"name": "synth",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 87442077,
+"length": 574852,
+"silent_frame0": true
+},
+{
+"id": "wt302",
+"name": "synth",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 88016929,
+"length": 346750,
+"silent_frame0": true
+},
+{
+"id": "wt303",
+"name": "synth",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 88363679,
+"length": 528307,
+"silent_frame0": true
+},
+{
+"id": "wt304",
+"name": "untitled",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 88891986,
+"length": 944367,
+"silent_frame0": true
+},
+{
+"id": "wt305",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 7,
+"source": "wave",
+"offset": 89836353,
+"length": 27958
+},
+{
+"id": "wt306",
+"name": "Creepy Solar",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 89864311,
+"length": 670147
+},
+{
+"id": "wt307",
+"name": "saw3",
+"author": "woolf",
+"frames": 2,
+"source": "wave",
+"offset": 90534458,
+"length": 16338
+},
+{
+"id": "wt308",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "line",
+"offset": 90550796,
+"length": 649
+},
+{
+"id": "wt309",
+"name": "Init",
+"author": "woolf",
+"frames": 5,
+"source": "wave",
+"offset": 90551445,
+"length": 28821
+},
+{
+"id": "wt310",
+"name": "Init",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 90580266,
+"length": 32882
+},
+{
+"id": "wt311",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 1,
+"source": "wave",
+"offset": 90613148,
+"length": 6694
+},
+{
+"id": "wt312",
+"name": "ESW Breath Mallet",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 90619842,
+"length": 166806
+},
+{
+"id": "wt313",
+"name": "Sine",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 90786648,
+"length": 8341
+},
+{
+"id": "wt314",
+"name": "Sine",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 90794989,
+"length": 8316
+},
+{
+"id": "wt315",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 90803305,
+"length": 13849
+},
+{
+"id": "wt316",
+"name": "Corpusbode Phaser",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 90817154,
+"length": 496007
+},
+{
+"id": "wt317",
+"name": "Electric Heat 04",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 91313161,
+"length": 1046728
+},
+{
+"id": "wt318",
+"name": "Electric Crush 02",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 92359889,
+"length": 1054384
+},
+{
+"id": "wt319",
+"name": "haunted",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 93414273,
+"length": 1058516
+},
+{
+"id": "wt320",
+"name": "haunted",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 94472789,
+"length": 915880
+},
+{
+"id": "wt321",
+"name": "haunted",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 95388669,
+"length": 833300
+},
+{
+"id": "wt322",
+"name": "untitled_2025-04-24 12-22-22_LEAD6_2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 96221969,
+"length": 26507
+},
+{
+"id": "wt323",
+"name": "ESW - Whoa Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 96248476,
+"length": 85268
+},
+{
+"id": "wt324",
+"name": "Phase Invert",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 96333744,
+"length": 1053246
+},
+{
+"id": "wt325",
+"name": "Lovely",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 97386990,
+"length": 860140
+},
+{
+"id": "wt326",
+"name": "Water Razor",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 98247130,
+"length": 215427
+},
+{
+"id": "wt327",
+"name": "Alternating Harmonics",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 98462557,
+"length": 500790
+},
+{
+"id": "wt328",
+"name": "Chord rnd_bird_1 granular pt.2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 98963347,
+"length": 627144
+},
+{
+"id": "wt329",
+"name": "Ascension Ana 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 99590491,
+"length": 277280,
+"silent_frame0": true
+},
+{
+"id": "wt330",
+"name": "Ascension Ana 2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 99867771,
+"length": 331410
+},
+{
+"id": "wt331",
+"name": "fawted",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 100199181,
+"length": 122162
+},
+{
+"id": "wt332",
+"name": "Byeaughyu",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 100321343,
+"length": 1054878
+},
+{
+"id": "wt333",
+"name": "12",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 101376221,
+"length": 1058945
+},
+{
+"id": "wt334",
+"name": "10",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 102435166,
+"length": 995033
+},
+{
+"id": "wt335",
+"name": "ACG-String",
+"author": "Flamedragonz",
+"frames": 2,
+"source": "audio",
+"offset": 103430199,
+"length": 202031
+},
+{
+"id": "wt336",
+"name": "Broken Axle",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 103632230,
+"length": 1050669
+},
+{
+"id": "wt337",
+"name": "Fractal",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 104682899,
+"length": 105513
+},
+{
+"id": "wt338",
+"name": "NES Duty Cycle",
+"author": "Zipchord",
+"frames": 5,
+"source": "audio",
+"offset": 104788412,
+"length": 6230
+},
+{
+"id": "wt339",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 104794642,
+"length": 7023
+},
+{
+"id": "wt340",
+"name": "BS2 - Acid",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 104801665,
+"length": 498705
+},
+{
+"id": "wt341",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 105300370,
+"length": 25110
+},
+{
+"id": "wt342",
+"name": "Analog_BD_Sin",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 105325480,
+"length": 25111
+},
+{
+"id": "wt343",
+"name": "Wahhh",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 105350591,
+"length": 930768
+},
+{
+"id": "wt344",
+"name": "Harmonic Square 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 106281359,
+"length": 19541
+},
+{
+"id": "wt345",
+"name": "ICanHasKick",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 106300900,
+"length": 1020019,
+"silent_frame0": true
+},
+{
+"id": "wt346",
+"name": "ESW Analog - Juno 60 Sine 01",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 107320919,
+"length": 8484
+},
+{
+"id": "wt347",
+"name": "ESW Analog - Jupiter 8 Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 107329403,
+"length": 8505
+},
+{
+"id": "wt348",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 107337908,
+"length": 16302
+},
+{
+"id": "wt349",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 107354210,
+"length": 16369
+},
+{
+"id": "wt350",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 107370579,
+"length": 8248
+},
+{
+"id": "wt351",
+"name": "Solar Powered",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 107378827,
+"length": 384977
+},
+{
+"id": "wt352",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 107763804,
+"length": 15972
+},
+{
+"id": "wt353",
+"name": "Odyssey - Bass - Hyperdrive Bass 3",
+"author": "iReason",
+"frames": 2,
+"source": "audio",
+"offset": 107779776,
+"length": 9699
+},
+{
+"id": "wt354",
+"name": "Thank u False Noise",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 107789475,
+"length": 1056202
+},
+{
+"id": "wt355",
+"name": "bez_vae_v1.08_dims26_b365_990_free",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 108845677,
+"length": 264651
+},
+{
+"id": "wt356",
+"name": "ESW - Drifting Saws",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 109110328,
+"length": 497850
+},
+{
+"id": "wt357",
+"name": "bump",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 109608178,
+"length": 48233
+},
+{
+"id": "wt358",
+"name": "Sine",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 109656411,
+"length": 8033
+},
+{
+"id": "wt359",
+"name": "0.33L",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 109664444,
+"length": 309208
+},
+{
+"id": "wt360",
+"name": "Mellow But Instable",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 109973652,
+"length": 1020096
+},
+{
+"id": "wt361",
+"name": "hola",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 110993748,
+"length": 135432
+},
+{
+"id": "wt362",
+"name": "Analogue 16",
+"author": "David Dumais",
+"frames": 2,
+"source": "audio",
+"offset": 111129180,
+"length": 576309
+},
+{
+"id": "wt363",
+"name": "Sine to Saw",
+"author": "David Dumais",
+"frames": 2,
+"source": "wave",
+"offset": 111705489,
+"length": 16115
+},
+{
+"id": "wt364",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 111721604,
+"length": 8361
+},
+{
+"id": "wt365",
+"name": "Thank u False Noise",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 111729965,
+"length": 1056202
+},
+{
+"id": "wt366",
+"name": "Thank u False Noise",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 112786167,
+"length": 1056202
+},
+{
+"id": "wt367",
+"name": "Resynthesize",
+"author": "Matt Tytel\u3091",
+"frames": 2,
+"source": "audio",
+"offset": 113842369,
+"length": 267032
+},
+{
+"id": "wt368",
+"name": "Resynthesize",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 114109401,
+"length": 296406
+},
+{
+"id": "wt369",
+"name": "Creepy Solar",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 114405807,
+"length": 670156
+},
+{
+"id": "wt370",
+"name": "Acid Chipmunk",
+"author": "SNFK",
+"frames": 2,
+"source": "audio",
+"offset": 115075963,
+"length": 352257
+},
+{
+"id": "wt371",
+"name": "Chiptune1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 115428220,
+"length": 331228
+},
+{
+"id": "wt372",
+"name": "Harmonic Series",
+"author": "",
+"frames": 16,
+"source": "wave",
+"offset": 115759448,
+"length": 107003
+},
+{
+"id": "wt373",
+"name": "A bit of everything",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 115866451,
+"length": 986948
+},
+{
+"id": "wt374",
+"name": "Clarinet",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 116853399,
+"length": 8697
+},
+{
+"id": "wt375",
+"name": "MKS80 Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 116862096,
+"length": 924440
+},
+{
+"id": "wt376",
+"name": "Zapped Out",
+"author": "Matt Tytel",
+"frames": 3,
+"source": "audio",
+"offset": 117786536,
+"length": 341806
+},
+{
+"id": "wt377",
+"name": "74",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 118128342,
+"length": 962932
+},
+{
+"id": "wt378",
+"name": "acapella 5",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 119091274,
+"length": 2091014
+},
+{
+"id": "wt379",
+"name": "ESW Digital - Acid Saw 02",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 121182288,
+"length": 1033632
+},
+{
+"id": "wt380",
+"name": "ESW Digital - Acid Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 122215920,
+"length": 92985
+},
+{
+"id": "wt381",
+"name": "ESW Digital - Angry 02",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 122308905,
+"length": 1048460
+},
+{
+"id": "wt382",
+"name": "dab",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 123357365,
+"length": 401037
+},
+{
+"id": "wt383",
+"name": "Meadow Fretless Pedal looperman",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 123758402,
+"length": 256713
+},
+{
+"id": "wt384",
+"name": "dab",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 124015115,
+"length": 421345,
+"silent_frame0": true
+},
+{
+"id": "wt385",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 124436460,
+"length": 8289
+},
+{
+"id": "wt386",
+"name": "Clicky Robot",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 124444749,
+"length": 1058531
+},
+{
+"id": "wt387",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 125503280,
+"length": 15983
+},
+{
+"id": "wt388",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 125519263,
+"length": 15967
+},
+{
+"id": "wt389",
+"name": "tueethkksymplant",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 125535230,
+"length": 369525
+},
+{
+"id": "wt390",
+"name": "tueethkksymplant",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 125904755,
+"length": 367797
+},
+{
+"id": "wt391",
+"name": "Angry Synth Vital - 2021-Dec-11_3",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 126272552,
+"length": 134760
+},
+{
+"id": "wt392",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 126407312,
+"length": 8342
+},
+{
+"id": "wt393",
+"name": "CS80_Saw",
+"author": "SNFK",
+"frames": 2,
+"source": "audio",
+"offset": 126415654,
+"length": 77654
+},
+{
+"id": "wt394",
+"name": "Init",
+"author": "Yuli Yolo",
+"frames": 1,
+"source": "wave",
+"offset": 126493308,
+"length": 1686
+},
+{
+"id": "wt395",
+"name": "Sine to Saw",
+"author": "Yuli Yolo",
+"frames": 2,
+"source": "wave",
+"offset": 126494994,
+"length": 15224
+},
+{
+"id": "wt396",
+"name": "ESW - 303 Saw 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 126510218,
+"length": 712157
+},
+{
+"id": "wt397",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 127222375,
+"length": 408
+},
+{
+"id": "wt398",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 127222783,
+"length": 8217
+},
+{
+"id": "wt399",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 7,
+"source": "wave",
+"offset": 127231000,
+"length": 27902
+},
+{
+"id": "wt400",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "wave",
+"offset": 127258902,
+"length": 22331
+},
+{
+"id": "wt401",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 127281233,
+"length": 15482
+},
+{
+"id": "wt402",
+"name": "NFG_F#_Bonus_Bass_04",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 127296715,
+"length": 243471
+},
+{
+"id": "wt403",
+"name": "MA Sweet Sound (Kick)",
+"author": "ModeAudio",
+"frames": 2,
+"source": "audio",
+"offset": 127540186,
+"length": 34704
+},
+{
+"id": "wt404",
+"name": "MA Solune (Perc)",
+"author": "ModeAudio",
+"frames": 2,
+"source": "audio",
+"offset": 127574890,
+"length": 19149
+},
+{
+"id": "wt405",
+"name": "BLA - Rotten Acorn",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 127594039,
+"length": 1027501
+},
+{
+"id": "wt406",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 1,
+"source": "wave",
+"offset": 128621540,
+"length": 8092
+},
+{
+"id": "wt407",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 1,
+"source": "wave",
+"offset": 128629632,
+"length": 8120
+},
+{
+"id": "wt408",
+"name": "KY-Aura",
+"author": "Articks",
+"frames": 2,
+"source": "audio",
+"offset": 128637752,
+"length": 262488
+},
+{
+"id": "wt409",
+"name": "Dune Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 128900240,
+"length": 41597
+},
+{
+"id": "wt410",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 128941837,
+"length": 8261
+},
+{
+"id": "wt411",
+"name": "Smooth Sub Pulse",
+"author": "Parametheus",
+"frames": 2,
+"source": "audio",
+"offset": 128950098,
+"length": 369206
+},
+{
+"id": "wt412",
+"name": "Resynthesize",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 129319304,
+"length": 17120
+},
+{
+"id": "wt413",
+"name": "Hollow Distorted FM",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 129336424,
+"length": 482343
+},
+{
+"id": "wt414",
+"name": "ESW - Whoa Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 129818767,
+"length": 85268
+},
+{
+"id": "wt415",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 129904035,
+"length": 8368
+},
+{
+"id": "wt416",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 129912403,
+"length": 2551
+},
+{
+"id": "wt417",
+"name": "Corpusbode Phaser",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 129914954,
+"length": 496025
+},
+{
+"id": "wt418",
+"name": "kykyk",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 130410979,
+"length": 1045062
+},
+{
+"id": "wt419",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 131456041,
+"length": 8212
+},
+{
+"id": "wt420",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 1,
+"source": "wave",
+"offset": 131464253,
+"length": 7087
+},
+{
+"id": "wt421",
+"name": "Window Pulses",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 131471340,
+"length": 477798
+},
+{
+"id": "wt422",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 131949138,
+"length": 12094
+},
+{
+"id": "wt423",
+"name": "Basic Shapes",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 131961232,
+"length": 15966
+},
+{
+"id": "wt424",
+"name": "ESW - Arp Pattern",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 131977198,
+"length": 453175
+},
+{
+"id": "wt425",
+"name": "ESW - Circus",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 132430373,
+"length": 856998
+},
+{
+"id": "wt426",
+"name": "Init",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 133287371,
+"length": 32827
+},
+{
+"id": "wt427",
+"name": "Init",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 133320198,
+"length": 32828
+},
+{
+"id": "wt428",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 133353026,
+"length": 16370
+},
+{
+"id": "wt429",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 1,
+"source": "wave",
+"offset": 133369396,
+"length": 8258
+},
+{
+"id": "wt430",
+"name": "rnd dark",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 133377654,
+"length": 463287
+},
+{
+"id": "wt431",
+"name": "rnd dark",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 133840941,
+"length": 373378
+},
+{
+"id": "wt432",
+"name": "rnd dark",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 134214319,
+"length": 476631
+},
+{
+"id": "wt433",
+"name": "woolf shakey 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 134690950,
+"length": 943407
+},
+{
+"id": "wt434",
+"name": "woolf color bass X 1",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 135634357,
+"length": 99159
+},
+{
+"id": "wt435",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "wave",
+"offset": 135733516,
+"length": 15397
+},
+{
+"id": "wt436",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 135748913,
+"length": 27601
+},
+{
+"id": "wt437",
+"name": "dx",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 135776514,
+"length": 288373
+},
+{
+"id": "wt438",
+"name": "LNZ_C_Hurting_2",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 136064887,
+"length": 492447
+},
+{
+"id": "wt439",
+"name": "dist pad",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 136557334,
+"length": 701502
+},
+{
+"id": "wt440",
+"name": "dist pad",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 137258836,
+"length": 467900
+},
+{
+"id": "wt441",
+"name": "dist pad",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 137726736,
+"length": 759590
+},
+{
+"id": "wt442",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 138486326,
+"length": 8206
+},
+{
+"id": "wt443",
+"name": "Forbidden FM",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 138494532,
+"length": 22668
+},
+{
+"id": "wt444",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 138517200,
+"length": 8289
+},
+{
+"id": "wt445",
+"name": "Water Razor",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 138525489,
+"length": 215425
+},
+{
+"id": "wt446",
+"name": "Thank u False Noise",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 138740914,
+"length": 1056203
+},
+{
+"id": "wt447",
+"name": "SinII I",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 139797117,
+"length": 251190,
+"silent_frame0": true
+},
+{
+"id": "wt448",
+"name": "Sin Sin Mod II",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 140048307,
+"length": 1049819
+},
+{
+"id": "wt449",
+"name": "Sin Sin Mod I",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 141098126,
+"length": 1047112
+},
+{
+"id": "wt450",
+"name": "Analogue 01",
+"author": "David Dumais",
+"frames": 2,
+"source": "line",
+"offset": 142145238,
+"length": 596
+},
+{
+"id": "wt451",
+"name": "Analogue 05",
+"author": "David Dumais",
+"frames": 2,
+"source": "audio",
+"offset": 142145834,
+"length": 744886
+},
+{
+"id": "wt452",
+"name": "0 jup sup saw 2",
+"author": "woolf",
+"frames": 5,
+"source": "line",
+"offset": 142890720,
+"length": 1103
+},
+{
+"id": "wt453",
+"name": "Init",
+"author": "woolf",
+"frames": 3,
+"source": "wave",
+"offset": 142891823,
+"length": 8496
+},
+{
+"id": "wt454",
+"name": "ESW Analog - ARP Triangle",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 142900319,
+"length": 8609
+},
+{
+"id": "wt455",
+"name": "ESW Analog - JP800 Square",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 142908928,
+"length": 1011546
+},
+{
+"id": "wt456",
+"name": "ESW Analog - Juno 60 Sine 01",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 143920474,
+"length": 8488
+},
+{
+"id": "wt457",
+"name": "woolf additive synth 3",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 143928962,
+"length": 532424
+},
+{
+"id": "wt458",
+"name": "reese_motion__no_sub_",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 144461386,
+"length": 1005894
+},
+{
+"id": "wt459",
+"name": "woolf_death_rattle (2)",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 145467280,
+"length": 1031525
+},
+{
+"id": "wt460",
+"name": "Airy",
+"author": "Articks",
+"frames": 7,
+"source": "audio",
+"offset": 146498805,
+"length": 352130
+},
+{
+"id": "wt461",
+"name": "INT",
+"author": "Articks",
+"frames": 1,
+"source": "wave",
+"offset": 146850935,
+"length": 8322
+},
+{
+"id": "wt462",
+"name": "Basic_Wrd",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 146859257,
+"length": 29008
+},
+{
+"id": "wt463",
+"name": "Jno",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 146888265,
+"length": 41299
+},
+{
+"id": "wt464",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "wave",
+"offset": 146929564,
+"length": 24546
+},
+{
+"id": "wt465",
+"name": "Init",
+"author": "",
+"frames": 2,
+"source": "line",
+"offset": 146954110,
+"length": 16802
+},
+{
+"id": "wt466",
+"name": "Init",
+"author": "",
+"frames": 3,
+"source": "wave",
+"offset": 146970912,
+"length": 21822
+},
+{
+"id": "wt467",
+"name": "cardboard cube",
+"author": "afro",
+"frames": 3,
+"source": "audio",
+"offset": 146992734,
+"length": 383383
+},
+{
+"id": "wt468",
+"name": "Fizz",
+"author": "",
+"frames": 4,
+"source": "wave",
+"offset": 147376117,
+"length": 497
+},
+{
+"id": "wt469",
+"name": "crashed",
+"author": "sciera3-0-4",
+"frames": 1,
+"source": "wave",
+"offset": 147376614,
+"length": 8376
+},
+{
+"id": "wt470",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 147384990,
+"length": 8265
+},
+{
+"id": "wt471",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 147393255,
+"length": 251
+},
+{
+"id": "wt472",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 3,
+"source": "wave",
+"offset": 147393506,
+"length": 23118
+},
+{
+"id": "wt473",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 2,
+"source": "wave",
+"offset": 147416624,
+"length": 16346
+},
+{
+"id": "wt474",
+"name": "Init",
+"author": "Matt Tytel",
+"frames": 2,
+"source": "wave",
+"offset": 147432970,
+"length": 15235
+},
+{
+"id": "wt475",
+"name": "Piano 3",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 147448205,
+"length": 214399
+},
+{
+"id": "wt476",
+"name": "ESW - Whoa Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 147662604,
+"length": 85198
+},
+{
+"id": "wt477",
+"name": "ESW BR Trumpeter 01",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 147747802,
+"length": 990024,
+"silent_frame0": true
+},
+{
+"id": "wt478",
+"name": "ESW KY Keys Board",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 148737826,
+"length": 267122
+},
+{
+"id": "wt479",
+"name": "Clicky Robot",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 149004948,
+"length": 1058529
+},
+{
+"id": "wt480",
+"name": "Hollow Distorted FM",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 150063477,
+"length": 482344
+},
+{
+"id": "wt481",
+"name": "Creepy Solar",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 150545821,
+"length": 670142
+},
+{
+"id": "wt482",
+"name": "Harmonic Stuff",
+"author": "Mioseg",
+"frames": 2,
+"source": "audio",
+"offset": 151215963,
+"length": 25367
+},
+{
+"id": "wt483",
+"name": "Cereal Boy",
+"author": "Mioseg",
+"frames": 2,
+"source": "audio",
+"offset": 151241330,
+"length": 353872
+},
+{
+"id": "wt484",
+"name": "Init",
+"author": "",
+"frames": 1,
+"source": "wave",
+"offset": 151595202,
+"length": 8349
+},
+{
+"id": "wt485",
+"name": "3-0-4 wave",
+"author": "sciera3-0-4",
+"frames": 1,
+"source": "wave",
+"offset": 151603551,
+"length": 8244
+},
+{
+"id": "wt486",
+"name": "ESW_Analog - Arp Square",
+"author": "Aether",
+"frames": 2,
+"source": "audio",
+"offset": 151611795,
+"length": 8632
+},
+{
+"id": "wt487",
+"name": "Basic Shapes",
+"author": "Matt Tytel",
+"frames": 8,
+"source": "wave",
+"offset": 151620427,
+"length": 27548
+},
+{
+"id": "wt488",
+"name": "Timpani I",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 151647975,
+"length": 466539
+},
+{
+"id": "wt489",
+"name": "ESW Analog - JP800 Saw",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 152114514,
+"length": 8625
+},
+{
+"id": "wt490",
+"name": "Thank u False Noise",
+"author": "Glorkglunk",
+"frames": 2,
+"source": "audio",
+"offset": 152123139,
+"length": 1056316
+},
+{
+"id": "wt491",
+"name": "Init",
+"author": "woolf",
+"frames": 4,
+"source": "wave",
+"offset": 153179455,
+"length": 8458
+},
+{
+"id": "wt492",
+"name": "0 saw redux 2",
+"author": "woolf",
+"frames": 3,
+"source": "line",
+"offset": 153187913,
+"length": 369
+},
+{
+"id": "wt493",
+"name": "ESW - Wasp Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 153188282,
+"length": 454984
+},
+{
+"id": "wt494",
+"name": "ESW - Whoa Sine",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 153643266,
+"length": 85270
+},
+{
+"id": "wt495",
+"name": "ESW - Weird Square",
+"author": "",
+"frames": 2,
+"source": "audio",
+"offset": 153728536,
+"length": 1057037
+},
+{
+"id": "wt496",
+"name": "Analogue 22",
+"author": "David Dumais",
+"frames": 2,
+"source": "audio",
+"offset": 154785573,
+"length": 765416
+},
+{
+"id": "wt497",
+"name": "Spectral Growl 02",
+"author": "David Dumais",
+"frames": 2,
+"source": "audio",
+"offset": 155550989,
+"length": 82732
+},
+{
+"id": "wt498",
+"name": "Analogue 02",
+"author": "David Dumais",
+"frames": 2,
+"source": "audio",
+"offset": 155633721,
+"length": 641266
+},
+{
+"id": "wt499",
+"name": "RA21",
+"author": "Articks",
+"frames": 2,
+"source": "audio",
+"offset": 156274987,
+"length": 120222
+}
+]
