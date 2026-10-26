@@ -74,6 +74,12 @@ bash scripts/serve_qwen3_omni.sh
 
 Agent runtime deps (used in generated tool calls): `dawdreamer`, `numpy`, `soundfile`, `python-reapy`.
 
+> **Training should move into a container** (box policy since 2026-10-20, see `~/AGENTS.md`). The training stack
+> (ms-swift 4.0.2 + megatron-core 0.16.1, torch 2.10 cu128, flash-attn 2.8.3) currently runs from `.venv` on bare
+> metal; the planned image follows `~/ml/docker/qpid-train/` (NGC PyTorch base, same ms-swift/Megatron family).
+> Until it exists, use `.venv` as-is. **Don't** install a system CUDA toolkit, symlink `nvcc` into `/usr/bin`, or
+> compile CUDA extensions on the host to get unblocked.
+
 ---
 
 ## Repository Layout

@@ -22,6 +22,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source .venv/bin/activate
 
+cleanup() {
+    if [[ -n "${OMNI_PID:-}" ]] && kill -0 "$OMNI_PID" 2>/dev/null; then
+        echo "Stopping local Omni server (PID $OMNI_PID)..."
+        kill "$OMNI_PID" 2>/dev/null
+        wait "$OMNI_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
 # ==========================================================================
 # Hyperparameters
 # ==========================================================================
@@ -56,11 +65,13 @@ NO_AUDIO_RATE=0.05            # 5% of samples start with no audio attached
 PARTIAL_INIT_RATE=0.40        # 40% start with 1-4 GT subsystems pre-applied (3-7 batches)
 RETRANSCRIBE_RATE=0.15        # 15% re-transcribe mid-conversation after hearing wrong notes
 STEER_RATE=0.30               # 30% get 1-2 user steer turns after verdict
+RANDOM_INIT_RATE=0.20         # 20% start from a random preset instead of init
 
 # LLM endpoints
 : "${OMNI_SERVERS:=http://localhost:8000}"
 OMNI_MODEL="Qwen/Qwen3-Omni-30B-A3B-Instruct"
-CLAP_DEVICE="cpu"             # GPUs occupied by Omni server
+CLAP_DEVICE="cpu"             # rollout-time CLAP runs on CPU (GPUs busy with Omni)
+CLAP_PRECOMPUTE_DEVICE="cuda:0"  # pre-computation runs on GPU before Omni starts
 
 # ==========================================================================
 # Save hyperparams for reproducibility
@@ -91,9 +102,11 @@ cat > "${RUN_DIR}/hyperparams.json" << PARAMS_EOF
   "partial_init_rate": ${PARTIAL_INIT_RATE},
   "retranscribe_rate": ${RETRANSCRIBE_RATE},
   "steer_rate": ${STEER_RATE},
+  "random_init_rate": ${RANDOM_INIT_RATE},
   "omni_servers": "${OMNI_SERVERS}",
   "omni_model": "${OMNI_MODEL}",
   "clap_device": "${CLAP_DEVICE}",
+  "clap_precompute_device": "${CLAP_PRECOMPUTE_DEVICE}",
   "git_commit": "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)",
   "started_at": "$(date -Iseconds)"
 }
@@ -120,12 +133,32 @@ python scripts/render_sft_targets.py \
 # ==========================================================================
 
 echo ""
-echo "=== Step 2: Pre-compute CLAP embeddings ==="
+echo "=== Step 2: Pre-compute CLAP embeddings (GPU, before Omni server) ==="
 python scripts/precompute_clap_cache.py \
     --manifest "${RUN_DIR}/manifest.jsonl" \
     --probe-dir outputs/agent_sft/candidate_probes \
     --output "${RUN_DIR}/clap_cache.npz" \
-    --device ${CLAP_DEVICE}
+    --device ${CLAP_PRECOMPUTE_DEVICE}
+
+# ==========================================================================
+# Step 2.5: Start local Omni server (GPUs now free after CLAP)
+# ==========================================================================
+
+echo ""
+echo "=== Step 2.5: Starting local Omni server ==="
+bash scripts/serve_qwen3_omni_fast.sh &
+OMNI_PID=$!
+
+# Wait for the server to be ready
+echo "Waiting for local Omni server on port 8000..."
+until curl -s --connect-timeout 2 http://localhost:8000/v1/models >/dev/null 2>&1; do
+    if ! kill -0 $OMNI_PID 2>/dev/null; then
+        echo "ERROR: Omni server died during startup" >&2
+        exit 1
+    fi
+    sleep 5
+done
+echo "Local Omni server ready (PID $OMNI_PID)"
 
 # ==========================================================================
 # Step 3: Build rollouts
@@ -155,6 +188,7 @@ python scripts/run_sft_production.py \
     --partial-init-rate ${PARTIAL_INIT_RATE} \
     --retranscribe-rate ${RETRANSCRIBE_RATE} \
     --steer-rate ${STEER_RATE} \
+    --random-init-rate ${RANDOM_INIT_RATE} \
     --seed ${ROLLOUT_SEED} \
     --suffix ${SUFFIX} \
     --resume

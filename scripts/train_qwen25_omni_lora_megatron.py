@@ -28,6 +28,10 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--dataset-dir", type=Path, default=Path("data/prepared/omni_lua_sft_full_90_10"))
     parser.add_argument("--train-jsonl", type=Path, default=None)
     parser.add_argument("--val-jsonl", type=Path, default=None)
+    parser.add_argument("--cached-dataset", type=Path, default=None,
+                        help="Pre-computed HF Dataset dir (skips AddLengthPreprocessor)")
+    parser.add_argument("--cached-val-dataset", type=Path, default=None,
+                        help="Pre-computed HF Dataset dir for val split")
     parser.add_argument("--output-root", type=Path, default=Path("outputs/qwen25_omni_lora_megatron"))
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--megatron-bin", default="megatron")
@@ -52,6 +56,8 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument("--context-parallel-size", type=int, default=1)
     parser.add_argument("--sequence-parallel", type=str, default="true", choices=["true", "false"])
     parser.add_argument("--gradient-accumulation-fusion", type=str, default="false", choices=["true", "false"])
+    parser.add_argument("--freeze-vit", type=str, default="true", choices=["true", "false"])
+    parser.add_argument("--freeze-aligner", type=str, default="true", choices=["true", "false"])
     parser.add_argument("--tuner-type", default="lora", choices=["lora", "full"])
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=32)
@@ -98,6 +104,13 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
                         help="Save RNG state in checkpoints (required for resume)")
     parser.add_argument("--resume-from", type=str, default=None,
                         help="Path to a checkpoint dir (e.g. .../checkpoint-4) to resume from")
+    parser.add_argument("--save-total-limit", type=int, default=None,
+                        help="Keep only the N most recent checkpoints (deletes older ones)")
+    parser.add_argument("--report-to", type=str, default="none",
+                        choices=["none", "wandb", "tensorboard"],
+                        help="Logging backend (default: none)")
+    parser.add_argument("--wandb-project", type=str, default="maestro-sft",
+                        help="W&B project name (used when --report-to wandb)")
     parser.add_argument("--enable-audio-output", type=int, choices=[0, 1], default=0)
     parser.add_argument("--dry-run", action="store_true")
     args, passthrough = parser.parse_known_args()
@@ -203,6 +216,7 @@ def _build_command(
     train_jsonl: Path,
     val_jsonl: Path,
     output_dir: Path,
+    run_name: str,
     passthrough: list[str],
 ) -> list[str]:
     cmd = [
@@ -212,10 +226,16 @@ def _build_command(
         args.model,
         "--save_safetensors",
         "true",
-        "--dataset",
-        str(train_jsonl.resolve()),
-        "--val_dataset",
-        str(val_jsonl.resolve()),
+    ]
+    if args.cached_dataset:
+        cmd.extend(["--cached_dataset", str(args.cached_dataset.resolve())])
+    else:
+        cmd.extend(["--dataset", str(train_jsonl.resolve())])
+    if args.cached_val_dataset:
+        cmd.extend(["--cached_val_dataset", str(args.cached_val_dataset.resolve())])
+    else:
+        cmd.extend(["--val_dataset", str(val_jsonl.resolve())])
+    cmd += [
         "--load_from_cache_file",
         "true",
         "--tuner_type",
@@ -229,9 +249,9 @@ def _build_command(
         "--freeze_llm",
         "false",
         "--freeze_vit",
-        "true",
+        args.freeze_vit,
         "--freeze_aligner",
-        "true",
+        args.freeze_aligner,
         "--packing",
         args.packing,
         "--micro_batch_size",
@@ -268,11 +288,24 @@ def _build_command(
         str(args.max_length),
         "--dataloader_num_workers",
         str(args.dataloader_num_workers),
+        "--dataloader_pin_memory",
+        "false",
         "--dataset_num_proc",
         str(args.dataset_num_proc),
         "--attention_backend",
         "flash",
+        "--report_to",
+        args.report_to,
     ]
+    if args.report_to == "wandb":
+        cmd.extend([
+            "--wandb_project",
+            args.wandb_project,
+            "--wandb_exp_name",
+            run_name,
+        ])
+    if args.save_total_limit is not None:
+        cmd.extend(["--save_total_limit", str(args.save_total_limit)])
     if not args.save_optim:
         cmd.extend(["--no_save_optim", "true"])
     if not args.save_rng:
@@ -510,6 +543,8 @@ def main() -> None:
         "HF_HOME",
         "HUGGINGFACE_HUB_CACHE",
         "TRANSFORMERS_CACHE",
+        "WANDB_API_KEY",
+        "WANDB_ENTITY",
     ]
     env = {k: os.environ[k] for k in keep_env if k in os.environ}
     if args.cuda_visible_devices:
@@ -519,6 +554,12 @@ def main() -> None:
     env["MASTER_PORT"] = str(args.master_port or env.get("MASTER_PORT") or _pick_free_port())
     env["ENABLE_AUDIO_OUTPUT"] = str(args.enable_audio_output)
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    # Reduce CPU memory pressure for multi-process TP training on low-RAM systems.
+    # MALLOC_ARENA_MAX=2 caps glibc arenas (default 8*nCPU=384 on Threadripper).
+    # MALLOC_TRIM_THRESHOLD_ forces aggressive return of freed pages to OS.
+    env.setdefault("MALLOC_ARENA_MAX", "2")
+    env.setdefault("MALLOC_TRIM_THRESHOLD_", "131072")
 
     if not args.disable_swift_audit or args.enable_experimental_bnb_tp:
         audit_dir = str((Path.cwd() / "tools" / "swift_megatron_audit").resolve())
@@ -546,7 +587,7 @@ def main() -> None:
         # Inherited host/user-site CUDA libs can cause TE/cuDNN symbol mismatches.
         env["LD_LIBRARY_PATH"] = ":".join(libs)
 
-    cmd = _build_command(megatron_bin, args, train_jsonl, val_jsonl, output_dir, passthrough)
+    cmd = _build_command(megatron_bin, args, train_jsonl, val_jsonl, output_dir, run_name, passthrough)
 
     print(f"megatron binary: {megatron_bin}")
     print(f"model: {args.model}")

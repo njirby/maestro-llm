@@ -14,6 +14,8 @@ Usage (inside container):
     python3 live_rollout_runner.py <llm_url> <target_wav> [user_text] [max_s]
 """
 import json
+import os
+import shutil
 import sys
 import time
 
@@ -28,11 +30,27 @@ llm_url = sys.argv[1]
 target = sys.argv[2]
 user_text = sys.argv[3] if len(sys.argv) > 3 else "Recreate this sound in Vital."
 budget = float(sys.argv[4]) if len(sys.argv) > 4 else 1800.0
+sample_id = sys.argv[5] if len(sys.argv) > 5 else ""
+
+# The <env> block in the system message names the working directory, and the
+# model was trained with the per-rollout convention (/work/rollouts/<sid>).
+# Serving from a different cwd changes the FIRST thing in context and puts the
+# model off-distribution immediately — it then invents plausible-looking
+# nonsense instead of following the trained sequence.
+from maestro_plugin.app import rollout_cwd                    # noqa: E402
+CWD = rollout_cwd(sample_id) if sample_id else "/work/live_cwd"
+os.makedirs(CWD, exist_ok=True)
+# skills must resolve relative to that cwd, as they did in training
+if not os.path.exists(os.path.join(CWD, "skills")):
+    for cand in ("/work/live_cwd/skills", "/work/skills"):
+        if os.path.isdir(cand):
+            shutil.copytree(cand, os.path.join(CWD, "skills"))
+            break
 
 cfg = AppConfig(
     llm_url=llm_url,
     model="maestro-main",
-    cwd="/work/live_cwd",
+    cwd=CWD,
     enable_sub_agents=True,
     # Greedy. AppConfig.temperature defaults to None, which omits the field and
     # lets vLLM apply its own default (0.7) — so every "deterministic" rollout

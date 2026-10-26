@@ -55,7 +55,10 @@ def main() -> None:
     print(f"Collected {len(audio_paths)} unique audio paths.", flush=True)
 
     print(f"Loading CLAP on {args.device}...", flush=True)
-    embedder = ClapEmbedder.create(args.device)
+    existing = args.output if args.output.exists() else None
+    embedder = ClapEmbedder.create(args.device, cache_path=existing)
+    if existing:
+        print(f"Loaded {len(embedder._cache)} existing embeddings from {existing}", flush=True)
 
     t0 = time.monotonic()
     done = 0

@@ -128,6 +128,16 @@ def _render_target(job: dict) -> dict | None:
             _rng = random.Random(seed)
             picked_notes, midi_clip_meta = pick_midi_clip(archetype, _midi_catalog, _rng)
             if picked_notes:
+                first_onset = min(n.start for n in picked_notes)
+                if first_onset > 1e-6:
+                    picked_notes = [
+                        pretty_midi.Note(
+                            velocity=n.velocity, pitch=n.pitch,
+                            start=round(n.start - first_onset, 4),
+                            end=round(n.end - first_onset, 4),
+                        )
+                        for n in picked_notes
+                    ]
                 gt_notes = picked_notes
                 clip_dur = max(n.end for n in gt_notes) + 0.25
         if gt_notes is None:
