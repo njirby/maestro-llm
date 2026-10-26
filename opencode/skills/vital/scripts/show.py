@@ -146,7 +146,8 @@ def overview(s):
         fx_on.append(f"{fx} {human(mix, val(s, mix))} wet" if mix else fx)
     out.append("fx on: " + (", ".join(fx_on) if fx_on else "none"))
     out.append(f"global: volume {human('volume', val(s, 'volume'))}, polyphony {val(s, 'polyphony'):g}, "
-               f"legato {human('legato', val(s, 'legato'))}, portamento {human('portamento_on', val(s, 'portamento_on'))}, "
+               f"legato {human('legato', val(s, 'legato'))}, glide "
+               f"{'none' if val(s, 'portamento_time') <= -10 else human('portamento_time', val(s, 'portamento_time'))}, "
                f"velocity_track {human('velocity_track', val(s, 'velocity_track'))}")
     return out
 

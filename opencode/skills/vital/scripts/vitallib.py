@@ -22,7 +22,7 @@ FX = ("chorus", "delay", "reverb", "phaser", "flanger", "distortion", "eq", "com
 FX_MIX = {"chorus": "chorus_dry_wet", "delay": "delay_dry_wet", "reverb": "reverb_dry_wet", "phaser": "phaser_dry_wet",
           "flanger": "flanger_dry_wet", "distortion": "distortion_mix", "compressor": "compressor_mix"}
 GATES = ("osc_1_on", "osc_2_on", "osc_3_on", "sample_on", "filter_1_on", "filter_2_on", "filter_fx_on",
-         *(f"{fx}_on" for fx in FX), "portamento_on")
+         *(f"{fx}_on" for fx in FX))
 MOD_SOURCES = (*(f"lfo_{i}" for i in range(1, 9)), *(f"random_{i}" for i in range(1, 5)),
                *(f"env_{i}" for i in range(1, 7)), *(f"macro_control_{i}" for i in range(1, 5)),
                "mod_wheel", "pitch_wheel", "velocity", "aftertouch", "note", "note_in_octave", "lift", "stereo", "random")
@@ -322,8 +322,11 @@ def why_dead(s: dict, key: str, depth: int = 0) -> str | None:
         if m.group(2) != "bypass" and _on(s, f"modulation_{i}_bypass"):
             return f"mod slot {i} is bypassed"
         return why_dead(s, slot["destination"], depth + 1)
-    if key.startswith("portamento_") and key != "portamento_on" and not _on(s, "portamento_on"):
-        return "portamento is off"
+    # portamento_on is not a gate: glide follows portamento_time alone (-10 = no glide); verified by render
+    if key == "portamento_on":
+        return "no audible effect (glide is set by portamento_time)"
+    if key.startswith("portamento_") and key != "portamento_time" and float(s.get("portamento_time", -10.0)) <= -10.0:
+        return "portamento time is -10 (no glide)"
     return None
 
 

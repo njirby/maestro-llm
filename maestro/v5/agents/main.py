@@ -72,7 +72,7 @@ class Main:
         self.links: list[dict] = []
         self._slots = 0
         self.notes_d = {"bpm": self.s.bpm, "notes": self.notes}
-        self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache")  # host-side only
+        self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache", jobs=4)  # host-side only
 
     # -- helpers -----------------------------------------------------------------------------------------------
 
@@ -228,7 +228,15 @@ class Main:
 
     def gt_gate(self) -> dict:
         """Does the rollout land on the GT? Structural + audio gates (maestro/v5/gate.py), host-side."""
-        g = gate.gate(self.renderer, self.gt, self.ctx.read_json("preset.json"), self.notes_d)
+        final = self.ctx.read_json("preset.json")
+        d = self.ctx.oracle_host_dir   # host-side record of what the gate compared (for debugging dropped rollouts)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "final_preset.json").write_text(json.dumps(final))
+        (d / "gt_preset.json").write_text(json.dumps(self.gt))
+        g = gate.gate(self.renderer, self.gt, final, self.notes_d)
+        takes = {"gt": (self.gt, "")} | {f"gt#{k}": (self.gt, str(k)) for k in range(2, gate.GT_TAKES + 1)}
+        g["audio"]["wavs"] = {k: str(self.renderer.path_of(p, self.notes_d, v)) for k, (p, v) in
+                              {**takes, "final": (final, "")}.items()}
         self.ctx.note(agent=AGENT, event="gt_gate", **g)
         return g
 

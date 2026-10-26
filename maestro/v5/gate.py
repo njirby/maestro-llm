@@ -8,9 +8,10 @@ structural (primary; both presets are known exactly):
     within ABS_TOL
   - wavetables of the three oscillators: same content (hash of the table's groups)
   - LFO shapes of the LFOs those live routes use: identical
-audio (secondary): renders through the GT notes on the rollout's session, host-side
-  - mel_d(final, GT) <= MEL_SCALE * mel_d(GT, GT#2) + MEL_MARGIN_DB, same length
-  - |rms(final) - rms(GT)| <= RMS_TOL_DB + |rms(GT) - rms(GT#2)|   (catches level-only residuals)
+audio (secondary): renders through the GT notes on the rollout's session, host-side; GT_TAKES takes of the GT
+  - mean mel_d(final, GT take) <= MEL_SCALE * floor + MEL_MARGIN_DB, floor = mean pairwise mel_d of the GT takes;
+    same length
+  - |rms(final) - mean rms(GT)| <= RMS_TOL_DB + rms spread of the GT takes   (catches level-only residuals)
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from maestro.sounddiff import vital_facts as vf
 ABS_TOL, REL_TOL = 0.005, 0.01
 MEL_SCALE, MEL_MARGIN_DB = 1.25, 0.3
 RMS_TOL_DB = 0.5
+GT_TAKES = 4
 # keys vital_facts counts as live that cannot change the render: the host sets the tempo from notes.json (SKILL.md
 # rule 7; the skill's vitallib.why_dead says so too)
 HOST_IGNORED = {"beats_per_minute"}
@@ -63,16 +65,22 @@ def structural(gt: dict, final: dict) -> dict:
 
 
 def audio(renderer, gt: dict, final: dict, notes: dict) -> dict:
+    """GT_TAKES renders of the GT (render-noise floor = mean pairwise mel distance; a single pair understates noisy
+    patches) and one of the final; final-vs-GT = mean mel distance to the GT takes."""
+    from itertools import combinations
     from maestro.sounddiff.verified import mel_d, rms_dbfs
-    w = renderer({"gt": gt, "gt#2": gt, "final": final}, notes)
-    floor, d = mel_d(w["gt"], w["gt#2"]), mel_d(w["final"], w["gt"])
-    r_gt, r_gt2, r_f = rms_dbfs(w["gt"]), rms_dbfs(w["gt#2"]), rms_dbfs(w["final"])
+    names = ["gt"] + [f"gt#{k}" for k in range(2, GT_TAKES + 1)]
+    w = renderer({**{n: gt for n in names}, "final": final}, notes)
+    floor = sum(mel_d(w[a], w[b]) for a, b in combinations(names, 2)) / (GT_TAKES * (GT_TAKES - 1) / 2)
+    d = sum(mel_d(w["final"], w[n]) for n in names) / GT_TAKES
+    r_gt = [rms_dbfs(w[n]) for n in names]
+    r_mean, r_f = sum(r_gt) / GT_TAKES, rms_dbfs(w["final"])
     limit = MEL_SCALE * floor + MEL_MARGIN_DB
-    rms_limit = RMS_TOL_DB + abs(r_gt - r_gt2)
-    ok = d <= limit and abs(r_f - r_gt) <= rms_limit and len(w["final"]) == len(w["gt"])
+    rms_limit = RMS_TOL_DB + (max(r_gt) - min(r_gt))
+    ok = d <= limit and abs(r_f - r_mean) <= rms_limit and all(len(w["final"]) == len(w[n]) for n in names)
     return {"pass": bool(ok), "final_vs_gt_db": round(d, 3), "gt_vs_gt_db": round(floor, 3),
-            "limit_db": round(limit, 3), "rms_final_dbfs": round(r_f, 2), "rms_gt_dbfs": round(r_gt, 2),
-            "rms_diff_db": round(r_f - r_gt, 2), "rms_limit_db": round(rms_limit, 2),
+            "limit_db": round(limit, 3), "rms_final_dbfs": round(r_f, 2), "rms_gt_dbfs": round(r_mean, 2),
+            "rms_diff_db": round(r_f - r_mean, 2), "rms_limit_db": round(rms_limit, 2), "gt_takes": GT_TAKES,
             "len_final": len(w["final"]), "len_gt": len(w["gt"])}
 
 

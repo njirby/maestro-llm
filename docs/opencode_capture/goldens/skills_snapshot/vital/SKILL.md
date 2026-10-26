@@ -148,9 +148,9 @@ Enum labels for any switch/selector: `show.py preset.json KEY` (e.g. `delay_temp
 
 ## Rules
 
-1. **Gate first.** Sections off by default: `filter_1/2/fx`, every FX unit, `sample`,
-   `portamento`, oscs 2-3. A parameter in an off section does nothing — turn the gate on in the
-   same set.py call.
+1. **Gate first.** Sections off by default: `filter_1/2/fx`, every FX unit, `sample`, oscs 2-3.
+   A parameter in an off section does nothing — turn the gate on in the same set.py call.
+   Glide is the exception: `portamento_time` alone sets it (-10 = none; `portamento_on` changes nothing).
 2. **Mode before amount.** `osc_N_distortion_type`, `osc_N_spectral_morph_type`,
    `distortion_filter_order` at index 0 make their amounts dead.
 3. **One subsystem per round, then render and listen.** Order: oscillator/wavetable →
