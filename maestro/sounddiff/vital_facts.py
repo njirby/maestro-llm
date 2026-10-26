@@ -96,6 +96,8 @@ def why_dead(s: dict, key: str, depth: int = 0) -> str | None:
         return None
     if key in ("bypass",) or key.startswith(("view_", "osc_1_view", "osc_2_view", "osc_3_view")) or key.endswith("_view_2d"):
         return "UI-only" if key != "bypass" else None
+    if key == "beats_per_minute":  # the host sets the tempo (render.py set_bpm); the preset's value never sounds
+        return "tempo comes from the host"
     m = re.match(r"osc_(\d)_(.+)", key)
     if m:
         n, p = m.group(1), m.group(2)
@@ -243,7 +245,7 @@ def diff(a: dict, b: dict) -> list[dict]:
     out = []
     for k in sorted(set(a) | set(b)):
         va, vb = a.get(k), b.get(k)
-        if k in ("modulations", "wavetables", "lfos", "sample") or va == vb:
+        if k in ("modulations", "wavetables", "lfos", "sample", "beats_per_minute") or va == vb:
             continue
         if isinstance(va, (int, float)) and isinstance(vb, (int, float)) and math.isclose(va, vb, rel_tol=1e-6, abs_tol=1e-9):
             continue

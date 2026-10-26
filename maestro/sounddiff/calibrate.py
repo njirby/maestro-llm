@@ -2,7 +2,11 @@
 measured), so first-impression buckets mean "darker than most generated presets" rather than an arbitrary Hz cut, and
 an adjective is only used when CLAP prefers it unusually strongly for this sound.
 
-  .venv/bin/python -m maestro.sounddiff.calibrate outputs/sounddiff/refset   # -> maestro/sounddiff/calib.json
+  .venv/bin/python -m maestro.sounddiff.calibrate outputs/sounddiff/refset_v2   # -> maestro/sounddiff/calib.json
+
+refset_v2 (2026-10-26, refset.py): fixed preset_gen + loudness normalization / level QC, rendered by the skill's
+render.py; the v1 set (outputs/sounddiff/refset, render_pairs, pre-fix generator) and its calibration
+(refset/calib_v1.json) are kept for reference.
 
 Also prints adjective sanity correlations against descriptors (does "plucky" track low sustain, "dark" low centroid?);
 adjectives whose sanity check fails are listed in calib.json "adj_drop" and never emitted.
