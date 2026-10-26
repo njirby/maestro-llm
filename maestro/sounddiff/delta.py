@@ -179,10 +179,9 @@ def dim_moves(a, b, edited=()) -> dict:
         (0, 0) if abs(lv) < 0.75 else (None, 0)
     sa, sb = a.space(), b.space()
     out["space"] = _modules_dir({k: RANK[v] for k, v in sa.items()}, {k: RANK[v] for k, v in sb.items()}, edited)
-    if out["space"][0] == 0:  # same audible FX, but the tail may still have grown / shrunk
-        t = _desc_dir("tail_s", a, b)
-        if t[0]:
-            out["space"] = t
+    # the ring-out after notes is its own dimension: with the same audible reverb / delay, a longer tail is the notes'
+    # own release (amp envelope), and calling it 'space' made narrators hear echo on dry clips (v5 env rounds)
+    out["tail"] = _desc_dir("tail_s", a, b) if out["space"][0] == 0 else (None, 0)
     out["movement"] = _modules_dir(_mv_ranks(a), _mv_ranks(b))
     out["distortion"] = _modules_dir({"distortion": RANK[a.distortion()]}, {"distortion": RANK[b.distortion()]},
                                      edited)
@@ -197,7 +196,7 @@ def _space_words(s) -> str:
     sp = s.space()
     parts = [f"{ {'subtle': 'a touch of', 'clear': 'noticeable', 'strong': 'lots of'}[v]} {w}"
              for w, v in (("reverb", sp["reverb"]), ("delay echoes", sp["delay"])) if v]
-    return ", ".join(parts) if parts else "dry"
+    return ", ".join(parts) if parts else "dry: no reverb or echo"
 
 
 def _mv_words(s) -> str:
@@ -287,9 +286,9 @@ def notes_self_edit(before, after, notes, *, renderer) -> dict:
                      + (f". Inaudible on its own: {', '.join(mute)}" if mute else "") + ".")
         L += _move_lines(moves, A, B)
     dirs = {d: v[0] for d, v in moves.items() if v[0] is not None and d in
-            ("brightness", "level", "space", "width", "movement", "distortion", "attack", "sustain")}
+            ("brightness", "level", "space", "width", "movement", "distortion", "attack", "sustain", "tail")}
     if not overall and not silent:
-        dirs = {d: 0 for d in ("brightness", "level", "space", "width", "movement", "distortion", "attack", "sustain")}
+        dirs = {d: 0 for d in ("brightness", "level", "space", "width", "movement", "distortion", "attack", "sustain", "tail")}
     check = {"mode": "self_edit", "overall": overall or "none", "dirs": dirs,
              "flags": {} if silent else _flags_both(A, B)}
     path = getattr(renderer, "path_of", None)
@@ -309,6 +308,10 @@ LINES = {
         "width": ("Stereo", "{s} wider", "{s} narrower", "same width"),
         "attack": ("Attack", "{s} slower, softer", "{s} snappier", "same"),
         "sustain": ("Note length", "notes hold {s} longer", "notes die away {s} faster", "same"),
+        "tail": ("Ring-out after each note", "{s} longer: the notes themselves ring out longer after they're released "
+                 "(the note's own release, not reverb or echo; the space is unchanged)",
+                 "{s} shorter: the notes themselves stop sooner after they're released (the note's own release, not "
+                 "less reverb or echo; the space is unchanged)", "same"),
         "overtones": ("Overtones", "{s} more, buzzier", "{s} fewer, smoother", "same"),
         "noise": ("Noise", "noisier, hissier", "cleaner, less hiss", "same"),
     },
@@ -322,6 +325,9 @@ LINES = {
         "attack": ("Attack", "the target's is {s} slower, softer", "the target's is {s} snappier", "same"),
         "sustain": ("Note length", "the target's notes hold {s} longer", "the target's notes die away {s} faster",
                     "same"),
+        "tail": ("Ring-out after each note", "the target's notes themselves ring out {s} longer after they're "
+                 "released (the note's own release, not reverb or echo)", "the target's notes themselves stop {s} "
+                 "sooner after they're released (the note's own release, not reverb or echo)", "same"),
         "overtones": ("Overtones", "the target has {s} more, buzzier", "the target has {s} fewer, smoother", "same"),
         "noise": ("Noise", "the target is noisier", "the target is cleaner", "same"),
     },
@@ -337,6 +343,8 @@ def _move_lines(m: dict, A, B, *, tvc=False) -> list[str]:
     L = []
     for dim, (label, up, down, same) in LINES[mode].items():
         d, n = m.get(dim, (None, 0))
+        if dim == "tail" and d is None:  # covered by the space line (the reverb / delay changed), or too small
+            continue
         if d is None:
             txt = "different in kind" if n == -1 else f"{same} or close to it (too small to call)"
         elif d == 0:
@@ -408,7 +416,7 @@ def notes_target_vs_current(target, before, after, notes, *, renderer, next_subs
             if nxt:
                 L.append(f"- Next: {SUB_LABEL[nxt]}: setting them like the target's audibly closes part of the gap.")
     dirs = {d: v[0] for d, v in moves.items() if v[0] is not None and d in
-            ("brightness", "level", "space", "width", "movement", "distortion", "attack", "sustain")}
+            ("brightness", "level", "space", "width", "movement", "distortion", "attack", "sustain", "tail")}
     check = {"mode": "target_vs_current", "overall": overall or "none", "dirs": dirs, "trajectory": traj,
              "flags": {} if silent else _flags_both(T, C)}
     path = getattr(renderer, "path_of", None)
@@ -420,8 +428,10 @@ def notes_target_vs_current(target, before, after, notes, *, renderer, next_subs
 
 
 # ---------------------------------------------------------------------------------------------------- narrators
+OPENER = "Start with the sound itself, not with an interjection or filler word."
 STYLE = ("Keep subtle things subtle, don't claim anything the notes rule out, and don't read the notes back as a list. "
-         "No numbers, parameter names or synth-engineering jargon. Reply with just what you'd say, in English.")
+         "No numbers, parameter names or synth-engineering jargon. " + OPENER + " Reply with just what you'd say, in "
+         "English.")
 SE_TASK = ("say what you hear changed, the way a producer would to a collaborator right after making the edit, in 1-3 "
            "sentences, in your own words: lead with what changed most, and if the edit made no audible difference, "
            "say so.")
@@ -436,7 +446,7 @@ PROMPTS = {
                            "\n\nThe notes are accurate. Using them, " + SE_TASK + " " + STYLE,
     ("self_edit", "audio"): "Clip 1 is your synth patch before your last edit, clip 2 is after it; same part both "
                             "times. Listen carefully and " + SE_TASK + " Don't claim changes you can't hear. "
-                            "No numbers, parameter names or synth-engineering jargon. Reply with just what you'd say, "
+                            "No numbers, parameter names or synth-engineering jargon. " + OPENER + " Reply with just what you'd say, "
                             "in English.",
     ("target_vs_current", "omni"): "Clip 1 is the target sound you're recreating. Clip 2 is your synth patch before "
                                    "your last edit, clip 3 is your patch now; same part in all three. {notes}\n\nThe "
@@ -447,7 +457,7 @@ PROMPTS = {
     ("target_vs_current", "audio"): "Clip 1 is the target sound you're recreating. Clip 2 is your synth patch before "
                                     "your last edit, clip 3 is your patch now; same part in all three. Listen carefully "
                                     "and " + TVC_TASK + " Don't claim differences you can't hear. No numbers, parameter "
-                                    "names or synth-engineering jargon. Reply with just what you'd say, in English.",
+                                    "names or synth-engineering jargon. " + OPENER + " Reply with just what you'd say, in English.",
 }
 CLIPS = {"self_edit": [("Clip 1 (before):", "before"), ("Clip 2 (after):", "after")],
          "target_vs_current": [("Clip 1 (target):", "target"), ("Clip 2 (your patch before the edit):", "before"),

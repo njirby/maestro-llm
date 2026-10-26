@@ -94,9 +94,9 @@ DIR_CLAIMS = {
               r"turned (it )?up|\bhotter\b",
               r"\bquieter\b|softer overall|less volume|lower volume|(level|volume) (dropped|went down|came down)|"
               r"turned (it )?down|(volume|level) down a (hair|touch|bit|notch)"),
-    "space": (r"more (reverb|echo\w*|delay|space(?! between)|ambience|room(?! between)|tail)|\bwetter\b|\broomier\b|longer tail|"
+    "space": (r"more (reverb|echo\w*|delay|space(?! between)|ambience|room(?! between))|\bwetter\b|\broomier\b|"
               r"(adds?|added|adding|introduc\w*) (a |some |more )?(reverb|echo\w*|delay|space|ambience)",
-              r"\bdrier\b|less (reverb|echo\w*|delay|space|ambience|room)|shorter tail|"
+              r"\bdrier\b|less (reverb|echo\w*|delay|space|ambience|room)|"
               r"(reverb|echo\w*|delay|tail) (is |has )?(gone|been removed|removed|cut)"),
     "width": (r"\bwider\b|more (width|stereo|spread)|\bwiden\w*",
               r"\bnarrower\b|less (width|stereo|spread)|more (centered|centred|mono)"),
@@ -109,8 +109,11 @@ DIR_CLAIMS = {
                    r"less (grit|distortion|drive|crunch)|(distortion|grit) (is |has )?(gone|been removed)"),
     "attack": (r"(slower|softer|gentler) attack|(fades?|swells?) in (more )?slowly",
                r"(snappier|faster|sharper|punchier) attack|\bsnappier\b"),
-    "sustain": (r"(hold|ring|sustain)s? (out )?longer|more sustain|lingers? longer",
+    "sustain": (r"(hold|sustain)s? longer|more sustain",
                 r"die (away )?(faster|quicker|sooner)|less sustain|\bpluckier\b|more plucky"),
+    # ring-out after the note is released (the amp envelope's release; reverb / echo claims are 'space')
+    "tail": (r"ring(s|ing)? out longer|linger\w* longer|longer (tail|release|ring[- ]out)|trail\w* off longer",
+             r"(stop|cut|end)s? (off )?(sooner|quicker|faster|shorter)|shorter (tail|release|ring[- ]out)"),
 }
 # 'unchanged' claims per dimension: flagged when the dimension measurably moved
 SAME_CLAIMS = {
@@ -195,11 +198,17 @@ def hit(text: str, delta: dict) -> bool:
     return any(delta["dirs"].get(dim) == c for dim, c in dir_claims(text, delta["mode"]))
 
 
+# conversational filler opening a narration ("Yeah, that got brighter"): a tic, regenerated
+OPENER_TIC = re.compile(r"^\W*(yeah|yep|yes|okay|ok|alright|all right|right|so|well|hey|hmm+|oh|sure)\b[,.!:—-]", re.I)
+
+
 def check_delta(text: str, delta: dict) -> list[str]:
     """delta = {"mode": "self_edit"|"target_vs_current", "overall": none|subtle|clear|strong (the compared pair),
     "dirs": {dim: +1/-1/0} (self_edit: after vs before; tvc: target vs your patch now), "flags": state flags true in
     every clip, "trajectory": closer|same|further (tvc)}"""
     probs = _basic(text)
+    if OPENER_TIC.search(text):
+        probs.append("interjection opener")
     probs += [f"state: {p}" for p in check_state(text, delta.get("flags", {}), DELTA_STATE_KEYS) if p not in probs]
     tvc = delta["mode"] == "target_vs_current"
     overall = delta["overall"]

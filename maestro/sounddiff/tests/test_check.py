@@ -224,3 +224,33 @@ def test_dimension_spot_on_is_not_a_match_claim():  # t045
 def test_possessive_target_is_subject():  # t058
     t = "The biggest thing left is that my patch still feels too upfront compared to the target's darker quality."
     assert not [p for p in check_delta(t, TVC2) if "brightness" in p]
+
+
+def test_interjection_opener_flagged():  # WS-A rollouts: 27B edit narrations opening with "Yeah,"
+    for t in ("Yeah, that last tweak was clearly audible and pulled me closer; the target is still darker than mine.",
+              "Okay, so the main change is that it got much brighter and quieter, the space stayed the same though.",
+              "Alright, that made it a lot brighter and a bit quieter, everything else sits where it was before.",
+              "Hey, good news: it's way brighter now and a bit quieter, with the movement exactly where it was."):
+        assert "interjection opener" in check_delta(t, SE)
+    assert "interjection opener" not in check_delta(
+        "Much brighter now, and a bit quieter; yeah, the space and movement stay where they were before.", SE)
+    assert "interjection opener" not in check_delta(
+        "Sounds way brighter now and a bit quieter, with the space and the movement right where they were.", SE)
+
+
+# v5 env rounds (narr_defer1b slots 04 / 06): a longer release on a dry patch is ring-out, not space
+ENV = {"mode": "self_edit", "overall": "clear", "dirs": {"space": 0, "tail": 1, "attack": 0, "movement": 0},
+       "flags": {"dry": True, "no_dist": True, "steady": True}}
+
+
+def test_ring_out_is_not_space():
+    t = ("The notes now ring out longer after they're released, a softer, longer release on each one, while the space "
+         "stays completely dry.")
+    assert check_delta(t, ENV) == []
+
+
+def test_echo_on_release_edit_flagged():  # slot 06 narration
+    t = ("A little more echo is hanging around the notes now, and the held notes fade gently instead of staying "
+         "solid.")
+    p = check_delta(t, ENV)
+    assert "state: reverb/echo on a dry clip" in p and "claims space up, measured unchanged" in p
