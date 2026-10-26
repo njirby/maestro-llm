@@ -70,7 +70,9 @@ for this. A message diff that disappears when all numbers are masked is reported
 Final workdir (`rollout` mode, `final_dir`): the rollout's final workdir (`<run>/_sessions/*/<sample>`)
 is compared with the replay's: same file set and byte-identical non-audio files (preset.json,
 notes.json, probe/judge presets) are required (kinds `workdir_files`, `workdir_content`); audio files
-are only reported with their mel distance.
+are only reported with their mel distance. When the workdir was purged, `rollout` mode uses
+`<run>/oracle/<sample>/final_workdir.json` (path, size, sha256 per file) instead: same file set and
+non-audio sha256 are checked; audio is reported by size difference only.
 
 Render noise (measured on the first v5 smoke rollout): the same preset rendered repeatedly in the
 same container gives 0.5-0.8 dB for simple probes but 2.0-2.7 dB (init preset + one wavetable) and

@@ -53,7 +53,10 @@ def notes_first_impression(target, notes, *, renderer) -> dict:
     out = {"text": notes_text(st), "facts": st.flags(), "audible": {k: list(v) for k, v in st.aud.items()},
            "silent": st.silent, "floor": st.floor}
     if hasattr(renderer, "path_of"):
-        out["audio"] = str(renderer.path_of({"settings": st.settings}, st.notes))
+        audio = renderer.path_of({"settings": st.settings}, st.notes)  # cache key = settings: the file just rendered
+        if not audio.exists():
+            raise FileNotFoundError(f"render of the verified patch not found at {audio}")
+        out["audio"] = str(audio)
     return out
 
 

@@ -65,6 +65,9 @@ def _basic(text: str) -> list[str]:
     return probs
 
 
+FREE = re.compile(r"\w*[- ]?free\b", re.I)
+
+
 def negated(text: str, i: int) -> bool:
     """A negation in the clause before i, or, when the claim sits in a comma list ('it isn't louder, brighter, or more
     open'), in the clause that opens the list: earlier comma segments of at most 3 words are list items."""
@@ -86,7 +89,8 @@ def negated(text: str, i: int) -> bool:
 def _claimed(pat: str, text: str):
     """Non-negated matches of pat."""
     for m in re.finditer(pat, text, re.I):
-        if not negated(text, m.start()):
+        # '-free' compounds negate the word they attach to ('echo-free', 'distortion-free')
+        if not negated(text, m.start()) and not FREE.match(text, m.end()):
             yield m
 
 
@@ -120,7 +124,8 @@ DIR_CLAIMS = {
               r"\bnarrower\b|less (width|stereo|spread)|more (centered|centred|mono)"),
     "movement": (r"more (movement|wobble|pulsing|motion|vibrato)|(adds?|added|introduc\w*) (a |some )?"
                  r"(wobble|pulsing|pulse|movement|vibrato|tremolo|sweep)|now (wobbles|pulses|sweeps)",
-                 r"(?<!hold )(?<!holds )(?<!held )(?<!holding )\bsteadier\b(?! and (a little |a bit |slightly )?longer)|"
+                 r"(?<!hold )(?<!holds )(?<!held )(?<!holding )(?<!hang )(?<!hangs )(?<!hanging )(?<!sustain )(?<!sustains )"
+                 r"(?<!ring )(?<!rings )\bsteadier\b(?! and (a little |a bit |slightly )?longer)|"
                  r"less (movement|wobble|pulsing|motion)|(wobble|pulsing|movement|vibrato) (is |has )?"
                  r"(gone|stopped|been removed)|no longer (wobbles|pulses|moves)"),
     "distortion": (r"more (grit|distortion|drive|crunch|dirt|saturation)|\bgrittier\b|\bdirtier\b|\bcrunchier\b|"

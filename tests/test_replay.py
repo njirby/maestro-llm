@@ -425,3 +425,46 @@ def test_stage_root_stages_all_config(tmp_path):
     assert all((tmp_path / "r" / "config" / n).is_symlink() for n in staged)
     H.stage_root(tmp_path / "s", with_plugin=False)
     assert "plugin" not in [p.name for p in (tmp_path / "s" / "config").iterdir()]
+
+
+@pytest.mark.parametrize("shape", ["list", "files", "dict"])
+def test_compare_workdirs_manifest(tmp_path, shape):
+    import hashlib
+    from opencode.replay import harness as H
+    a, b = tmp_path / "a", tmp_path / "b"
+    for d in (a, b):
+        d.mkdir()
+        (d / "notes.json").write_text('{"notes": []}')
+    _wav(a / "r01.wav", 110)
+    _wav(b / "r01.wav", 110, phase=1.3)
+    ents = [{"path": str(p.relative_to(a)), "size": p.stat().st_size,
+             "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(a.rglob("*")) if p.is_file()]
+    m = {"list": ents, "files": {"files": ents}, "dict": {e["path"]: e for e in ents}}[shape]
+    (tmp_path / "m.json").write_text(json.dumps(m))
+    man = H.load_manifest(tmp_path / "m.json")
+    w = H.compare_workdirs(man, b)
+    assert w["source"] == "manifest" and w["diffs"] == [] and w["identical"] == 1
+    assert w["audio_rerendered"] == {"r01.wav": 0}                      # size difference, no samples
+    (b / "notes.json").write_text('{"notes": [1]}')
+    (b / "extra.json").write_text("{}")
+    assert [d["kind"] for d in H.compare_workdirs(man, b)["diffs"]] == ["workdir_files", "workdir_content"]
+    w = H.compare_workdirs(man, b, copies=a)                           # non-audio copies: unified diff
+    assert "+{\"notes\": [1]}" in w["diffs"][1]["detail"]["notes.json"]
+
+
+def test_stream_interleave_whitelisted_only_for_moved_stderr_lines(golden):
+    recs, _ = golden
+    rec = copy.deepcopy(recs["maestro"])
+    i = next(i for i, m in enumerate(rec["messages"]) if m["role"] == "tool_response")
+    rec["messages"][i]["content"] = "slot 1 a\nslot 2 b\nerror: amount 1.38 out of range\nslot 3 c\nslot 4 d"
+    step = next(k for k, (a, _) in enumerate(R.record_steps(rec["messages"])) if a > i)
+
+    def run(out):
+        body = _request(rec, step)
+        next(m for m in body["messages"] if m["role"] == "tool")["content"] = out
+        return R.compare_request(body, rec, step, _digests(rec))
+    moved = run("slot 1 a\nslot 2 b\nslot 3 c\nerror: amount 1.38 out of range\nslot 4 d")
+    assert moved["status"] == "match" and [w["kind"] for w in moved["whitelisted"]] == ["stream_interleave"]
+    assert run("slot 1 a\nslot 3 c\nslot 2 b\nerror: amount 1.38 out of range\nslot 4 d")["status"] == "diff"  # stdout reorder
+    assert run("slot 1 a\nslot 2 b\nslot 3 c\nerror: amount 1.39 out of range\nslot 4 d")["status"] == "diff"  # other text
+    assert run("slot 1 a\nslot 2 b\nslot 3 c\nslot 4 d")["status"] == "diff"                                   # line lost

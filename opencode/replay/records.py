@@ -269,6 +269,9 @@ WHITELIST = {
     "skill_files": "the <skill_files> sample (ripgrep order, max 10): only the count and that every "
                    "entry lies under the skill's base directory are compared",
     "glob_order": "glob result lines (mtime order): compared as a sorted list",
+    "stream_interleave": "bash output whose only difference is where stderr-shaped lines (error:/warning:) "
+                         "land among stdout lines (OpenCode reads the two pipes separately: a race); "
+                         "same lines, everything else in order",
     "media_render": "audio produced during the rollout (not in the initial workdir) whose sha256 differs: "
                     "equivalent by state (the producing tool calls and final non-audio workdir are "
                     "byte-identical); fails only on gross breakage: length > one block off, silence "
@@ -356,6 +359,26 @@ def mask_numbers(messages: list[dict[str, str]]) -> list[dict[str, str]]:
             for m in messages]
 
 
+STDERR_LINE = re.compile(r"(?i)^(error|warning)\b")
+
+
+def stream_canon(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Tool responses with their stderr-shaped lines ("error: ...", "warning: ...") moved to the end in
+    sorted order. OpenCode's bash tool reads stdout and stderr through separate listeners, so where a
+    stderr line lands among stdout lines is a race; two outputs equal under this canon hold the same
+    lines with only stderr-shaped lines moved (whitelist: stream_interleave)."""
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if m["role"] == "tool_response" and isinstance(c, str):
+            lines = c.split("\n")
+            err = [ln for ln in lines if STDERR_LINE.match(ln)]
+            if err:
+                c = "\n".join([ln for ln in lines if not STDERR_LINE.match(ln)] + ["--stderr--"] + sorted(err))
+        out.append({**m, "content": c})
+    return out
+
+
 MediaEq = Callable[[int, str], "dict[str, Any] | None"]
 
 
@@ -380,8 +403,12 @@ def compare_request(body: dict[str, Any], record: dict[str, Any], step: int,
         if g[:1] != e[:1]:
             diffs.append({"kind": "system", "detail": unified(_render(e[:1]), _render(g[:1]), "record", "opencode")})
         if g[1:] != e[1:]:
-            kind = "numeric" if mask_numbers(g[1:]) == mask_numbers(e[1:]) else "messages"
-            diffs.append({"kind": kind, "detail": unified(_render(e[1:]), _render(g[1:]), "record", "opencode")})
+            detail = unified(_render(e[1:]), _render(g[1:]), "record", "opencode")
+            if stream_canon(g[1:]) == stream_canon(e[1:]):
+                whitelisted.append({"kind": "stream_interleave", "detail": detail})
+            else:
+                kind = "numeric" if mask_numbers(g[1:]) == mask_numbers(e[1:]) else "messages"
+                diffs.append({"kind": kind, "detail": detail})
     n = count_media(exp)
     exp_media = media_digests[:n]
     got_sha = [x.get("sha256") if isinstance(x, dict) else media_digest(x)["sha256"] for x in got_media]

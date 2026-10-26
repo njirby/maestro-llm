@@ -48,7 +48,9 @@ def _as_preset(p) -> dict:
 
 
 def _key(preset: dict, notes: dict, variant: str) -> str:
-    h = hashlib.sha1(json.dumps(preset, sort_keys=True, separators=(",", ":")).encode())
+    """Cache key of a render: the preset's settings only (top-level metadata such as names / comments does not sound),
+    the notes and the take variant. A bare settings dict and the full preset holding it get the same key."""
+    h = hashlib.sha1(json.dumps(_as_preset(preset)["settings"], sort_keys=True, separators=(",", ":")).encode())
     h.update(json.dumps(notes, sort_keys=True).encode())
     h.update(variant.encode())
     return h.hexdigest()[:20]

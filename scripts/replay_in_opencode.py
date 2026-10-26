@@ -27,6 +27,7 @@ import hashlib
 import json
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -62,7 +63,7 @@ def summarize(rep: dict) -> int:
             print(f"  DIFF #{r['seq']} {r['route']} step {r['step']}: " + ", ".join(d["kind"] for d in r["diffs"]))
     if rep.get("workdir_check"):
         w = rep["workdir_check"]
-        print(f"  final workdir: {w['files']} files, {w['identical']} identical, "
+        print(f"  final workdir ({w.get('source', 'workdir')}): {w['files']} files, {w['identical']} identical, "
               f"{len(w['audio_rerendered'])} re-rendered audio ({len(w['audio_over_threshold'])} over threshold)")
     print(f"report: {rep.get('run_dir', '')}/report.md")
     return 0 if rep["diffs"] == 0 and rep["compared"] > 0 else 1
@@ -97,6 +98,7 @@ def main() -> int:
     ro.add_argument("--port", type=int, default=8911)
     ro.add_argument("--timeout", type=int, default=1800)
     ro.add_argument("--keep-container", action="store_true")
+    ro.add_argument("--jobs", type=int, default=1, help="rollouts replayed in parallel (one container each)")
     ro.add_argument("--max-mel-db", type=float, default=AE.DEFAULT_MAX_DB)
     rp = sub.add_parser("report")
     rp.add_argument("run_dir")
@@ -138,21 +140,48 @@ def main() -> int:
         if a.sample:
             index = [e for e in index if e["sample_id"] in a.sample]
         init_root = Path(a.init_root) if a.init_root else run / "init"
-        rc = 0
+        jobs = []
         for e in index:
             init = Path(e["init_dir"]) if e.get("init_dir") and not a.init_root else init_root / e["sample_id"]
             if not init.is_dir():
                 raise SystemExit(f"{init}: missing initial workdir (WS-A writes <run>/init/<sample>)")
-            subs = [recs[link["record_id"]] for link in e["links"]]
             finals = sorted(run.glob(f"_sessions/*/{e['sample_id']}"))
-            print(f"== {e['sample_id']}: main + {len(subs)} subagent records")
-            rep = H.replay(recs[e["main_id"]], subs, out / e["sample_id"], init_dir=init, port=a.port,
-                           timeout_s=a.timeout, keep_container=a.keep_container, max_mel_db=a.max_mel_db,
-                           final_dir=finals[0] if len(finals) == 1 else None)
+            manifest = Path(e.get("final_workdir") or run / "oracle" / e["sample_id"] / "final_workdir.json")
+            final = finals[0] if len(finals) == 1 else manifest if manifest.is_file() else None
+            jobs.append((e, init, final))
+
+        def one(job):
+            e, init, final = job
+            subs = [recs[link["record_id"]] for link in e["links"]]
+            print(f"== start {e['sample_id']}: main + {len(subs)} subagent records", flush=True)
+            try:
+                return e["sample_id"], H.replay(recs[e["main_id"]], subs, out / e["sample_id"], init_dir=init,
+                                                port=a.port, timeout_s=a.timeout, keep_container=a.keep_container,
+                                                max_mel_db=a.max_mel_db, final_dir=final), None
+            except Exception as ex:  # one broken rollout must not lose the others' reports
+                return e["sample_id"], None, f"{type(ex).__name__}: {ex}"
+
+        with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
+            results = sorted(pool.map(one, jobs), key=lambda r: r[0])
+        rc = 0
+        table = []
+        for sid, rep, err in results:
+            print(f"== {sid}")
+            if err:
+                print(f"  ERROR {err}")
+                rc |= 1
+                table.append({"sample": sid, "error": err})
+                continue
             rc |= summarize(rep)
-            if inputs_sig() != sig0:
-                print(f"ERROR: {run} records changed during the replay (a rebuild in progress?); results invalid")
-                return 2
+            table.append({"sample": sid, "requests": rep["requests"], "matches": rep["matches"], "diffs": rep["diffs"],
+                          "by_kind": rep["by_kind"], "opencode_exit": rep["opencode_exit"],
+                          "elapsed_s": rep["elapsed_s"], "workdir_check": rep.get("workdir_check")})
+        if inputs_sig() != sig0:
+            print(f"ERROR: {run} records changed during the replay (a rebuild in progress?); results invalid")
+            rc = 2
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "summary.json").write_text(json.dumps({"run": str(run), "rc": rc, "rollouts": table}, indent=1))
+        print(f"summary: {out / 'summary.json'}")
         return rc
     run = Path(a.run_dir).resolve()
     records = json.loads((run / "io/records.json").read_text())

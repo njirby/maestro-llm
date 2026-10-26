@@ -31,6 +31,31 @@ NOTE_NAMES = "C C# D D# E F F# G G# A A# B".split()
 # sound between notes relative to the notes (dB, gap_fill_db): above CONT the notes run into each other, below SEP the
 # gaps are clean silence (probe1 f038: short notes, release filling the gaps, heard as one unbroken line)
 CONT_DB, SEP_DB = -12.0, -40.0
+# onset-local audibility (maestro.synth.transition_metric): ablations whose effect lives in the first ~100 ms after
+# pitch-changing onsets (glide, envelope -> pitch / level) are also measured on those windows, and the strength comes
+# from the larger of the whole-clip and the local excess over the floor (probe1: 12/150 notes change, all onset-local).
+ONSET_LOCAL = True
+
+
+def onset_local(name: str) -> bool:
+    """Ablations / edit units whose audible effect sits right after note onsets."""
+    if name.startswith("glide:") or name in ("env:1",) or name.startswith("other:portamento"):
+        return True
+    if name.startswith("mod:env"):
+        dsts = name.partition("->")[2]
+        return any(x in dsts for x in ("_tune", "_transpose", "_level", "volume"))
+    return False
+
+
+def local_excess(a, b, floor_pairs, notes) -> float | None:
+    """transition_mel_d(a, b) minus the mean local distance over floor_pairs (two takes of one patch), or None when
+    the part has no pitch-change onsets."""
+    from maestro.synth.transition_metric import transition_mel_d
+    fl = [transition_mel_d(x, y, notes) for x, y in floor_pairs]
+    d = transition_mel_d(a, b, notes)
+    if d is None or any(f is None for f in fl):
+        return None
+    return d - float(np.mean(fl))
 
 
 def settings_of(p) -> dict:
@@ -369,7 +394,10 @@ def build_state(preset, notes, wavs: dict) -> State:
     for k, y in w.items():
         if k in ("full", "full#2"):
             continue
-        s_ = strength(mel_d(w["full"], y) - st.floor)
+        x = mel_d(w["full"], y) - st.floor
+        if ONSET_LOCAL and onset_local(k):
+            x = max(x, local_excess(w["full"], y, [(w["full"], w["full#2"])], n) or -1e9)
+        s_ = strength(x)
         if s_:
             st.aud[k] = (s_, describe_module(k, d, descriptors(y, n)))
     return st

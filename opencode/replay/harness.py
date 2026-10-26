@@ -111,7 +111,7 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
     user message with media placeholders removed). attach: container paths passed as `-f`.
     base_dir resolves relative `audios` paths. max_mel_db: audio-equivalence threshold for re-rendered
     clips (audio_eq); clips whose bytes were in init_dir must match exactly. final_dir: the rollout's
-    final workdir, compared with the replay's (compare_workdirs). agent: `opencode run --agent`
+    final workdir (or its final_workdir.json manifest), compared with the replay's (compare_workdirs). agent: `opencode run --agent`
     (default none: the config's default primary agent, stock `build`)."""
     run_dir = Path(run_dir).resolve()
     if not RG_BIN.is_file() or _sha256(RG_BIN) != RG_SHA256:
@@ -188,7 +188,9 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
     report = build_report(records, io / "requests.jsonl", base_dir=base_dir, expected_params=expected_params,
                           prompt=prompt, init_shas=set(meta["init_shas"]), max_mel_db=max_mel_db)
     if final_dir:
-        wd = compare_workdirs(Path(final_dir), wd_host, max_mel_db)
+        fd = Path(final_dir)
+        wd = (compare_workdirs(load_manifest(fd), wd_host, max_mel_db, copies=fd.parent / "final_workdir")
+              if fd.is_file() else compare_workdirs(fd, wd_host, max_mel_db))
         report["workdir_check"] = {k: v for k, v in wd.items() if k != "diffs"}
         if wd["diffs"]:
             report["rows"].append({"seq": None, "route": "workdir", "kind": "workdir", "step": None,
@@ -220,32 +222,62 @@ def _audio_paths(record: dict[str, Any], base_dir: str | Path | None) -> list[Pa
 AUDIO_EXT = (".wav", ".flac", ".mp3", ".ogg")
 
 
-def compare_workdirs(orig: Path, replayed: Path, max_mel_db: float = audio_eq.DEFAULT_MAX_DB) -> dict[str, Any]:
-    """The rollout's final workdir vs the replay's. Same file set and byte-identical non-audio files
-    (preset.json, notes.json, probe/judge JSON...) are required; audio files are compared with audio_eq
-    and reported (not failed: renders are not bit-identical and same-preset noise can exceed the
-    threshold, see README)."""
-    def files(d: Path) -> dict[str, Path]:
-        return {str(p.relative_to(d)): p for p in d.rglob("*") if p.is_file()}
-    a, b = files(orig), files(replayed)
+def load_manifest(path: str | Path) -> dict[str, dict[str, Any]]:
+    """A final-workdir manifest (oracle/<sid>/final_workdir.json: path, size, sha256 per file) as
+    {relpath: {"size", "sha256"}}. Accepts a list of entries, {"files": [...]}, or {relpath: {...}}."""
+    d = json.loads(Path(path).read_text())
+    if isinstance(d, dict) and isinstance(d.get("files"), list):
+        d = d["files"]
+    if isinstance(d, list):
+        return {e["path"]: {"size": e.get("size"), "sha256": e["sha256"]} for e in d}
+    return {k: {"size": v.get("size"), "sha256": v["sha256"]} for k, v in d.items()}
+
+
+def compare_workdirs(orig: Path | dict[str, dict[str, Any]], replayed: Path,
+                     max_mel_db: float = audio_eq.DEFAULT_MAX_DB, copies: Path | None = None) -> dict[str, Any]:
+    """The rollout's final workdir (a directory, or a load_manifest() dict when the workdir is gone) vs
+    the replay's. Same file set and byte-identical non-audio files (preset.json, notes.json, probe/judge
+    JSON...) are required; audio files are compared with audio_eq and reported (not failed: renders are
+    not bit-identical and same-preset noise can exceed the threshold, see README). With a manifest,
+    audio is only reported by size difference (no samples to compare); `copies` (the manifest's
+    final_workdir/ dir of non-audio files) turns content diffs into unified diffs."""
+    b = {str(p.relative_to(replayed)): p for p in replayed.rglob("*") if p.is_file()}
+    if isinstance(orig, dict):
+        a_sha = {k: v["sha256"] for k, v in orig.items()}
+        a_size = {k: v.get("size") for k, v in orig.items()}
+        a_path: dict[str, Path] = {}
+        if copies is not None and copies.is_dir():
+            a_path = {k: copies / k for k in orig if (copies / k).is_file()}
+    else:
+        a_path = {str(p.relative_to(orig)): p for p in orig.rglob("*") if p.is_file()}
+        a_sha = {k: R.file_digest(str(p))["sha256"] for k, p in a_path.items()}
+        a_size = {k: p.stat().st_size for k, p in a_path.items()}
     diffs: list[dict[str, Any]] = []
-    if set(a) != set(b):
-        diffs.append({"kind": "workdir_files", "detail": {"missing_in_replay": sorted(set(a) - set(b)),
-                                                          "extra_in_replay": sorted(set(b) - set(a))}})
+    if set(a_sha) != set(b):
+        diffs.append({"kind": "workdir_files", "detail": {"missing_in_replay": sorted(set(a_sha) - set(b)),
+                                                          "extra_in_replay": sorted(set(b) - set(a_sha))}})
     audio, changed = {}, []
-    for rel in sorted(set(a) & set(b)):
-        if R.file_digest(str(a[rel]))["sha256"] == R.file_digest(str(b[rel]))["sha256"]:
+    for rel in sorted(set(a_sha) & set(b)):
+        if a_sha[rel] == R.file_digest(str(b[rel]))["sha256"]:
             continue
         if rel.lower().endswith(AUDIO_EXT):
-            audio[rel] = audio_eq.compare(a[rel], b[rel], max_db=max_mel_db)
+            if rel in a_path:
+                audio[rel] = audio_eq.compare(a_path[rel], b[rel], max_db=max_mel_db)
+            else:
+                audio[rel] = {"equivalent": True,
+                              "size_diff": (b[rel].stat().st_size - a_size[rel]) if a_size.get(rel) is not None else None}
         else:
             changed.append(rel)
     if changed:
         diffs.append({"kind": "workdir_content", "detail": {
-            rel: unified(a[rel].read_text(errors="replace").split("\n"), b[rel].read_text(errors="replace").split("\n"),
-                         "rollout", "replay", max_lines=30) for rel in changed}})
-    return {"files": len(a), "identical": len(a) - len(audio) - len(changed) - len(set(a) - set(b)),
-            "audio_rerendered": {k: v.get("mel_db") for k, v in audio.items()},
+            rel: (unified(a_path[rel].read_text(errors="replace").split("\n"),
+                          b[rel].read_text(errors="replace").split("\n"), "rollout", "replay", max_lines=30)
+                  if rel in a_path else f"sha256 {a_sha[rel][:16]} (manifest) != "
+                                        f"{R.file_digest(str(b[rel]))['sha256'][:16]} (replay)")
+            for rel in changed}})
+    return {"files": len(a_sha), "source": "manifest" if isinstance(orig, dict) else "workdir",
+            "identical": len(a_sha) - len(audio) - len(changed) - len(set(a_sha) - set(b)),
+            "audio_rerendered": {k: v["mel_db"] if "mel_db" in v else v.get("size_diff") for k, v in audio.items()},
             "audio_over_threshold": sorted(k for k, v in audio.items() if not v.get("equivalent")),
             "diffs": diffs}
 

@@ -47,6 +47,7 @@ from .check import check_delta
 from .facts import DIMS, _change
 from .omni import audio_parts, chat
 from .renderer import clean_notes
+from . import verified as V
 from .verified import STRENGTH_ORDER, build_state, mel_d, render_state_jobs, strength
 
 HEADER = "Session notes (verified against the session):"
@@ -240,6 +241,15 @@ def _d(w: dict, xs, ys) -> float:
     return float(np.mean([mel_d(w[x], w[y]) for x in xs for y in ys]))
 
 
+def _local(w: dict, xs, ys, notes) -> float:
+    """Onset-local excess (verified.local_excess) averaged over take pairs; floor from both take pairs of xs and ys
+    (only the groups with two takes). -inf when the part has no pitch-change onsets."""
+    pairs = [(w[g + "/full"], w[g + "/full#2"]) for g in {x.split("/")[0] for x in list(xs) + list(ys)}
+             if g + "/full#2" in w]
+    vals = [V.local_excess(w[x], w[y], pairs, notes["notes"]) for x in xs for y in ys]
+    return float(np.mean(vals)) if vals and None not in vals else float("-inf")
+
+
 def _takes(g: str) -> tuple[str, str]:
     return f"{g}/full", f"{g}/full#2"
 
@@ -258,8 +268,16 @@ def notes_self_edit(before, after, notes, *, renderer) -> dict:
     st, w = _render_states(renderer, {"A": a, "B": b}, notes, extra)
     A, B = st["A"], st["B"]
     floor = (_d(w, ["A/full"], ["A/full#2"]) + _d(w, ["B/full"], ["B/full#2"])) / 2
-    overall = _overall(_d(w, _takes("A"), _takes("B")) - floor)
-    unit_aud = {u: _overall(_d(w, _takes("B"), [f"x/{u}"]) - floor) for u in extra}
+    ex = _d(w, _takes("A"), _takes("B")) - floor
+    if V.ONSET_LOCAL and any(V.onset_local(u) for u in units):
+        ex = max(ex, _local(w, _takes("A"), _takes("B"), notes))
+    overall = _overall(ex)
+    unit_aud = {}
+    for u in extra:
+        ex_u = _d(w, _takes("B"), [f"x/{u}"]) - floor
+        if V.ONSET_LOCAL and V.onset_local(u):
+            ex_u = max(ex_u, _local(w, _takes("B"), [f"x/{u}"], notes))
+        unit_aud[u] = _overall(ex_u)
     if len(units) == 1:
         unit_aud = {next(iter(units)): overall}
     silent = A.silent or B.silent

@@ -139,19 +139,26 @@ class OracleRenderer:
         self.sess, self.jobs = sess, jobs
         self.cache = Path(cache_dir)
 
+    @staticmethod
+    def _k(preset, notes, variant: str) -> str:
+        """Cache key from the settings only: top-level preset fields (name, author, macro labels) don't change the
+        sound, and WS-B's notes builders ask path_of({"settings": ...}) for renders they made from full presets."""
+        from maestro.sounddiff.renderer import _as_preset, _key
+        return _key({"settings": _as_preset(preset)["settings"]}, notes, variant)
+
     def path_of(self, preset, notes, variant: str = "") -> Path:
-        from maestro.sounddiff.renderer import _as_preset, _key, clean_notes
-        return self.cache / f"{_key(_as_preset(preset), clean_notes(notes), variant)}.wav"
+        from maestro.sounddiff.renderer import clean_notes
+        return self.cache / f"{self._k(preset, clean_notes(notes), variant)}.wav"
 
     def render(self, presets: dict, notes) -> dict:
         import soundfile as sf
-        from maestro.sounddiff.renderer import _as_preset, _key, clean_notes
+        from maestro.sounddiff.renderer import _as_preset, clean_notes
         notes = clean_notes(notes)
         self.cache.mkdir(parents=True, exist_ok=True)
         keys, todo = {}, {}
         for name, p in presets.items():
             p = _as_preset(p)
-            k = _key(p, notes, name.partition("#")[2])
+            k = self._k(p, notes, name.partition("#")[2])
             keys[name] = k
             if not (self.cache / f"{k}.wav").exists():
                 todo[k] = p

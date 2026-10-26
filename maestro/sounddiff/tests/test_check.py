@@ -279,3 +279,18 @@ def test_hold_steadier_is_note_length_not_movement():  # v5 narr_defer2 t002_000
     assert check_delta(t, d) == []
     assert "claims movement down, measured up" in check_delta(
         "Much louder and brighter now, but the tone is steadier, with the wobble calmed right down.", d)
+
+
+def test_hang_steadier_is_note_length():  # pilot20c s0003/self_edit/06
+    d = {"mode": "self_edit", "overall": "clear", "dirs": {"movement": 1, "attack": 1}, "flags": {}}
+    t = ("Each note now swells and dips instead of sitting steady. The attack feels softer and a bit slower, while the "
+         "notes hang steadier after that.")
+    assert check_delta(t, d) == []
+
+
+def test_echo_free_is_a_negation():  # pilot20c s0002/self_edit/17
+    d = {"mode": "self_edit", "overall": "clear", "dirs": {"brightness": 1}, "flags": {"dry": True, "no_dist": True}}
+    t = "It's a touch brighter now. The rest of the plucky, echo-free character is unchanged, still distortion-free."
+    assert check_delta(t, d) == []
+    assert "state: reverb/echo on a dry clip" in check_delta(
+        "It's a touch brighter now, and a little echo trails each note after the edit.", d)
