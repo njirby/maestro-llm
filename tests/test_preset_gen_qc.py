@@ -55,3 +55,26 @@ def test_level_qc_and_normalize():
     new = pg.normalize_volume(settings, quiet)
     assert new is not None and abs(pg._volume_to_db(new) - 6.0) < 0.1  # wants +37 dB, clamped at Vital's +6 dB max
     assert pg.normalize_volume(settings, pg.render_level(loud, sr, 1.5)) is None  # -23 dBFS: inside the band
+
+
+def test_no_value_reaches_vital_clamped():
+    """Raw generator output (no range clamp) already lies inside Vital's ranges, except keys whose clamp is intended."""
+    saved = pg._PARAM_RANGES
+    pg._PARAM_RANGES = {}
+    try:
+        intended = {"chorus_delay_2", "reverb_low_shelf_gain", "voice_priority"}  # draws reaching past Vital's max/min
+        stereo, delay, fade = [], [], []
+        for i in range(300):
+            s = pg.generate_preset(pg.ARCHETYPES[i % len(pg.ARCHETYPES)], random.Random(i))["settings"]
+            for k, v in s.items():
+                if k in PARAMS and k not in intended and isinstance(v, (int, float)):
+                    assert PARAMS[k]["min"] - 1e-9 <= v <= PARAMS[k]["max"] + 1e-9, (k, v)
+            stereo += [s[f"lfo_{n}_stereo"] for n in range(1, 9)]
+            delay += [s[f"lfo_{n}_delay_time"] for n in range(1, 9)]
+            fade += [s[f"lfo_{n}_fade_time"] for n in range(1, 9)]
+            for k in ("chorus_voices", "compressor_enabled_bands", "delay_tempo", "chorus_tempo"):
+                assert s[k] == int(s[k])
+        assert min(delay) > 0 and min(fade) > 0
+        assert len({round(x, 3) for x in stereo if x}) > 50  # a spread of offsets, not a constant
+    finally:
+        pg._PARAM_RANGES = saved

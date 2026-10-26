@@ -506,12 +506,21 @@ def _sample_lfo(spec: ArchetypeSpec, rng: random.Random, lfo_idx: int,
     p[f"lfo_{lfo_idx}_sync_type"] = 0.0
     p[f"lfo_{lfo_idx}_smooth_mode"] = float(rng.random() < 0.2)
     p[f"lfo_{lfo_idx}_smooth_time"] = rng.uniform(-7.0, -3.0)
-    p[f"lfo_{lfo_idx}_delay_time"] = rng.uniform(-7.0, -2.0)
-    p[f"lfo_{lfo_idx}_fade_time"] = rng.uniform(-7.0, 0.0)
-    p[f"lfo_{lfo_idx}_stereo"] = float(rng.random() < 0.2)
+    # delay/fade are drawn as log2 seconds; Vital's raw value is linear seconds (0..4 / 0..8)
+    p[f"lfo_{lfo_idx}_delay_time"] = 2.0 ** rng.uniform(-7.0, -2.0)
+    p[f"lfo_{lfo_idx}_fade_time"] = 2.0 ** rng.uniform(-7.0, 0.0)
+    # stereo is a phase offset in -0.5..0.5 (was 0/1, clamped to 0.5): 20% of LFOs get a uniform offset
+    r = rng.random()
+    p[f"lfo_{lfo_idx}_stereo"] = r / 0.2 - 0.5 if r < 0.2 else 0.0
     p[f"lfo_{lfo_idx}_keytrack_transpose"] = 0.0
     p[f"lfo_{lfo_idx}_keytrack_tune"] = 0.0
     return p
+
+
+def _sync_tempo(draw: int, top: int) -> float:
+    """A 8..14 tempo draw spread over Vital's 8 (1/4) .. top (delay 12 = 1/64; chorus/phaser/flanger 10 = 1/16);
+    13 and 14 used to clamp onto the top label."""
+    return float(8 + round((draw - 8) * (top - 8) / 6))
 
 
 def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
@@ -546,13 +555,13 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["delay_frequency"] = rng.uniform(-2.0, 3.0)
     p["delay_style"] = float(rng.randint(0, 3))
     p["delay_sync"] = float(rng.random() < 0.5)
-    p["delay_tempo"] = float(rng.randint(8, 14))  # tempo-sync subdivisions
+    p["delay_tempo"] = _sync_tempo(rng.randint(8, 14), 12)  # tempo-sync subdivisions
 
     # Chorus
     chorus_on = rng.random() < spec.chorus_prob
     p["chorus_on"] = 1.0 if chorus_on else 0.0
     p["chorus_dry_wet"] = rng.uniform(*spec.chorus_wet_range) if chorus_on else 0.5
-    p["chorus_voices"] = float(rng.choice([2, 4, 6]))
+    p["chorus_voices"] = float(rng.choice([2, 4, 6])) / 2.0  # raw 1..4 = 4..16 voices; ordinal 2/4/6 -> 4/8/12
     p["chorus_frequency"] = rng.uniform(-3.0, 2.0)
     p["chorus_feedback"] = rng.uniform(0.0, 0.5)
     p["chorus_mod_depth"] = rng.uniform(0.1, 0.8)
@@ -561,7 +570,7 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["chorus_delay_1"] = math.log2(rng.uniform(0.005, 0.02))  # seconds -> raw log2 s ([-10, -5.64])
     p["chorus_delay_2"] = math.log2(rng.uniform(0.01, 0.04))
     p["chorus_sync"] = 0.0
-    p["chorus_tempo"] = float(rng.randint(8, 14))
+    p["chorus_tempo"] = _sync_tempo(rng.randint(8, 14), 10)
 
     # Distortion
     dist_on = rng.random() < spec.distortion_prob
@@ -584,7 +593,7 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["phaser_phase_offset"] = rng.uniform(0.0, 1.0)
     p["phaser_blend"] = rng.uniform(0.5, 1.0)
     p["phaser_sync"] = 0.0
-    p["phaser_tempo"] = float(rng.randint(8, 14))
+    p["phaser_tempo"] = _sync_tempo(rng.randint(8, 14), 10)
 
     # Flanger
     flanger_on = rng.random() < spec.flanger_prob
@@ -596,7 +605,7 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["flanger_center"] = rng.uniform(60.0, 100.0)
     p["flanger_phase_offset"] = rng.uniform(0.0, 1.0)
     p["flanger_sync"] = 0.0
-    p["flanger_tempo"] = float(rng.randint(8, 14))
+    p["flanger_tempo"] = _sync_tempo(rng.randint(8, 14), 10)
 
     # Compressor
     comp_on = rng.random() < spec.compressor_prob
@@ -614,7 +623,8 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["compressor_low_lower_ratio"] = 0.0
     p["compressor_band_lower_ratio"] = 0.0
     p["compressor_high_lower_ratio"] = 0.0
-    p["compressor_enabled_bands"] = float(rng.randint(1, 7))
+    # labels 0..3 = Multiband, Low Band, High Band, Single Band (1..7 used to clamp 5 of 7 draws to Single Band)
+    p["compressor_enabled_bands"] = float((rng.randint(1, 7) - 1) % 4)
 
     # EQ (always on, subtle)
     p["eq_on"] = 1.0
