@@ -120,7 +120,8 @@ DIR_CLAIMS = {
               r"\bnarrower\b|less (width|stereo|spread)|more (centered|centred|mono)"),
     "movement": (r"more (movement|wobble|pulsing|motion|vibrato)|(adds?|added|introduc\w*) (a |some )?"
                  r"(wobble|pulsing|pulse|movement|vibrato|tremolo|sweep)|now (wobbles|pulses|sweeps)",
-                 r"\bsteadier\b|less (movement|wobble|pulsing|motion)|(wobble|pulsing|movement|vibrato) (is |has )?"
+                 r"(?<!hold )(?<!holds )(?<!held )(?<!holding )\bsteadier\b(?! and (a little |a bit |slightly )?longer)|"
+                 r"less (movement|wobble|pulsing|motion)|(wobble|pulsing|movement|vibrato) (is |has )?"
                  r"(gone|stopped|been removed)|no longer (wobbles|pulses|moves)"),
     "distortion": (r"more (grit|distortion|drive|crunch|dirt|saturation)|\bgrittier\b|\bdirtier\b|\bcrunchier\b|"
                    r"(adds?|added|adding) (some |a bit of )?(grit|distortion|drive|crunch|saturation)",

@@ -268,3 +268,14 @@ def test_negated_list_of_dimensions():  # slot 06 narrations after the 'unchange
         assert check_delta(t, d) == [], t
     # a list item after a non-negated opener is still a claim
     assert check_delta("It got much louder, brighter, and a lot more echoey than before, a really big change.", d)
+
+
+def test_hold_steadier_is_note_length_not_movement():  # v5 narr_defer2 t002_000/self_edit/10
+    d = {"mode": "self_edit", "overall": "strong", "dirs": {"level": 1, "brightness": 1, "movement": 1, "sustain": 1,
+                                                             "space": 0}, "flags": {"dry": True}}
+    t = ("It's way louder and much brighter, with a buzzy edge, and the brightness keeps shifting while each note plays. "
+         "The notes hold steadier and a little longer instead of fading, with a subtle wobble in the brightness. It "
+         "sounds more alive, but the dryness and the way the notes come in still feel the same.")
+    assert check_delta(t, d) == []
+    assert "claims movement down, measured up" in check_delta(
+        "Much louder and brighter now, but the tone is steadier, with the wobble calmed right down.", d)
