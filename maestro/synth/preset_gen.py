@@ -7,10 +7,11 @@ carry per-section parameter ranges tuned for audible, musically plausible
 results.
 
 All parameter values are in Vital's native units (not normalized 0-1):
-  - envelope times: seconds [0, 2.378]
+  - envelope times: raw [0, 2.378] = (seconds) ** 0.25 (Vital is quartic: 2.378 -> 32 s); every
+    envelope time range below is seconds and is converted
   - filter_cutoff: MIDI note units [8, 136]
   - lfo_frequency: log2-scale [-7, 9] → 2^x Hz
-  - volume: amplitude units [0, 7399]
+  - volume: [0, 7399] = (dB + 80) ** 2 (5473 = -6 dB, Vital's default)
   - discrete params (unison_voices, polyphony, etc.) are integers stored as float
 
 Usage:
@@ -349,6 +350,14 @@ MOD_TARGET_GROUPS: dict[str, list[str]] = {
     ],
 }
 
+# Library wavetables that render digital silence or < -60 dBFS RMS on the init preset (3-note chord, frame 0 or 128;
+# the other 262 of the 283 unique names render -11..-53 dBFS). Screened 2026-10-25 with the skill's render.py.
+_SILENT_WAVETABLES = frozenset({
+    "Resynthesize", "Bell_Hit3", "meditation", "Shimmer 2", "Decoded-1", "Emblem F5 D5", "pad", "Are you a star", "exp",
+    "ICanHasKick", "Triangle - 8bit", "synth", "untitled", "ESW Breath Mallet", "Ascension Ana 2", "acapella 5", "dab",
+    "MA Sweet Sound (Kick)", "KY-Aura", "SinII I", "ESW BR Trumpeter 01",
+})
+
 # Sources that should be rate-limited when targeting level params
 _LEVEL_SENSITIVE_TARGETS = {"osc_1_level", "osc_2_level", "osc_3_level", "voice_amplitude"}
 # LFO sources (for frequency constraining)
@@ -364,8 +373,9 @@ def _clamp(v: float, lo: float, hi: float) -> float:
 
 
 def _sample_osc(spec: ArchetypeSpec, rng: random.Random, osc_idx: int,
-                wavetable: dict) -> dict:
-    """Sample settings for oscillator osc_idx (1-based)."""
+                wavetable: dict, active_oscs: Optional[list[int]] = None) -> dict:
+    """Sample settings for oscillator osc_idx (1-based). FM/RM distortion types only read oscillators in
+    active_oscs (default: all three), never the sample layer (always off)."""
     n_frames = get_n_frames(wavetable)
     p = {}
     p[f"osc_{osc_idx}_on"] = 1.0
@@ -373,7 +383,10 @@ def _sample_osc(spec: ArchetypeSpec, rng: random.Random, osc_idx: int,
     level_lo = 0.50 if osc_idx == 1 else 0.20
     p[f"osc_{osc_idx}_level"] = rng.uniform(level_lo, 1.0)
     # Wave frame: uniform over actual available frames
-    p[f"osc_{osc_idx}_wave_frame"] = rng.uniform(0.0, float(max(1, n_frames - 1)))
+    # (Vital's frame position is 0..256 over the whole table whatever its frame count; drawing 0..n_frames-1 only
+    # ever reached the first frames)
+    p[f"osc_{osc_idx}_wave_frame"] = rng.uniform(0.0, float(max(1, n_frames - 1))) * (256.0 / (n_frames - 1)
+                                                                                     if n_frames > 1 else 0.0)
     # Transpose: +/- 2 octaves (discrete)
     # Transpose: archetype-biased so bass leans low, lead/sequence lean high
     _TRANSPOSE_POOLS = {
@@ -392,11 +405,19 @@ def _sample_osc(spec: ArchetypeSpec, rng: random.Random, osc_idx: int,
     lo_v, hi_v = spec.unison_voices_range
     voices = rng.randint(lo_v, hi_v)
     p[f"osc_{osc_idx}_unison_voices"] = float(voices)
-    p[f"osc_{osc_idx}_unison_detune"] = rng.uniform(*spec.unison_detune_range)
+    p[f"osc_{osc_idx}_unison_detune"] = 10.0 * rng.uniform(*spec.unison_detune_range)  # knob fraction; raw 0..10
     p[f"osc_{osc_idx}_unison_blend"] = rng.uniform(0.5, 1.0)
     p[f"osc_{osc_idx}_unison_stack_type"] = 0.0
     # Distortion
     dist_type = rng.randint(0, 12)
+    # FM/RM from a source that is off reads a buffer Vital never writes: RM <- silence is silence, and in a fresh
+    # Vital instance the stale buffer is uninitialized (NaN -> the whole render is digital silence).
+    src_a, src_b = osc_idx % 3 + 1, (osc_idx + 1) % 3 + 1
+    live = set(active_oscs or (1, 2, 3))
+    valid = [d for d in range(13) if d not in (9, 12)  # FM/RM <- Sample
+             and not (d in (7, 10) and src_a not in live) and not (d in (8, 11) and src_b not in live)]
+    if dist_type not in valid:
+        dist_type = rng.choice(valid)
     p[f"osc_{osc_idx}_distortion_type"] = float(dist_type)
     if dist_type > 0:
         p[f"osc_{osc_idx}_distortion_amount"] = rng.uniform(0.0, 0.7)
@@ -418,17 +439,19 @@ def _sample_osc(spec: ArchetypeSpec, rng: random.Random, osc_idx: int,
 def _sample_env(spec: ArchetypeSpec, rng: random.Random, env_idx: int) -> dict:
     """Sample ADSR envelope. env_idx=1 is amp env; 2+ are utility."""
     p = {}
+    # Times are drawn in seconds; the raw value is seconds ** 0.25 (a 1.8 s pad attack used to be written as raw
+    # 1.8 = 10.5 s, so short notes never got loud).
     if env_idx == 1:
-        attack = rng.uniform(*spec.env_attack_range)
-        decay = rng.uniform(*spec.env_decay_range)
+        attack = rng.uniform(*spec.env_attack_range) ** 0.25
+        decay = rng.uniform(*spec.env_decay_range) ** 0.25
         sustain = rng.uniform(*spec.env_sustain_range)
-        release = rng.uniform(*spec.env_release_range)
+        release = rng.uniform(*spec.env_release_range) ** 0.25
     else:
         # Utility envelopes: biased toward fast attack, variable decay
-        attack = rng.uniform(0.0, 0.5)
-        decay = rng.uniform(0.05, 1.5)
+        attack = rng.uniform(0.0, 0.5) ** 0.25
+        decay = rng.uniform(0.05, 1.5) ** 0.25
         sustain = rng.uniform(0.0, 1.0)
-        release = rng.uniform(0.05, 1.0)
+        release = rng.uniform(0.05, 1.0) ** 0.25
     p[f"env_{env_idx}_attack"] = _clamp(attack, 0.0, 2.378)
     p[f"env_{env_idx}_decay"] = _clamp(decay, 0.0, 2.378)
     p[f"env_{env_idx}_sustain"] = _clamp(sustain, 0.0, 1.0)
@@ -453,9 +476,11 @@ def _sample_filter(spec: ArchetypeSpec, rng: random.Random, filter_idx: int) -> 
         rng.uniform(*spec.filter_resonance_range), 0.0, 0.80
     )
     # Filter style: 0=LP12, 1=LP24, 2=BP12, 3=BP24, 4=HP12, 5=HP24, 6=Notch, ...
+    # Vital 1.6 styles: 0=12dB, 1=24dB, 2=Notch Blend, 3=Notch Spread, 4=B/P/N (LP/BP/HP is filter_blend 0..2).
+    # 5 and 6 used to reach Vital out of range (B/P/N-like or NaN silence).
     p[f"filter_{filter_idx}_style"] = float(rng.choices(
-        [0, 1, 2, 3, 4, 5, 6],
-        weights=[0.30, 0.20, 0.15, 0.10, 0.10, 0.08, 0.07],
+        [0, 1, 2, 3, 4],
+        weights=[0.30, 0.20, 0.15, 0.10, 0.10],
         k=1,
     )[0])
     # Filter model: 0=Analog, 1=Dirty, 2=Ladder, 3=Digital, etc.
@@ -533,8 +558,8 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["chorus_mod_depth"] = rng.uniform(0.1, 0.8)
     p["chorus_cutoff"] = rng.uniform(60.0, 100.0)
     p["chorus_spread"] = rng.uniform(0.0, 1.0)
-    p["chorus_delay_1"] = rng.uniform(0.005, 0.02)
-    p["chorus_delay_2"] = rng.uniform(0.01, 0.04)
+    p["chorus_delay_1"] = math.log2(rng.uniform(0.005, 0.02))  # seconds -> raw log2 s ([-10, -5.64])
+    p["chorus_delay_2"] = math.log2(rng.uniform(0.01, 0.04))
     p["chorus_sync"] = 0.0
     p["chorus_tempo"] = float(rng.randint(8, 14))
 
@@ -554,7 +579,7 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     p["phaser_dry_wet"] = rng.uniform(0.1, 0.5) if phaser_on else 0.5
     p["phaser_frequency"] = rng.uniform(-4.0, 2.0)
     p["phaser_feedback"] = rng.uniform(0.3, 0.85)
-    p["phaser_mod_depth"] = rng.uniform(0.3, 1.0)
+    p["phaser_mod_depth"] = 48.0 * rng.uniform(0.3, 1.0)  # knob fraction; raw is semitones 0..48
     p["phaser_center"] = rng.uniform(60.0, 100.0)
     p["phaser_phase_offset"] = rng.uniform(0.0, 1.0)
     p["phaser_blend"] = rng.uniform(0.5, 1.0)
@@ -577,8 +602,9 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     comp_on = rng.random() < spec.compressor_prob
     p["compressor_on"] = 1.0 if comp_on else 0.0
     p["compressor_mix"] = rng.uniform(0.3, 1.0)
-    p["compressor_attack"] = rng.uniform(-3.0, 1.0)
-    p["compressor_release"] = rng.uniform(-3.0, 1.0)
+    # raw range is 0..1; the old -3..1 draw clamped 75% of presets to 0
+    p["compressor_attack"] = (rng.uniform(-3.0, 1.0) + 3.0) / 4.0
+    p["compressor_release"] = (rng.uniform(-3.0, 1.0) + 3.0) / 4.0
     p["compressor_low_gain"] = rng.uniform(-6.0, 6.0)
     p["compressor_band_gain"] = rng.uniform(-6.0, 6.0)
     p["compressor_high_gain"] = rng.uniform(-6.0, 6.0)
@@ -593,15 +619,15 @@ def _sample_fx(spec: ArchetypeSpec, rng: random.Random) -> dict:
     # EQ (always on, subtle)
     p["eq_on"] = 1.0
     p["eq_low_cutoff"] = rng.uniform(20.0, 50.0)
-    p["eq_low_resonance"] = rng.uniform(0.5, 1.5)
+    p["eq_low_resonance"] = rng.uniform(0.5, 1.5) / 1.5  # raw range is 0..1 (was clamped half the time)
     p["eq_low_gain"] = rng.uniform(-6.0, 3.0)
     p["eq_low_mode"] = 0.0
     p["eq_band_cutoff"] = rng.uniform(60.0, 90.0)
-    p["eq_band_resonance"] = rng.uniform(0.5, 2.0)
+    p["eq_band_resonance"] = rng.uniform(0.5, 2.0) / 2.0
     p["eq_band_gain"] = rng.uniform(-4.0, 4.0)
     p["eq_band_mode"] = 1.0
     p["eq_high_cutoff"] = rng.uniform(90.0, 120.0)
-    p["eq_high_resonance"] = rng.uniform(0.5, 1.5)
+    p["eq_high_resonance"] = rng.uniform(0.5, 1.5) / 1.5
     p["eq_high_gain"] = rng.uniform(-6.0, 2.0)
     p["eq_high_mode"] = 0.0
 
@@ -699,8 +725,8 @@ def _sample_modulations(
         amt = amount
         if target in _LEVEL_SENSITIVE_TARGETS:
             amt = _clamp(abs(amt), 0.05, 0.50)
-        if rng.random() < 0.15:
-            amt = -abs(amt)
+        if rng.random() < 0.15 and target not in _LEVEL_SENSITIVE_TARGETS:
+            amt = -abs(amt)  # a negative unipolar route on a level can hold the osc at 0
         mod_params[f"modulation_{slot}_amount"] = amt
         mod_params[f"modulation_{slot}_bipolar"] = 0.0
         mod_params[f"modulation_{slot}_bypass"] = 0.0
@@ -815,10 +841,12 @@ _PARAM_RANGES: Optional[dict] = None
 
 
 def _get_param_ranges() -> dict:
-    """Load the param ranges table (min/max for every Vital control)."""
+    """Load the param ranges table (min/max for every Vital control). Uses the Vital skill's params.json (read from the
+    Vital 1.6.0 VST3); maestro/synth/param_ranges.json is wider on 14 key groups (filter style 0..8, filter_fx_on 0..7,
+    transposes to +96, ...) and let out-of-range values reach Vital."""
     global _PARAM_RANGES
     if _PARAM_RANGES is None:
-        ranges_path = Path(__file__).parent / "param_ranges.json"
+        ranges_path = Path(__file__).resolve().parents[2] / "opencode/skills/vital/data/params.json"
         if ranges_path.exists():
             with open(ranges_path) as f:
                 _PARAM_RANGES = json.load(f)
@@ -896,7 +924,9 @@ def generate_preset(
     # 2. Sample oscillators; assign one wavetable per oscillator
     for i in active_oscs:
         wt = sample_wavetable(wavetable_lib or [], rng)
-        osc_params = _sample_osc(spec, rng, i, wt)
+        while wt.get("name") in _SILENT_WAVETABLES:
+            wt = sample_wavetable(wavetable_lib or [], rng)
+        osc_params = _sample_osc(spec, rng, i, wt, active_oscs)
         settings.update(osc_params)
         # Embed wavetable in the correct slot (0-indexed)
         if len(settings["wavetables"]) >= i:
@@ -954,8 +984,9 @@ def generate_preset(
         rng.choices(spec.polyphony_choices, weights=spec.polyphony_weights, k=1)[0]
     )
     settings["voice_amplitude"] = rng.uniform(0.7, 1.0)
-    # volume: near default 0 dB (5473), ± ~6 dB; floor at 3500 (~-4 dB) avoids near-silence
-    settings["volume"] = _clamp(rng.gauss(5473.0, 1200.0), 3500.0, 7399.0)
+    # volume: Vital's default -6 dB (5473) +/- ~6 dB, sampled in dB (raw = (dB + 80) ** 2). The old raw-unit
+    # gauss(5473, 1200) clamped to [3500, 7399] was ~8 dB wide with a -21 dB floor.
+    settings["volume"] = _db_to_volume(_clamp(rng.gauss(-6.0, 3.0), -12.0, 6.0))
     settings["beats_per_minute"] = 3.0  # default
     settings["legato"] = float(rng.random() < 0.15)
     settings["portamento_on"] = float(rng.random() < 0.10)
@@ -1041,3 +1072,59 @@ def generate_preset_batch(
         )
         paths.append(path)
     return paths
+
+
+# ---------------------------------------------------------------------------
+# Post-render level QC
+# ---------------------------------------------------------------------------
+
+LOUDNESS_BAND_DBFS = (-30.0, -12.0)  # target band for the RMS while the notes play
+LOUDNESS_TARGET_DBFS = -20.0
+QC_MIN_ACTIVE_RMS_DBFS = -42.0  # level while the notes play; targets below this are too quiet to judge by ear
+QC_MIN_RMS_DBFS = -48.0         # whole render (notes + tail)
+QC_SILENT_PEAK_DBFS = -100.0    # Vital renders digital silence (-240) on NaN; anything this low counts as silent
+
+
+def render_level(audio, sr: int, notes_end_s: float) -> dict:
+    """Level of a rendered preset: whole-file RMS, RMS over the notes span (0..last note-off), peak; all dBFS."""
+    import numpy as np
+    x = np.asarray(audio, dtype=np.float64)
+    if x.ndim == 2:
+        x = x.mean(axis=1) if x.shape[1] <= 2 else x.mean(axis=0)
+    db = lambda v: float(20 * np.log10(v + 1e-12))  # noqa: E731
+    finite = bool(np.isfinite(x).all())
+    x = np.nan_to_num(x)
+    span = x[:max(1, int(round(notes_end_s * sr)))]
+    return {"rms_dbfs": db(np.sqrt(np.mean(x ** 2))), "active_rms_dbfs": db(np.sqrt(np.mean(span ** 2))),
+            "peak_dbfs": db(np.abs(x).max()), "finite": finite}
+
+
+def _db_to_volume(db: float) -> float:
+    return (db + 80.0) ** 2
+
+
+def _volume_to_db(v: float) -> float:
+    return math.sqrt(max(v, 0.0)) - 80.0
+
+
+def normalize_volume(settings: dict, level: dict) -> Optional[float]:
+    """Master `volume` (post-FX, so a linear gain) that moves a render's active RMS to LOUDNESS_TARGET_DBFS, or None if
+    the render is already inside LOUDNESS_BAND_DBFS. Clamped to Vital's +6 dB maximum; re-render to check the result."""
+    lo, hi = LOUDNESS_BAND_DBFS
+    if lo <= level["active_rms_dbfs"] <= hi:
+        return None
+    db = _volume_to_db(settings["volume"]) + LOUDNESS_TARGET_DBFS - level["active_rms_dbfs"]
+    return _db_to_volume(_clamp(db, -60.0, _volume_to_db(7399.0)))
+
+
+def level_qc(level: dict) -> tuple[bool, str]:
+    """(ok, reason) for a render_level() dict: reject non-finite, digitally silent and too-quiet renders."""
+    if not level["finite"]:
+        return False, "non-finite samples"
+    if level["peak_dbfs"] < QC_SILENT_PEAK_DBFS:
+        return False, "digital silence"
+    if level["active_rms_dbfs"] < QC_MIN_ACTIVE_RMS_DBFS:
+        return False, f"too quiet ({level['active_rms_dbfs']:.1f} dBFS while notes play)"
+    if level["rms_dbfs"] < QC_MIN_RMS_DBFS:
+        return False, f"too quiet ({level['rms_dbfs']:.1f} dBFS RMS)"
+    return True, ""
