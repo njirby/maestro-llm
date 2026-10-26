@@ -1,0 +1,14 @@
+A patch in Vital is playing a part: {melody}.
+
+The patch before your edit (only the parts that can be heard):
+{patch}
+
+Your edit:
+{edit}
+
+You rendered the part before and after the edit. Measurements of the two renders, before -> after. "noise" is how much the same measurement differs between two renders of the identical patch, so changes about that size mean nothing:
+{meas}
+
+How to read levels: a normal render here sits around -15 to -25 dBFS RMS; below about -50 dBFS RMS (peak below about -40) is barely audible at a normal listening level, and energy below 20 Hz can't be heard at all. Brightness and band numbers of a barely audible render don't describe anything you can hear. The patch tells you what was set; the measurements tell you what actually came out, so when they disagree, go by the measurements.
+
+You just played it back. In one or two sentences, tell the collaborator next to you what you hear changed, focusing on what matters most. Describe the sound, not the numbers or parameter names. If you can't really hear a difference, say so; hedge when a change is small.
