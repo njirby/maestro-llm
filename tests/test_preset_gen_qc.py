@@ -103,3 +103,23 @@ def test_manifest_quantizes_to_skill_precision():
     assert quantize_to_skill(copy.deepcopy(q)) == q  # idempotent: the GT is a fixed point of what the agent can type
     s = q["settings"]
     assert all(parsed(k, s[k]) == s[k] for k in ("reverb_size", "filter_1_cutoff", "env_1_attack", "volume"))
+
+
+def test_glide_forced_and_audibility_rule():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import build_v5_manifest as bm
+    for i in range(300):  # a deliberate glide forces portamento (Vital otherwise glides only between overlapping notes)
+        s = pg.generate_preset(pg.ARCHETYPES[i % len(pg.ARCHETYPES)], random.Random(i))["settings"]
+        assert s["portamento_force"] == s["portamento_on"]
+    n = lambda t, d: {"pitch": 60, "velocity": 100, "start_s": t, "dur_s": d}  # noqa: E731
+    assert bm.overlap_share([n(0, 0.4), n(0.5, 0.4), n(1.0, 0.4)]) == 0.0
+    assert bm.overlap_share([n(0, 0.6), n(0.5, 0.6), n(1.0, 0.4)]) == 1.0
+    off = bm.glide_off(pg.generate_preset("lead", random.Random(1)))["settings"]
+    assert (off["portamento_on"], off["portamento_force"], off["portamento_time"]) == (0.0, 0.0, -10.0)
+    sr, rng = 44100, np.random.default_rng(0)
+    t = np.arange(sr) / sr
+    tone = lambda f: np.stack([np.sin(2 * np.pi * f * t)] * 2, 1).astype(np.float32) * 0.1  # noqa: E731
+    takes = [tone(220) + 1e-4 * rng.standard_normal((sr, 2)).astype(np.float32) for _ in range(4)]
+    assert not bm.glide_audible(takes, takes[0].copy())["audible"]
+    assert bm.glide_audible(takes, tone(330))["audible"]

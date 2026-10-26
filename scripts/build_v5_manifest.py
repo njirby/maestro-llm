@@ -69,12 +69,44 @@ def quantize_to_skill(preset: dict) -> dict:
     return preset
 
 
+OVERLAP_LEGATO = 0.3  # clips with at least this share of overlapping note transitions glide without portamento_force
+
+
+def overlap_share(notes: list[dict]) -> float:
+    """Share of note-to-note transitions (by onset order) where the next note starts before the previous one ends."""
+    ns = sorted(notes, key=lambda n: n["start_s"])
+    pairs = list(zip(ns, ns[1:]))
+    return sum(b["start_s"] < a["start_s"] + a["dur_s"] - 1e-4 for a, b in pairs) / len(pairs) if pairs else 0.0
+
+
+def glide_off(preset: dict) -> dict:
+    """The same preset with the glide switched off (Vital's defaults)."""
+    q = json.loads(json.dumps(preset))
+    q["settings"].update(portamento_on=0.0, portamento_force=0.0, portamento_time=-10.0)
+    return q
+
+
+def glide_audible(takes: list[np.ndarray], off: np.ndarray) -> dict:
+    """Does switching the glide off change the render beyond the render-noise floor? Same rule as the v5 audio gate
+    (maestro.v5.gate.audio): floor = mean pairwise mel distance of the GT takes; off-vs-GT = mean distance to the takes;
+    audible iff the gate would reject the glide-off patch (off-vs-GT > MEL_SCALE * floor + MEL_MARGIN_DB)."""
+    from itertools import combinations
+    from maestro.sounddiff.verified import mel_d
+    from maestro.v5.gate import MEL_MARGIN_DB, MEL_SCALE
+    floor = float(np.mean([mel_d(a, b) for a, b in combinations(takes, 2)]))
+    d = float(np.mean([mel_d(off, w) for w in takes]))
+    limit = MEL_SCALE * floor + MEL_MARGIN_DB
+    return {"audible": d > limit, "off_vs_gt_db": round(d, 3), "floor_db": round(floor, 3), "limit_db": round(limit, 3)}
+
+
 def candidate(seed: int, i: int, k: int, archetype: str, lib: list[dict], clips: list[dict]) -> dict:
     """Attempt k of sample i: own RNG per (seed, i, k) so samples do not shift when another one is regenerated."""
     rng = random.Random(f"v5:{seed}:{i}:{k}")
     preset = generate_preset(archetype, rng, wavetable_lib=lib, name=f"v5_{seed}_{i:04d}")
     c, notes = pick_clip(clips, rng)
     preset["settings"]["beats_per_minute"] = c["bpm"] / 60.0  # as sounddiff.edits; Vital takes host tempo anyway
+    if preset["settings"]["portamento_on"] and overlap_share(notes) >= OVERLAP_LEGATO:
+        preset["settings"]["portamento_force"] = 0.0  # legato-heavy clip: overlapping notes already glide
     quantize_to_skill(preset)
     return {"preset": preset, "clip": c, "notes": notes, "bpm": float(c["bpm"])}
 
@@ -131,10 +163,11 @@ def main():
     accepted: dict[int, dict] = {}
     tries = {i: 0 for i in range(a.n)}
     current: dict[int, dict] = {}  # sample -> candidate awaiting a render (fresh, or volume-normalized)
+    glide: dict[int, dict] = {}    # sample -> level-passed glide candidate awaiting its audibility renders
     qc_log = open(out / "qc.jsonl", "w")
     renderer = Renderer(a.jobs)
     try:
-        build(a, out, mix, lib, clips, renderer, accepted, tries, current, qc_log)
+        build(a, out, mix, lib, clips, renderer, accepted, tries, current, glide, qc_log)
     finally:
         renderer.close()
     qc_log.close()
@@ -146,9 +179,43 @@ def main():
           f"min {lv.min():.1f}, max {lv.max():.1f}; candidates generated: {sum(tries.values())}")
 
 
-def build(a, out, mix, lib, clips, renderer, accepted, tries, current, qc_log) -> None:
-    """Generate, render, normalize and QC until every sample is accepted (fills `accepted`)."""
+def build(a, out, mix, lib, clips, renderer, accepted, tries, current, glide, qc_log) -> None:
+    """Generate, render, normalize and QC until every sample is accepted (fills `accepted`). A deliberate glide is
+    accepted only if switching it off is audible (glide_audible on GT_TAKES takes + a glide-off render), else redrawn."""
+    from maestro.v5.gate import GT_TAKES
+    gdir = out / "_glide"
     while len(accepted) < a.n:
+        if glide:  # audibility renders: GT takes 2..N and the glide-off patch (take 1 is the target itself)
+            for d in ("presets", "notes", "targets"):
+                (gdir / d).mkdir(parents=True, exist_ok=True)
+            names = []
+            for i, g in glide.items():
+                sid = f"s{i:04d}"
+                for tag, pr in [*((f"gt{k}", g["preset"]) for k in range(2, GT_TAKES + 1)), ("off", glide_off(g["preset"]))]:
+                    (gdir / "presets" / f"{sid}__{tag}.vital").write_text(json.dumps(pr, separators=(",", ":")))
+                    (gdir / "notes" / f"{sid}__{tag}.json").write_text((out / "notes" / f"{sid}.json").read_text())
+                    names.append(f"{sid}__{tag}")
+            renderer.render(gdir, names)
+            for i, g in list(glide.items()):
+                sid = f"s{i:04d}"
+                read = lambda p: sf.read(p, dtype="float32")[0] if p.exists() else None  # noqa: E731
+                takes = [read(out / "targets" / f"{sid}.wav")] + [read(gdir / "targets" / f"{sid}__gt{k}.wav")
+                                                                  for k in range(2, GT_TAKES + 1)]
+                off = read(gdir / "targets" / f"{sid}__off.wav")
+                res = glide_audible(takes, off) if off is not None and all(x is not None for x in takes) \
+                    else {"audible": False, "error": "render failed"}
+                s = g["preset"]["settings"]
+                qc_log.write(json.dumps({"id": sid, "try": g["try"], "archetype": mix[i], "glide_check": True,
+                                         "glide_ms": round(1000 * 2 ** s["portamento_time"], 1),
+                                         "portamento_force": s["portamento_force"],
+                                         "overlap_share": round(overlap_share(g["notes"]), 3), **res}) + "\n")
+                qc_log.flush()
+                del glide[i]
+                if res["audible"]:
+                    accepted[i] = g["row"]
+            shutil.rmtree(gdir)
+            if len(accepted) == a.n:
+                break
         pending = [i for i in range(a.n) if i not in accepted]
         batch = {}
         for i in pending:
@@ -188,16 +255,20 @@ def build(a, out, mix, lib, clips, renderer, accepted, tries, current, qc_log) -
                 continue
             del current[i]
             if ok:
-                accepted[i] = {"id": sid, "archetype": mix[i],
+                row = {"id": sid, "archetype": mix[i],
                                "gt_preset_path": str(out / "presets" / f"{sid}.vital"),
                                "init_preset_path": str(INIT_PRESET),
                                "notes_path": str(out / "notes" / f"{sid}.json"),
                                "target_wav_path": str(wav), "bpm": cand["bpm"],
                                "clip": {k: cand["clip"][k] for k in ("midi_path", "track_idx", "start_s", "program")},
                                "target_rms_dbfs": round(lv["rms_dbfs"], 2)}
+                if s["portamento_on"] and not a.qc_off:
+                    glide[i] = {**cand, "row": row}  # accepted once the glide is shown to be audible
+                else:
+                    accepted[i] = row
         print(f"batch of {len(batch)}: {sum(i in accepted for i in batch.values())} accepted, "
-              f"{sum(i in current for i in batch.values())} volume-normalized, "
-              f"{a.n - len(accepted) - len(current)} to regenerate", flush=True)
+              f"{sum(i in current for i in batch.values())} volume-normalized, {len(glide)} glide checks, "
+              f"{a.n - len(accepted) - len(current) - len(glide)} to regenerate", flush=True)
 
 if __name__ == "__main__":
     main()

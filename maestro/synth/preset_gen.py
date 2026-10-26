@@ -1005,6 +1005,9 @@ def generate_preset(
     glide = rng.random() < 0.10
     u = (rng.uniform(-10.0, -5.0) + 10.0) / 5.0
     settings["portamento_on"] = float(glide)
+    # Vital only glides between overlapping notes unless portamento_force is on; a deliberate glide forces it (a
+    # caller that knows the notes may switch it off for legato-heavy clips)
+    settings["portamento_force"] = float(glide)
     settings["portamento_time"] = math.log2(0.03) + u * math.log2(10.0) if glide else -10.0
     settings["voice_priority"] = float(rng.randint(0, 5))
     settings["voice_transpose"] = 0.0
