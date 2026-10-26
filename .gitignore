@@ -12,3 +12,17 @@ __pycache__/
 .DS_Store
 *.pt
 *.safetensors
+
+# ear-graft run outputs (checkpoints, wandb, vibe-check rollouts)
+ear_graft/out/
+# packed wavetable library (149 MB, > GitHub's file limit); rebuild: python3 scripts/build_vital_skill_data.py
+opencode/skills/vital/data/wavetables.bin
+# OpenCode writes these into a config dir it loads
+opencode/node_modules/
+opencode/package.json
+opencode/package-lock.json
+opencode/.gitignore
+# dev artifacts of the original OpenCode-made DawDreamer skill (absolute paths, ~60 MB of wavs)
+skills_dawdreamer/vital/explore/
+skills_dawdreamer/vital/verify/
+skills_dawdreamer/vital/mine/
