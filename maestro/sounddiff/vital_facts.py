@@ -165,8 +165,12 @@ def why_dead(s: dict, key: str, depth: int = 0) -> str | None:
         if m.group(2) != "bypass" and _on(s, f"modulation_{i}_bypass"):
             return f"mod slot {i} is bypassed"
         return why_dead(s, slot["destination"], depth + 1)
-    if key.startswith("portamento_") and key != "portamento_on" and not _on(s, "portamento_on"):
-        return "portamento is off"
+    # portamento_on is not a gate: glide follows portamento_time alone (rendered, pilot20 s0008: portamento_on 0 -> 1
+    # changes nothing; portamento_time -6.1 -> -10 with portamento_on 0 is clearly audible on overlapping notes)
+    if key == "portamento_on":
+        return "no audible effect (glide is set by portamento_time)"
+    if key.startswith("portamento_") and key != "portamento_time" and float(s.get("portamento_time", -10.0)) <= -10.0:
+        return "portamento time is 0 (no glide)"
     return None
 
 

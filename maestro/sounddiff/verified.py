@@ -59,6 +59,8 @@ def ablations(s: dict) -> dict:
                 out[f"unison:osc{n}"] = lambda t, n=n: t.__setitem__(f"osc_{n}_unison_voices", 1.0)
             if n > 1 or any(vf.why_dead(s, f"osc_{m}_wave_frame") is None for m in (2, 3)):
                 out[f"osc:{n}"] = lambda t, n=n: t.__setitem__(f"osc_{n}_on", 0.0)
+    if float(s.get("portamento_time", -10.0)) > -10.0:
+        out["glide:portamento"] = lambda t: t.__setitem__("portamento_time", -10.0)
     for f in ("1", "2"):
         if vf.why_dead(s, f"filter_{f}_cutoff") is None:
             out[f"filter:{f}"] = lambda t, f=f: t.__setitem__(f"filter_{f}_on", 0.0)
@@ -104,6 +106,8 @@ def describe_module(name: str, d_full: dict, d_abl: dict) -> str:
         if any("wave_frame" in x or "spectral" in x or "distortion_amount" in x for x in ds):
             return "each note's tone colour changes as it plays" if per_note else "the tone colour shifts back and forth"
         return "the effects swell and recede as it plays"
+    if kind == "glide":
+        return "a pitch glide from one note into the next"
     if kind == "unison":
         return "a slightly detuned, thick quality"
     if kind == "osc":
@@ -223,7 +227,7 @@ class State:
         """{phrase: strength}, one entry per heard effect (several LFOs on one target collapse to the strongest)."""
         out = {}
         for k, (st, ph) in self.aud.items():
-            if k.startswith("mod:"):
+            if k.startswith(("mod:", "glide:")):
                 pass
             elif k in ("fx:phaser", "fx:flanger"):
                 ph = f"a {k[3:]} sweep"
@@ -234,7 +238,8 @@ class State:
         return out
 
     def pitch_mod(self) -> bool:
-        return any(("tune" in k or "transpose" in k) for k in self.aud if k.startswith("mod:"))
+        return any(("tune" in k or "transpose" in k) for k in self.aud if k.startswith("mod:")) or \
+            any(k.startswith("glide:") for k in self.aud)
 
     def distortion(self) -> str | None:
         return self.aud["fx:distortion"][0] if "fx:distortion" in self.aud else None
