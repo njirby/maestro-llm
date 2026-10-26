@@ -1,0 +1,193 @@
+[
+ {
+  "case": "read_image",
+  "assistant": {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_maestro_19_0",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"{WORKDIR}/img.png\"}"
+     }
+    }
+   ]
+  },
+  "tool_messages": [
+   {
+    "role": "tool",
+    "tool_call_id": "call_maestro_19_0",
+    "content": "Image read successfully"
+   }
+  ],
+  "user": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "Attached media from tool result:"
+    },
+    {
+     "type": "text",
+     "text": "ERROR: Cannot read image (this model does not support image input). Inform the user."
+    }
+   ]
+  }
+ },
+ {
+  "case": "read_image_parallel",
+  "assistant": {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_maestro_20_0",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"{WORKDIR}/img.png\"}"
+     }
+    },
+    {
+     "id": "call_maestro_20_1",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"{WORKDIR}/img2.png\"}"
+     }
+    }
+   ]
+  },
+  "tool_messages": [
+   {
+    "role": "tool",
+    "tool_call_id": "call_maestro_20_0",
+    "content": "Image read successfully"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "call_maestro_20_1",
+    "content": "Image read successfully"
+   }
+  ],
+  "user": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "Attached media from tool result:"
+    },
+    {
+     "type": "text",
+     "text": "ERROR: Cannot read image (this model does not support image input). Inform the user."
+    },
+    {
+     "type": "text",
+     "text": "ERROR: Cannot read image (this model does not support image input). Inform the user."
+    }
+   ]
+  }
+ },
+ {
+  "case": "read_audio",
+  "assistant": {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_maestro_21_0",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"{WORKDIR}/target.wav\"}"
+     }
+    }
+   ]
+  },
+  "tool_messages": [
+   {
+    "role": "tool",
+    "tool_call_id": "call_maestro_21_0",
+    "content": "Audio read successfully"
+   }
+  ],
+  "user": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "Attached media from tool result:"
+    },
+    {
+     "type": "input_audio",
+     "input_audio": {
+      "data": "{B64:target.wav}",
+      "format": "wav"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "case": "read_audio_parallel",
+  "assistant": {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_maestro_22_0",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"{WORKDIR}/target.wav\"}"
+     }
+    },
+    {
+     "id": "call_maestro_22_1",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"{WORKDIR}/second.wav\"}"
+     }
+    }
+   ]
+  },
+  "tool_messages": [
+   {
+    "role": "tool",
+    "tool_call_id": "call_maestro_22_0",
+    "content": "Audio read successfully"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "call_maestro_22_1",
+    "content": "Audio read successfully"
+   }
+  ],
+  "user": {
+   "role": "user",
+   "content": [
+    {
+     "type": "text",
+     "text": "Attached media from tool result:"
+    },
+    {
+     "type": "input_audio",
+     "input_audio": {
+      "data": "{B64:target.wav}",
+      "format": "wav"
+     }
+    },
+    {
+     "type": "input_audio",
+     "input_audio": {
+      "data": "{B64:second.wav}",
+      "format": "wav"
+     }
+    }
+   ]
+  }
+ }
+]

@@ -1,0 +1,38 @@
+[
+ {
+  "subagent_type": "transcriber",
+  "description": "Transcribe target melody",
+  "prompt": "Target: {WORKDIR}/target.wav. Write the melody to {WORKDIR}/notes.json.",
+  "subagent_first_user": {
+   "role": "user",
+   "content": "Target: {WORKDIR}/target.wav. Write the melody to {WORKDIR}/notes.json."
+  },
+  "subagent_system": "system/transcriber.txt",
+  "subagent_final_text": "notes.json: 8 notes.",
+  "parent_result": "<task id=\"{SES_ID}\" state=\"completed\">\n<task_result>\nnotes.json: 8 notes.\n</task_result>\n</task>"
+ },
+ {
+  "subagent_type": "searcher",
+  "description": "Search wavetables 0-47",
+  "prompt": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nSlice: wavetables 0-47.",
+  "subagent_first_user": {
+   "role": "user",
+   "content": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nSlice: wavetables 0-47."
+  },
+  "subagent_system": "system/searcher.txt",
+  "subagent_final_text": "- Basic Shapes: right body\n- Harmonic Series: bright edge",
+  "parent_result": "<task id=\"{SES_ID}\" state=\"completed\">\n<task_result>\n- Basic Shapes: right body\n- Harmonic Series: bright edge\n</task_result>\n</task>"
+ },
+ {
+  "subagent_type": "judge",
+  "description": "Judge wavetable pool",
+  "prompt": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"].",
+  "subagent_first_user": {
+   "role": "user",
+   "content": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"]."
+  },
+  "subagent_system": "system/judge.txt",
+  "subagent_final_text": "{\"tuple\": [\"Basic Shapes\"], \"reasoning\": \"Closest body.\"}",
+  "parent_result": "<task id=\"{SES_ID}\" state=\"completed\">\n<task_result>\n{\"tuple\": [\"Basic Shapes\"], \"reasoning\": \"Closest body.\"}\n</task_result>\n</task>"
+ }
+]

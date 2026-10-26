@@ -1,0 +1,77 @@
+{
+ "transcriber": [
+  {
+   "role": "user",
+   "content": "Target: {WORKDIR}/target.wav. Write the melody to {WORKDIR}/notes.json."
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_transcriber_0_0",
+     "type": "function",
+     "function": {
+      "name": "bash",
+      "arguments": "{\"command\":\"echo transcriber\",\"description\":\"Probe\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_transcriber_0_0",
+   "content": "transcriber\n"
+  }
+ ],
+ "searcher": [
+  {
+   "role": "user",
+   "content": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nSlice: wavetables 0-47."
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_searcher_0_0",
+     "type": "function",
+     "function": {
+      "name": "bash",
+      "arguments": "{\"command\":\"echo searcher\",\"description\":\"Probe\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_searcher_0_0",
+   "content": "searcher\n"
+  }
+ ],
+ "judge": [
+  {
+   "role": "user",
+   "content": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"]."
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_judge_0_0",
+     "type": "function",
+     "function": {
+      "name": "bash",
+      "arguments": "{\"command\":\"echo judge\",\"description\":\"Probe\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_judge_0_0",
+   "content": "judge\n"
+  }
+ ]
+}

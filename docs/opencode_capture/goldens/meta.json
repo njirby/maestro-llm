@@ -1,0 +1,37 @@
+{
+ "opencode_version": "1.19.3",
+ "captured_from": "docs/opencode_capture/goldens/capture/capture.sh (stock OpenCode, no plugin)",
+ "skills_staged_from": "opencode/skills",
+ "placeholders": {
+  "{WORKDIR}": "session cwd (`<env>` Working directory, tool paths)",
+  "{CONFIG_DIR}": "OPENCODE_CONFIG_DIR (skill <location>, skill base directory)",
+  "{DATA_DIR}": "$XDG_DATA_HOME/opencode (bash 'Full output saved to' lives in {DATA_DIR}/tool-output/)",
+  "{TOOL_OUTPUT_ID}": "tool_<12 hex><14 base62>, ascending id",
+  "{SES_ID}": "ses_<12 hex><14 base62>, descending id; task results carry the subagent's",
+  "{DATE}": "JS Date.toDateString() in local TZ, e.g. 'Sun Oct 25 2026'",
+  "{PORT}": "mock server port (webfetch case only)"
+ },
+ "order_dependent": "skill_files (ripgrep order, max 10) and glob (mtime order) vary run to run; the contract takes the list as input",
+ "tool_names": [
+  "bash",
+  "edit",
+  "glob",
+  "grep",
+  "read",
+  "skill",
+  "task",
+  "todowrite",
+  "webfetch",
+  "write"
+ ],
+ "tool_names_subagent": [
+  "bash",
+  "edit",
+  "glob",
+  "grep",
+  "read",
+  "skill",
+  "webfetch",
+  "write"
+ ]
+}

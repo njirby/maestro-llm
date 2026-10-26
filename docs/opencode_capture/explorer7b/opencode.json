@@ -1,0 +1,60 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "omni30b": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen3-Omni-30B-A3B (Instruct, zero-shot)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8100/v1",
+        "apiKey": "sk-local"
+      },
+      "models": {
+        "omni30b": {
+          "name": "Qwen3-Omni-30B-A3B-Instruct",
+          "tool_call": true,
+          "modalities": {
+            "input": [
+              "text",
+              "audio"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        }
+      }
+    }
+  },
+  "model": "omni30b/omni30b",
+  "temperature": 0,
+  "compaction": {
+    "auto": false
+  },
+  "skills": {
+    "paths": [
+      "/tmp/opencode/explorer7b/skills"
+    ]
+  },
+  "permission": {
+    "bash": "allow",
+    "read": "allow",
+    "edit": "deny",
+    "write": "deny",
+    "task": "allow",
+    "skill": "allow",
+    "webfetch": "deny",
+    "websearch": "deny"
+  },
+  "mode": {
+    "explorer": {
+      "description": "Vital synth explorer: discover the engine, then recreate the target sound",
+      "temperature": 0,
+      "steps": 60,
+      "prompt": "You are a synthesizer exploration agent working in this folder.\n\nFiles here:\n- preset.json — full state of the Vital synth (every parameter as JSON). THE source of truth for the sound.\n- notes.json — the 4-note melody render uses.\n- target.wav — the target sound. Your mission: make this synth reproduce it.\n- render — the only way to hear the synth: ./render <preset.json> <notes.json> <out.wav> [tail_seconds]\n- dd_state.py — the state builder render uses. Do not edit it.\n- python — Python with DawDreamer (import dawdreamer as dd). Engine: ~/.vst3/Vital.vst3\n\nPHASE 1 — EXPLORE before you edit anything:\n- Load the vital skill (skill tool). It maps every section, the mod-matrix, the units, the on-gates, and known recipes.\n- Render the current preset and LISTEN to it. That is your baseline.\n- If you need a raw fact (label, range, default, which index), query the live engine:\n    python heredoc: import dawdreamer as dd ... proc.get_parameter_name(i) / get_parameter_range(i, steps, True) / get_parameter_text(i)\n  (The skill's appendix has the exact boot snippet including the X11 guard.)\n\nPHASE 2 — REPRODUCE:\n- Edit preset.json, then render and LISTEN, and compare your render to target.wav.\n- One subsystem at a time (the skill's order: wavetables/oscillators -> envelopes -> filters -> LFOs/mods -> FX).\n- If a render does not change: suspect a section on-flag, an enum that is still at its inert default, or the wrong key — check before editing more.\n- If the target sounds like one of the skill's recipes, start from that recipe's JSON and adapt.\n\nPHASE 3 — REPORT:\n- List every change you made (key: old -> new) with a one-line reason each.\n- State what you hear in your final render vs the target, and what (if anything) is still off.\n\nRules:\n- The skill's UNITS table and ON-GATES list are authoritative; when in doubt, query the engine, do not guess.\n- Do not write new render helpers; use ./render. You may write small python heredocs for metrics (rms, mel distance).\n- Keep A/B renders short (tail 0.5).\n- Listen to your renders (read target.wav and your out.wav as audio) before judging them.\n- Budget: finish in under 45 tool calls."
+    }
+  }
+}

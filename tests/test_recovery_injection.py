@@ -85,7 +85,8 @@ def test_emission_is_the_six_message_recovery_shape():
     assert broken_call["arguments"]["command"] != fixed_call["arguments"]["command"]
     # Failure rides the contract's failure shape, carrying the real traceback.
     assert messages[2]["content"] == oc.bash_output("", exit_code=1, stderr=tb)
-    assert messages[2]["content"].startswith("Command failed with exit code 1.")
+    # Real opencode returns the combined output only; the exit code never reaches the model.
+    assert "exit code" not in messages[2]["content"]
     assert "KeyError" in messages[2]["content"]
     # The diagnosis names the error and the fix, so the model learns to read it.
     assert messages[3]["content"] == mutation.diagnosis

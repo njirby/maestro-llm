@@ -1,0 +1,9 @@
+{
+ "model": "maestro",
+ "max_tokens": 4096,
+ "tool_choice": "auto",
+ "stream": true,
+ "stream_options": {
+  "include_usage": true
+ }
+}

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# render PRESET NOTES OUT [TAIL] — the only way to hear the synth
+exec python - "$1" "$2" "$3" "${4:-0.5}" <<'PY'
+import ctypes, ctypes.util, os, sys, json, numpy as np, soundfile as sf
+os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+_x = ctypes.CDLL(ctypes.util.find_library("X11")); _x.XInitThreads()
+_x.XSetErrorHandler(ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(lambda d,e:0))
+_x.XSetIOErrorHandler(ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)(lambda d:0))
+import dawdreamer as dd
+sys.path.insert(0, os.path.dirname(os.path.abspath("dd_state.py")))
+from dd_state import build_state
+preset, notes_p, out, tail = sys.argv[1:5]
+open("/tmp/st","wb").write(build_state(json.load(open(preset))))
+eng = dd.RenderEngine(44100, 512); proc = eng.make_plugin_processor("vital", os.path.expanduser("~/.vst3/Vital.vst3"))
+eng.load_graph([(proc, [])]); proc.load_state("/tmp/st"); proc.clear_midi()
+notes = json.load(open(notes_p))["notes"]
+for n in notes: proc.add_midi_note(n["pitch"], n["velocity"], n["start_s"], n["dur_s"])
+eng.render(max(n["start_s"]+n["dur_s"] for n in notes)+float(tail))
+a = proc.get_audio(); sf.write(out, a.T, 44100)
+print(f"{out}  peak={np.abs(a).max():.3f}  rms={np.sqrt((a.mean(0)**2).mean()):.4f}")
+PY
