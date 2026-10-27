@@ -725,23 +725,29 @@ def wavetable_slice_label(start: int, end: int) -> str:
 
 
 def search_dispatch_prompt(target_audio_path, notes_path, start: int, end: int) -> str:
-    """Parent -> searcher: the target, the session notes and a slice [start, end) of the wavetable library."""
+    """Parent -> searcher: the target, the session notes and a chunk [start, end) of the wavetable library.
+    The searcher audits EVERY table in the chunk and replies with the best 2-3 configurations (tables in
+    oscillator order) for the target in that chunk."""
     return ("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. "
-            "Pick a wide net from your slice's listing, render each candidate with the session notes, listen "
-            "against the target one at a time, and shortlist the 2-4 closest, each with a few words on what it "
-            "gets right.\n\n"
+            "Audition every table in your chunk: render each one with the session notes and listen against the "
+            "target one at a time. Then combine the closest ones into pairs — both oscillator orders, since osc 1 "
+            "leads — render and listen to those too. Reply with your best 2-3 configurations for the target in "
+            "this chunk: tables in oscillator order, each with a few words on what it explains.\n\n"
             f"Target: {target_audio_path}\n"
             f"Notes: {notes_path}.\n"
-            f"Slice: wavetables {wavetable_slice_label(start, end)}.")
+            f"Chunk: wavetables {wavetable_slice_label(start, end)}.")
 
 
-def judge_dispatch_prompt(target_audio_path, pool: list[str], locked_section: str = "",
+def judge_dispatch_prompt(target_audio_path, pool: list[list[str]], locked_section: str = "",
                           notes_path=None) -> str:
-    """Parent -> judge: the target, the session notes and the pooled shortlists. The reply format
-    ({"tuple": [...], "reasoning": "..."}) is in agent/judge.md. `locked_section` is appended verbatim."""
-    pool_str = ", ".join(json.dumps(n, ensure_ascii=False) for n in pool)
+    """Parent -> judge: the target, the session notes and the pooled configurations (each a list of table names
+    in oscillator order). The reply format ({"tuple": [...], "reasoning": "..."}) is in agent/judge.md.
+    `locked_section` is appended verbatim."""
+    pool_str = ", ".join(json.dumps(cfg, ensure_ascii=False) for cfg in pool)
     notes = f"Notes: {notes_path}.\n" if notes_path else ""
-    return ("Pick the oscillator wavetables for the target clip. From the pool, render the strongest combinations "
-            "(one to three oscillators) and listen against the target; reply with JSON: "
+    return ("Pick the oscillator wavetables for the target clip. The pool is the best configurations each search "
+            "chunk found — a configuration is a list of table names in oscillator order. Render the strongest "
+            "configurations, including recombos (one table from one configuration, another from another), and "
+            "listen against the target; reply with JSON: "
             "{\"tuple\": [names in oscillator order], \"reasoning\": \"one or two sentences\"}.\n\n"
             f"Target: {target_audio_path}\n{notes}Pool: [{pool_str}].{locked_section}")

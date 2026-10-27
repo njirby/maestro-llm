@@ -82,6 +82,10 @@ def opencode_env(port: int, model: str) -> dict[str, str]:
         "OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1",
         "OPENCODE_DISABLE_LSP_DOWNLOAD": "1", "OPENCODE_DISABLE_CLAUDE_CODE": "1",
         "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+        # the one opencode process runs every subagent session in-process; on a 30 GB box the
+        # base64 audio in 11-18 parallel searchers' histories pushed node RSS to ~28 GB (host OOM,
+        # exit 137) — cap the old space so V8 collects instead of growing into the host
+        "NODE_OPTIONS": "--max-old-space-size=12288",
         "NPM_CONFIG_REGISTRY": "http://127.0.0.1:9/",
         "MAESTRO_BASE_URL": f"http://127.0.0.1:{port}/v1", "MAESTRO_MODEL": model,
         **SKILL_ENV,

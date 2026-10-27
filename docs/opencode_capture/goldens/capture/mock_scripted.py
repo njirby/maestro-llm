@@ -72,20 +72,25 @@ def main_script(WD, PORT):
                       f"`vital` skill documents.\n\nTarget: {WD}/target.wav\nWrite the melody to {WD}/notes.json.")),
          call("task", description="Search wavetables 0-47", subagent_type="searcher",
               prompt=("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator "
-                      "wavetables. Pick a wide net from your slice's listing, render each candidate with the "
-                      "session notes, listen against the target one at a time, and shortlist the 2-4 closest, "
-                      "each with a few words on what it gets right.\n\n"
-                      f"Target: {WD}/target.wav\nNotes: {WD}/notes.json.\nSlice: wavetables 0-47.")),
+                      "wavetables. Audition every table in your chunk: render each one with the session notes "
+                      "and listen against the target one at a time. Then combine the closest ones into pairs — "
+                      "both oscillator orders, since osc 1 leads — render and listen to those too. Reply with "
+                      "your best 2-3 configurations for the target in this chunk: tables in oscillator order, "
+                      "each with a few words on what it explains.\n\n"
+                      f"Target: {WD}/target.wav\nNotes: {WD}/notes.json.\nChunk: wavetables 0-47.")),
          call("task", description="Judge wavetable pool", subagent_type="judge",
-              prompt=("Pick the oscillator wavetables for the target clip. From the pool, render the strongest "
-                      "combinations (one to three oscillators) and listen against the target; reply with JSON: "
+              prompt=("Pick the oscillator wavetables for the target clip. The pool is the best configurations "
+                      "each search chunk found — a configuration is a list of table names in oscillator order. "
+                      "Render the strongest configurations, including recombos (one table from one "
+                      "configuration, another from another), and listen against the target; reply with JSON: "
                       "{\"tuple\": [names in oscillator order], \"reasoning\": \"one or two sentences\"}.\n\n"
-                      f"Target: {WD}/target.wav\nNotes: {WD}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"]."))]),
+                      f"Target: {WD}/target.wav\nNotes: {WD}/notes.json.\n"
+                      f"Pool: [[\"Basic Shapes\", \"Harmonic Series\"], [\"Basic Shapes\"]]."))]),
     ]
 
 SUB_FINAL = {
     "transcriber": "notes.json: 8 notes.",
-    "searcher": "- Basic Shapes: right body\n- Harmonic Series: bright edge",
+    "searcher": "1. Basic Shapes (osc 1) + Harmonic Series (osc 2): closest to the target in this chunk\n2. Basic Shapes: also close",
     "judge": '{"tuple": ["Basic Shapes"], "reasoning": "Closest body."}',
 }
 

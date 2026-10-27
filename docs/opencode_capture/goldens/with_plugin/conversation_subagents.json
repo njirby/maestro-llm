@@ -27,7 +27,7 @@
  "searcher": [
   {
    "role": "user",
-   "content": "Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. Pick a wide net from your slice's listing, render each candidate with the session notes, listen against the target one at a time, and shortlist the 2-4 closest, each with a few words on what it gets right.\n\nTarget: {WORKDIR}/target.wav\nNotes: {WORKDIR}/notes.json.\nSlice: wavetables 0-47."
+   "content": "Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. Audition every table in your chunk: render each one with the session notes and listen against the target one at a time. Then combine the closest ones into pairs — both oscillator orders, since osc 1 leads — render and listen to those too. Reply with your best 2-3 configurations for the target in this chunk: tables in oscillator order, each with a few words on what it explains.\n\nTarget: {WORKDIR}/target.wav\nNotes: {WORKDIR}/notes.json.\nChunk: wavetables 0-47."
   },
   {
    "role": "assistant",
@@ -52,7 +52,7 @@
  "judge": [
   {
    "role": "user",
-   "content": "Pick the oscillator wavetables for the target clip. From the pool, render the strongest combinations (one to three oscillators) and listen against the target; reply with JSON: {\"tuple\": [names in oscillator order], \"reasoning\": \"one or two sentences\"}.\n\nTarget: {WORKDIR}/target.wav\nNotes: {WORKDIR}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"]."
+   "content": "Pick the oscillator wavetables for the target clip. The pool is the best configurations each search chunk found — a configuration is a list of table names in oscillator order. Render the strongest configurations, including recombos (one table from one configuration, another from another), and listen against the target; reply with JSON: {\"tuple\": [names in oscillator order], \"reasoning\": \"one or two sentences\"}.\n\nTarget: {WORKDIR}/target.wav\nNotes: {WORKDIR}/notes.json.\nPool: [[\"Basic Shapes\", \"Harmonic Series\"], [\"Basic Shapes\"]]."
   },
   {
    "role": "assistant",

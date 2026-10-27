@@ -105,13 +105,16 @@ def test_task_roundtrip_matches_golden():
     by = {c["subagent_type"]: c for c in rt}
     wd = "{WORKDIR}"
     assert oc.transcription_dispatch_prompt(f"{wd}/target.wav", f"{wd}/notes.json") == by["transcriber"]["prompt"]
-    assert oc.judge_dispatch_prompt(f"{wd}/target.wav", ["Basic Shapes", "Harmonic Series"],
+    assert oc.judge_dispatch_prompt(f"{wd}/target.wav",
+                                    [["Basic Shapes", "Harmonic Series"], ["Basic Shapes"]],
                                     notes_path=f"{wd}/notes.json") == by["judge"]["prompt"]
     assert oc.search_dispatch_prompt(f"{wd}/target.wav", f"{wd}/notes.json", 0, 48) == \
         ("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. "
-         "Pick a wide net from your slice's listing, render each candidate with the session notes, listen "
-         "against the target one at a time, and shortlist the 2-4 closest, each with a few words on what it "
-         f"gets right.\n\nTarget: {wd}/target.wav\nNotes: {wd}/notes.json.\nSlice: wavetables wt001-wt048.")
+         "Audition every table in your chunk: render each one with the session notes and listen against the "
+         "target one at a time. Then combine the closest ones into pairs — both oscillator orders, since osc 1 "
+         "leads — render and listen to those too. Reply with your best 2-3 configurations for the target in "
+         f"this chunk: tables in oscillator order, each with a few words on what it explains.\n\n"
+         f"Target: {wd}/target.wav\nNotes: {wd}/notes.json.\nChunk: wavetables wt001-wt048.")
     for c in rt:
         sub = Record(c["subagent_type"], "s", wd, c["prompt"]).finish(c["subagent_final_text"])
         assert sub["messages"][1] == c["subagent_first_user"]

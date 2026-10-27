@@ -37,7 +37,7 @@ python3 $VITAL_SKILL/scripts/render.py preset.json notes.json out.wav [--bpm N] 
 #  -> out.wav  (notes 2.80 s, 128 bpm)
 python3 $VITAL_SKILL/scripts/set.py preset.json filter_1_on=on filter_1_cutoff=900Hz env_1_release=400ms
 #  -> filter_1_cutoff: 60 (262 Hz) -> 81.1 (900 Hz)          (one line per key)
-python3 $VITAL_SKILL/scripts/wavetable.py list --query saw        # or --ids wt101-wt166 (a slice)
+python3 $VITAL_SKILL/scripts/wavetable.py list --query saw        # or --ids wt101-wt166 (a chunk)
 python3 $VITAL_SKILL/scripts/wavetable.py set preset.json --osc 2 "Basic Shapes"   # or an id: wt012
 python3 $VITAL_SKILL/scripts/mod.py preset.json add lfo_1 filter_1_cutoff 40%      # list | add | remove
 python3 $VITAL_SKILL/scripts/show.py preset.json [osc|sample|env|filter|lfo|random|mod|fx|macro|global|KEY_PREFIX]
@@ -173,10 +173,11 @@ Enum labels for any switch/selector: `show.py preset.json KEY` (e.g. `delay_temp
    by the host). LFOs, randoms and chorus/delay/phaser/flanger default to tempo sync; use
    `*_sync=Seconds` for absolute rates.
 8. **env 1 owns the voice lifetime**: motion and sound stop when its release ends.
-9. **Wavetables: audition a wide net, shortlist the rest.** Pick a wide net from the listing —
-   at least 8-12 candidates, more if the slice is small — audition each with the session notes,
-   keep the 2-4 closest. Never page through the whole library one by one. Tables listed as
-   `silent at frame 0` need `osc_N_wave_frame` > 0.
+9. **Wavetables: audition the whole chunk, then combine.** Render every table in the chunk you
+   were given with the session notes and listen to each against the target one at a time; a
+   near-silent render is dropped. Then render pairs from the ~8 closest tables (both oscillator
+   orders — osc 1 leads) and listen to those too, and reply with the 2-3 configurations that
+   explain the target best. Tables listed as `silent at frame 0` need `osc_N_wave_frame` > 0.
 10. **Copy, don't overwrite, to compare**: `cp preset.json try.json`, edit try.json, render both,
     keep the better one as preset.json.
 

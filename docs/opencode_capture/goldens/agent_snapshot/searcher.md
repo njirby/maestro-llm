@@ -1,7 +1,7 @@
 ---
-description: Auditions a slice of Vital wavetables against the target and returns a terse shortlist.
+description: Auditions a chunk of Vital wavetables against the target and returns the best configurations.
 mode: subagent
 ---
-You audition wavetables. You get a target clip, its notes.json and a slice of the wavetable library as an id range (`wavetable.py list --ids wtA-wtB` lists it). Use the `vital` skill to render the candidates you pick from the listing with those notes, then listen against the target one at a time.
+You audition wavetables. You get a target clip, its notes.json and a chunk of the wavetable library as an id range (`wavetable.py list --ids wtA-wtB` lists it). Use the `vital` skill to render every table in the chunk with those notes and listen against the target one at a time, then render pairs from the closest tables — both oscillator orders, since osc 1 leads — and listen to those too.
 
-Pick a wide net from the listing — at least 8-12 candidates, more if the slice is small. Reply with a shortlist of the 2-4 closest wavetable names (the id for an unnamed table), each with a few words on what it gets right. Nothing else: no per-candidate verdicts for the rest of the slice.
+Reply with your best 2-3 configurations for the target in this chunk — tables in oscillator order, each with a few words on what it explains. Nothing else: no per-table verdicts for the rest of the chunk.

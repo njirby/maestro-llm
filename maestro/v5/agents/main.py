@@ -1,8 +1,9 @@
 """maestro (main agent): one full rollout, subagents included.
 
-  skill vital -> listen to target.wav -> first impression -> cp init preset.json
-  -> task transcriber -> wavetable.py list --limit 0 -> 2-4 parallel task searcher (one message) -> task judge
-  -> rounds (planner.Plan): [code mistake + fix] edits, render, listen, self_edit + target_vs_current narration,
+   skill vital -> listen to target.wav -> first impression -> cp init preset.json
+   -> task transcriber -> wavetable.py list --limit 0 -> parallel task searchers, one per ~32-table chunk
+      (full audition + oriented-pair beam; one message) -> task judge (recombines across the pooled configurations)
+   -> rounds (planner.Plan): [code mistake + fix] edits, render, listen, self_edit + target_vs_current narration,
      param-mistake correction (fix edit, render, listen, self_edit)
   -> show.py, final render, listen to target then final, final verdict.
 """
@@ -10,12 +11,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import shlex
 from pathlib import Path
 
 from scripts import opencode_contract as oc
-from scripts.agent_sft_common import compute_round_coverage, slices_for_regions
+from scripts.agent_sft_common import compute_round_coverage
+
+from .. import search
 
 from .. import gate, narration
 from ..ctx import Ctx, OracleRenderer
@@ -125,37 +127,32 @@ class Main:
         call, resp = self.task("transcriber", 0, "Transcribe target melody", t_prompt, t_rec)
         rec.step([call], [resp])
 
-        # searchers: the library, sliced
+        # searchers: the window, chunked — every table in each chunk auditioned, the closest beamed into pairs,
+        # the best configurations pooled
         run(rec, ctx, f"{WT} list --limit 0")
         gt_tables = [e for _, e in self.plan.wavetables]
         regions = self.coverage(gt_tables)
-        n_tables = sum(b - a for a, b in regions)
-        n_agents = rng.choice([2, 3])
-        slices = slices_for_regions(regions, math.ceil(n_tables / n_agents))
-        gt_probes = {}
-        for e in gt_tables:
-            p = json.loads(json.dumps(self.init))
-            p["settings"]["wavetables"][0] = vitallib.wt_load(e)
-            if e.get("silent_frame0"):
-                p["settings"]["osc_1_wave_frame"] = 128.0
-            gt_probes[e["id"]] = str(ctx.oracle_render(p, f"gt_{e['id']}"))
+        a0, b0 = regions[0]
+        n_tables = b0 - a0
+        spans = [(a0 + a, a0 + b) for a, b in search.chunks(n_tables)]
         calls, resps, pool = [], [], []
-        for k, (a, b) in enumerate(slices, 1):
+        for k, (a, b) in enumerate(spans, 1):
             prompt = oc.search_dispatch_prompt(target, notes_path, a, b)
-            r, short = run_searcher(ctx, k, prompt, f"{s.id}.searcher{k}", a, b, gt_tables, gt_probes)
+            r, cfgs = run_searcher(ctx, k, prompt, f"{s.id}.searcher{k}", a, b, gt_tables, len(gt_tables), target_host)
             call, resp = self.task("searcher", k, f"Search wavetables {oc.wavetable_slice_label(a, b)}", prompt, r)
             calls.append(call)
             resps.append(resp)
-            pool += [x for x in short if x not in pool]
+            have = {tuple(map(wt_ref, c)) for c in pool}
+            pool += [c for c in cfgs if tuple(map(wt_ref, c)) not in have]
         what = "the whole library" if n_tables == 499 else f"{n_tables} of the 499 tables"
-        rec.say(f"Searching {what} in {len(slices)} slices.")
+        rec.say(f"Searching {what} — {len(spans)} chunks, every table auditioned.")
         rec.step(calls, resps)
 
-        # judge
-        gt_refs = [wt_ref(e) for e in gt_tables]
-        j_prompt = oc.judge_dispatch_prompt(target, pool, notes_path=notes_path)
-        j_rec = run_judge(ctx, j_prompt, f"{s.id}.judge", pool, gt_refs)
-        rec.say(f"{len(pool)} candidates in the pool; the judge picks the oscillator tables.")
+        # judge: recombines across the pooled configurations and picks the oscillator tables
+        j_prompt = oc.judge_dispatch_prompt(target, [[wt_ref(e) for e in c] for c in pool], notes_path=notes_path)
+        j_rec = run_judge(ctx, j_prompt, f"{s.id}.judge", pool, gt_tables)
+        n_tab = len({r for c in pool for r in map(wt_ref, c)})
+        rec.say(f"{n_tab} tables in {len(pool)} configurations; the judge recombines and picks the oscillator tables.")
         call, resp = self.task("judge", 0, "Judge wavetable pool", j_prompt, j_rec)
         rec.step([call], [resp])
 
@@ -226,8 +223,8 @@ class Main:
 
     def coverage(self, gt_tables: list[dict], tries: int = 64) -> list[tuple[int, int]]:
         """compute_round_coverage's round-1 window over the library (coverage 50-100%), redrawn until it is one
-        contiguous range (slices map to one wtA-wtB range each) holding every GT table (oracle: the GT reaches the
-        pool)."""
+        contiguous range (which is then chunked for the searchers) holding every GT table (oracle: the GT reaches
+        the pool)."""
         idx = [e["id"] for e in vitallib.wt_index()]
         need = {idx.index(e["id"]) for e in gt_tables}
         for _ in range(tries):

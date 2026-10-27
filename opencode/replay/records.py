@@ -260,6 +260,7 @@ _SUBS = [
     (re.compile(r"/tmp/tmp[A-Za-z0-9_]{6,}"), "{TMPDIR}"),
 ]
 _SKILL_FILES = re.compile(r"(Base directory for this skill: )(\S+)(\n(?:.*\n)*?<skill_files>\n)(.*?)(\n</skill_files>)", re.S)
+_SHELL_META = re.compile(r"\n*<shell_metadata>.*?</shell_metadata>")
 
 WHITELIST = {
     "date": "`Today's date: <Date.toDateString()>` in the <env> block",
@@ -277,6 +278,9 @@ WHITELIST = {
                     "byte-identical); fails only on gross breakage: length > one block off, silence "
                     "mismatch (peak < -60 dBFS on one side only), mean |log-mel diff| > max_mel_db "
                     "(default 10 dB); mel_db is informational (audio_eq)",
+    "shell_metadata": "the <shell_metadata> block OpenCode appends when a bash call exceeds its 120 s shell "
+                      "timeout (replay contention: the parallel subagents of one task step share a single "
+                      "container); the command output itself must still match",
 }
 
 
@@ -293,6 +297,7 @@ def _norm_skill_files(text: str) -> str:
 def norm_text(s: str) -> str:
     for rx, rep in _SUBS:
         s = rx.sub(rep, s)
+    s = _SHELL_META.sub("", s)
     if "<skill_files>" in s:
         s = _norm_skill_files(s)
     return s
