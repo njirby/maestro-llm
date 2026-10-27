@@ -28,6 +28,29 @@ MOD_SOURCES = (*(f"lfo_{i}" for i in range(1, 9)), *(f"random_{i}" for i in rang
                "mod_wheel", "pitch_wheel", "velocity", "aftertouch", "note", "note_in_octave", "lift", "stereo", "random")
 N_SLOTS = 64
 
+# notes.json: the melody written as measures and note values (the builder's copy lives in maestro/notation.py;
+# the two are pinned in step by tests/test_notation.py).
+NOTE_VALUES = {
+    "whole": 4.0, "dotted half": 3.0, "half": 2.0, "dotted quarter": 1.5, "quarter": 1.0,
+    "dotted eighth": 0.75, "eighth": 0.5, "dotted sixteenth": 0.375, "sixteenth": 0.25,
+    "dotted thirty-second": 0.1875, "thirty-second": 0.125, "triplet quarter": 2.0 / 3,
+    "triplet eighth": 1.0 / 3, "triplet sixteenth": 1.0 / 6, "triplet thirty-second": 1.0 / 12,
+}
+
+
+def parse_time_signature(ts):
+    """`W/X` -> (beats per bar, beat length in beats). 4/4 counts quarters; 6/8 is compound (dotted-quarter beat)."""
+    ts = ts or "4/4"
+    try:
+        w, x = (int(t) for t in ts.split("/"))
+    except ValueError:
+        raise UsageError(f"time signature {ts!r} is not W/X") from None
+    if x == 4 and 2 <= w <= 7:
+        return w, 1.0
+    if x == 8 and w in (6, 9, 12):
+        return w // 3, 1.5
+    raise UsageError(f"time signature {ts!r} unsupported (use 4/4, 3/4, 6/8, 9/8 or 12/8)")
+
 
 class UsageError(Exception):
     """Bad input from the caller: printed as `error: ...` with exit code 2."""
@@ -70,7 +93,9 @@ def save_preset(path: str | Path, preset: dict) -> None:
 
 
 def load_notes(path: str | Path) -> tuple[list[dict], float | None]:
-    """notes.json -> (notes, bpm or None). Accepts {"bpm", "notes": [...]} or a bare list of notes."""
+    """notes.json -> (notes in seconds, bpm or None). The documented form is measures and note values
+    ({"bpm", "time_signature", "notes": [{pitch, velocity, bar, beat, duration}]}); the legacy
+    start_s/dur_s form is still accepted. A bare list of notes also works (120 bpm)."""
     p = Path(path)
     if not p.is_file():
         raise UsageError(f"{p}: no such notes file")
@@ -81,16 +106,32 @@ def load_notes(path: str | Path) -> tuple[list[dict], float | None]:
     notes, bpm = (d, None) if isinstance(d, list) else (d.get("notes"), d.get("bpm"))
     if not isinstance(notes, list) or not notes:
         raise UsageError(f"{p}: needs a non-empty \"notes\" list")
+    eff_bpm = float(bpm) if bpm is not None else 120.0
+    bpb, beat_beats = parse_time_signature(None if isinstance(d, list) else d.get("time_signature"))
+    spb = 60.0 / eff_bpm * beat_beats  # seconds per beat
     out = []
     for i, n in enumerate(notes):
         try:
-            out.append({"pitch": int(n["pitch"]), "velocity": int(n.get("velocity", 100)),
-                        "start_s": float(n["start_s"]), "dur_s": float(n["dur_s"])})
+            pitch, vel = int(n["pitch"]), int(n.get("velocity", 100))
+            if "start_s" in n:  # legacy form
+                start_s, dur_s = float(n["start_s"]), float(n["dur_s"])
+            else:  # measures and note values
+                bar, beat, val = int(n["bar"]), float(n["beat"]), str(n["duration"])
+                if val not in NOTE_VALUES:
+                    raise UsageError(f"{p}: note {i} has unknown note value {val!r} "
+                                     f"(one of: {', '.join(NOTE_VALUES)})")
+                if not (bar >= 1 and beat >= 1):
+                    raise UsageError(f"{p}: note {i} starts before bar 1 beat 1: {n!r}")
+                start_s = ((bar - 1) * bpb + (beat - 1)) * spb
+                dur_s = NOTE_VALUES[val] * spb
+        except UsageError:
+            raise
         except (KeyError, TypeError, ValueError):
-            raise UsageError(f"{p}: note {i} needs pitch, start_s, dur_s (velocity optional): {n!r}")
-        if not (0 <= out[-1]["pitch"] <= 127 and 0 <= out[-1]["velocity"] <= 127 and out[-1]["dur_s"] > 0
-                and out[-1]["start_s"] >= 0):
+            raise UsageError(f"{p}: note {i} needs pitch and bar/beat/duration or start_s/dur_s "
+                             f"(velocity optional): {n!r}")
+        if not (0 <= pitch <= 127 and 0 <= vel <= 127 and dur_s > 0 and start_s >= 0):
             raise UsageError(f"{p}: note {i} out of range: {n!r}")
+        out.append({"pitch": pitch, "velocity": vel, "start_s": start_s, "dur_s": dur_s})
     return out, (float(bpm) if bpm is not None else None)
 
 

@@ -2,7 +2,7 @@
  "transcriber": [
   {
    "role": "user",
-   "content": "Target: {WORKDIR}/target.wav. Write the melody to {WORKDIR}/notes.json."
+   "content": "Transcribe the melody in the target clip — I'll use the notes to audition wavetables, so the pitches and the rhythm have to be right. Write them to notes.json in the format the `vital` skill documents.\n\nTarget: {WORKDIR}/target.wav\nWrite the melody to {WORKDIR}/notes.json."
   },
   {
    "role": "assistant",
@@ -27,7 +27,7 @@
  "searcher": [
   {
    "role": "user",
-   "content": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nSlice: wavetables 0-47."
+   "content": "Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. Pick a wide net from your slice's listing, render each candidate with the session notes, listen against the target one at a time, and shortlist the 2-4 closest, each with a few words on what it gets right.\n\nTarget: {WORKDIR}/target.wav\nNotes: {WORKDIR}/notes.json.\nSlice: wavetables 0-47."
   },
   {
    "role": "assistant",
@@ -52,7 +52,7 @@
  "judge": [
   {
    "role": "user",
-   "content": "Target: {WORKDIR}/target.wav.\nNotes: {WORKDIR}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"]."
+   "content": "Pick the oscillator wavetables for the target clip. From the pool, render the strongest combinations (one to three oscillators) and listen against the target; reply with JSON: {\"tuple\": [names in oscillator order], \"reasoning\": \"one or two sentences\"}.\n\nTarget: {WORKDIR}/target.wav\nNotes: {WORKDIR}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"]."
   },
   {
    "role": "assistant",

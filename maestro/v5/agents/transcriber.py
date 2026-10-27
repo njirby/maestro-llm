@@ -1,16 +1,17 @@
-"""transcriber: listens to the target, writes notes.json, renders it through the init patch, listens, fixes, replies.
+"""transcriber: loads the skill, listens to the target, writes notes.json, renders it through the init patch, listens, fixes, replies.
 
-Notes are oracle (the GT clip). With probability p_wrong the first attempt is the GT corrupted by
-agent_sft_common.apply_transcription_mutations (pitch / octave / deleted / inserted / shifted notes); after listening
-to that render the agent says what is off (the mutation's own description) and rewrites the notes from scratch.
+Notes are oracle (the GT clip, in the skill's measures-and-note-values form). With probability p_wrong
+the first attempt is the GT corrupted by notation.mutate_transcription (wrong pitch / octave / dropped or
+added note / note shifted off the grid); after listening to that render the agent says what is off (the
+mutation's own description) and rewrites the notes from scratch.
 """
 from __future__ import annotations
 
-from scripts.agent_sft_common import apply_transcription_mutations
+from maestro import notation
 
 from ..ctx import Ctx
 from ..record import Record
-from .common import INIT, RENDER, listen, notes_json, run
+from .common import INIT, RENDER, listen, open_session, run
 
 AGENT = "transcriber"
 
@@ -18,19 +19,20 @@ AGENT = "transcriber"
 def run_transcriber(ctx: Ctx, prompt: str, rid: str, p_wrong: float = 0.5) -> dict:
     rng, s = ctx.rng, ctx.sample
     gt = s.notes()
+    gt_b = notation.to_beat_form(s.bpm, gt)["notes"]
     rec = Record(AGENT, rid, ctx.wd, prompt)
-    listen(rec, ctx, "target.wav")
+    open_session(rec, ctx)
 
     attempts = []
     if rng.random() < p_wrong:
-        mut = apply_transcription_mutations(gt, rng)
+        mut = notation.mutate_transcription(gt_b, rng)
         if mut is not None:
             wrong, infos, narration = mut
             attempts.append((wrong, narration, infos))
-    attempts.append((gt, None, []))
+    attempts.append((gt_b, None, []))
 
     for k, (notes, narration, muts) in enumerate(attempts):
-        call, resp = ctx.write("notes.json", notes_json(s.bpm, notes))
+        call, resp = ctx.write("notes.json", notation.beat_form_json(s.bpm, notes))
         rec.step([call], [resp])
         wav = "transcription.wav" if k == 0 else f"transcription_{k + 1}.wav"
         run(rec, ctx, f"{RENDER} {INIT} notes.json {wav}")

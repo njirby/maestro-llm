@@ -31,14 +31,15 @@ DEFAULT_CACHE = REPO / "outputs" / "sounddiff" / "render_cache"
 
 
 def clean_notes(notes) -> dict:
-    """{"bpm", "notes"} with zero-length notes dropped (Lakh has them; render.py rejects them)."""
+    """{"bpm", "notes"} in seconds with zero-length notes dropped (Lakh has them; render.py rejects
+    them). Accepts the skill's measures-and-note-values form, the legacy start_s/dur_s form, or
+    plain seconds notes (maestro.notation.to_seconds)."""
+    from maestro import notation
     if isinstance(notes, (str, Path)):
         notes = json.loads(Path(notes).read_text())
-    if isinstance(notes, list):
-        notes = {"bpm": 120.0, "notes": notes}
-    ns = [{"pitch": int(n["pitch"]), "velocity": int(n.get("velocity", 100)), "start_s": float(n["start_s"]),
-           "dur_s": float(n["dur_s"])} for n in notes["notes"] if float(n["dur_s"]) > 0]
-    return {"bpm": float(notes.get("bpm") or 120.0), "notes": ns}
+    ns, bpm = notation.to_seconds(notes)
+    ns = [n for n in ns if n["dur_s"] > 0]
+    return {"bpm": bpm, "notes": ns}
 
 
 def _as_preset(p) -> dict:

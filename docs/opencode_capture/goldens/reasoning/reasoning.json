@@ -1,0 +1,380 @@
+{
+ "opencode_exit": 0,
+ "coverage": {
+  "main": [
+   5,
+   5
+  ],
+  "probe-transcriber": [
+   3,
+   3
+  ]
+ },
+ "requests": [
+  {
+   "route": "main",
+   "step": 0,
+   "assistant_turns": [],
+   "task_results": [],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  },
+  {
+   "route": "main",
+   "step": 1,
+   "assistant_turns": [
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "Looking at the working directory first.",
+     "tool_calls": [
+      "bash"
+     ]
+    }
+   ],
+   "task_results": [],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  },
+  {
+   "route": "main",
+   "step": 2,
+   "assistant_turns": [
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "Looking at the working directory first.",
+     "tool_calls": [
+      "bash"
+     ]
+    },
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash"
+     ]
+    }
+   ],
+   "task_results": [],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  },
+  {
+   "route": "main",
+   "step": 3,
+   "assistant_turns": [
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "Looking at the working directory first.",
+     "tool_calls": [
+      "bash"
+     ]
+    },
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash"
+     ]
+    },
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash",
+      "read"
+     ]
+    }
+   ],
+   "task_results": [],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  },
+  {
+   "route": "probe-transcriber",
+   "step": 0,
+   "assistant_turns": [],
+   "task_results": [],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  },
+  {
+   "route": "probe-transcriber",
+   "step": 1,
+   "assistant_turns": [
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash"
+     ]
+    }
+   ],
+   "task_results": [],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  },
+  {
+   "route": "probe-transcriber",
+   "step": 2,
+   "assistant_turns": [
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash"
+     ]
+    },
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash",
+      "bash"
+     ]
+    }
+   ],
+   "task_results": [],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  },
+  {
+   "route": "main",
+   "step": 4,
+   "assistant_turns": [
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "Looking at the working directory first.",
+     "tool_calls": [
+      "bash"
+     ]
+    },
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash"
+     ]
+    },
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "bash",
+      "read"
+     ]
+    },
+    {
+     "keys": [
+      "content",
+      "reasoning_content",
+      "role",
+      "tool_calls"
+     ],
+     "reasoning_fields": [
+      "reasoning_content"
+     ],
+     "content_has_think_tag": false,
+     "content_has_reasoning": false,
+     "reasoning_content_verbatim": true,
+     "content": "",
+     "tool_calls": [
+      "task"
+     ]
+    }
+   ],
+   "task_results": [
+    "<task id=\"ses_e86aa91a0ffeAoT5YLqzjluny0\" state=\"completed\">\n<task_result>\n/work/rollouts/probe/notes.json: 0 notes.\n</task_result>\n</task>"
+   ],
+   "body_keys": [
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "tool_choice",
+    "tools"
+   ]
+  }
+ ]
+}

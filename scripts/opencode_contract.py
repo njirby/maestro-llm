@@ -713,7 +713,10 @@ def tools_block(tools: list[dict[str, Any]] | None = None) -> str:
 def transcription_dispatch_prompt(target_audio_path, notes_path) -> str:
     """Parent -> transcriber. The agent prompt (agent/transcriber.md) carries the method: write notes.json in the
     vital skill's format, render through the default patch, listen next to the target, fix and re-render."""
-    return f"Target: {target_audio_path}. Write the melody to {notes_path}."
+    return ("Transcribe the melody in the target clip — I'll use the notes to audition wavetables, so the pitches "
+            "and the rhythm have to be right. Write them to notes.json in the format the `vital` skill documents.\n\n"
+            f"Target: {target_audio_path}\n"
+            f"Write the melody to {notes_path}.")
 
 
 def wavetable_slice_label(start: int, end: int) -> str:
@@ -723,7 +726,11 @@ def wavetable_slice_label(start: int, end: int) -> str:
 
 def search_dispatch_prompt(target_audio_path, notes_path, start: int, end: int) -> str:
     """Parent -> searcher: the target, the session notes and a slice [start, end) of the wavetable library."""
-    return (f"Target: {target_audio_path}.\n"
+    return ("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. "
+            "Pick a wide net from your slice's listing, render each candidate with the session notes, listen "
+            "against the target one at a time, and shortlist the 2-4 closest, each with a few words on what it "
+            "gets right.\n\n"
+            f"Target: {target_audio_path}\n"
             f"Notes: {notes_path}.\n"
             f"Slice: wavetables {wavetable_slice_label(start, end)}.")
 
@@ -734,4 +741,7 @@ def judge_dispatch_prompt(target_audio_path, pool: list[str], locked_section: st
     ({"tuple": [...], "reasoning": "..."}) is in agent/judge.md. `locked_section` is appended verbatim."""
     pool_str = ", ".join(json.dumps(n, ensure_ascii=False) for n in pool)
     notes = f"Notes: {notes_path}.\n" if notes_path else ""
-    return f"Target: {target_audio_path}.\n{notes}Pool: [{pool_str}].{locked_section}"
+    return ("Pick the oscillator wavetables for the target clip. From the pool, render the strongest combinations "
+            "(one to three oscillators) and listen against the target; reply with JSON: "
+            "{\"tuple\": [names in oscillator order], \"reasoning\": \"one or two sentences\"}.\n\n"
+            f"Target: {target_audio_path}\n{notes}Pool: [{pool_str}].{locked_section}")

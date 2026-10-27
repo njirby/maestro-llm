@@ -67,11 +67,20 @@ def main_script(WD, PORT):
         ("webfetch", [call("webfetch", url=f"http://127.0.0.1:{PORT}/page.html", format="markdown")]),
         ("task_unknown_agent", [call("task", description="Bad subagent", subagent_type="nosuchagent", prompt="x")]),
         ("task_parallel", [call("task", description="Transcribe target melody", subagent_type="transcriber",
-              prompt=f"Target: {WD}/target.wav. Write the melody to {WD}/notes.json."),
+              prompt=("Transcribe the melody in the target clip — I'll use the notes to audition wavetables, so "
+                      "the pitches and the rhythm have to be right. Write them to notes.json in the format the "
+                      f"`vital` skill documents.\n\nTarget: {WD}/target.wav\nWrite the melody to {WD}/notes.json.")),
          call("task", description="Search wavetables 0-47", subagent_type="searcher",
-              prompt=f"Target: {WD}/target.wav.\nNotes: {WD}/notes.json.\nSlice: wavetables 0-47."),
+              prompt=("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator "
+                      "wavetables. Pick a wide net from your slice's listing, render each candidate with the "
+                      "session notes, listen against the target one at a time, and shortlist the 2-4 closest, "
+                      "each with a few words on what it gets right.\n\n"
+                      f"Target: {WD}/target.wav\nNotes: {WD}/notes.json.\nSlice: wavetables 0-47.")),
          call("task", description="Judge wavetable pool", subagent_type="judge",
-              prompt=f"Target: {WD}/target.wav.\nNotes: {WD}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"].")]),
+              prompt=("Pick the oscillator wavetables for the target clip. From the pool, render the strongest "
+                      "combinations (one to three oscillators) and listen against the target; reply with JSON: "
+                      "{\"tuple\": [names in oscillator order], \"reasoning\": \"one or two sentences\"}.\n\n"
+                      f"Target: {WD}/target.wav\nNotes: {WD}/notes.json.\nPool: [\"Basic Shapes\", \"Harmonic Series\"]."))]),
     ]
 
 SUB_FINAL = {

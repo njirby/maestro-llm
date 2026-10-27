@@ -28,7 +28,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import audio_eq, records as R
 from .records import unified
@@ -103,7 +103,8 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
            with_plugin: bool = True, keep_container: bool = False,
            base_dir: str | Path | None = None, expected_params: dict[str, Any] | None = None,
            extra_records: dict[str, dict[str, Any]] | None = None, max_mel_db: float = audio_eq.DEFAULT_MAX_DB,
-           final_dir: str | Path | None = None, agent: str | None = None) -> dict[str, Any]:
+           final_dir: str | Path | None = None, agent: str | None = None,
+           scenario_patch: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """Run one replay and write <run_dir>/report.json. Returns the report.
 
     main/subagents: records (ms-swift dicts). init_dir: files to place in the workdir before the run
@@ -139,7 +140,10 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
         shutil.copytree(init_dir, wd_host, symlinks=True)
     else:
         wd_host.mkdir(parents=True)
-    (io / "scenario.json").write_text(json.dumps(R.build_scenario(records), ensure_ascii=False))
+    scenario = R.build_scenario(records)
+    if scenario_patch:
+        scenario_patch(scenario)  # e.g. reasoning per step (reasoning_probe.py)
+    (io / "scenario.json").write_text(json.dumps(scenario, ensure_ascii=False))
     (io / "records.json").write_text(json.dumps(records, ensure_ascii=False))
     if prompt is None:
         fu = R.first_user_text(main["messages"]) or ""

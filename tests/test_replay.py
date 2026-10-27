@@ -468,3 +468,35 @@ def test_stream_interleave_whitelisted_only_for_moved_stderr_lines(golden):
     assert run("slot 1 a\nslot 3 c\nslot 2 b\nerror: amount 1.38 out of range\nslot 4 d")["status"] == "diff"  # stdout reorder
     assert run("slot 1 a\nslot 2 b\nslot 3 c\nerror: amount 1.39 out of range\nslot 4 d")["status"] == "diff"  # other text
     assert run("slot 1 a\nslot 2 b\nslot 3 c\nslot 4 d")["status"] == "diff"                                   # line lost
+
+
+# -- reasoning echo (goldens/reasoning, captured by opencode/replay/reasoning_probe.py) -------------
+
+REASONING_GOLDENS = G.GOLDENS / "reasoning"
+
+
+@pytest.mark.parametrize("mode", ["reasoning_content", "reasoning", "think_tag"])
+def test_reasoning_echo_rule(mode):
+    """OpenCode 1.19.3 + @ai-sdk/openai-compatible: every earlier assistant turn of the same session is
+    re-sent with its reasoning verbatim as `reasoning_content` (whichever delta field streamed it);
+    content stays the visible text ("" when none). Reasoning streamed as a <think> block in content is
+    kept verbatim in content. Sessions don't share reasoning; a task result carries only the
+    subagent's final content (so a <think> block in content leaks into it)."""
+    g = json.loads((REASONING_GOLDENS / f"{mode}.json").read_text())
+    assert g["opencode_exit"] == 0
+    from opencode.replay.reasoning_probe import MARK, reasoning_text
+    for q in g["requests"]:
+        turns = q["assistant_turns"]
+        assert len(turns) == q["step"]                          # every earlier turn, none dropped
+        agent = "main" if q["route"] == "main" else "sub"
+        for j, t in enumerate(turns):
+            if mode == "think_tag":
+                assert t["reasoning_fields"] == [] and "reasoning_content" not in t["keys"]
+                assert t["content"].startswith(f"<think>\n{reasoning_text(agent, j)}\n</think>\n\n")
+            else:
+                assert t["reasoning_fields"] == ["reasoning_content"] and t["reasoning_content_verbatim"]
+                assert not t["content_has_reasoning"] and not t["content_has_think_tag"]
+                assert isinstance(t["content"], str)
+        for tr in q["task_results"]:
+            assert (MARK in tr) == (mode == "think_tag")
+    assert any(q["task_results"] for q in g["requests"])        # the task boundary was crossed

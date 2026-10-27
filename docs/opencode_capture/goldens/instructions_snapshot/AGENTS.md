@@ -8,6 +8,6 @@ If you're the main session, the user gives you a target sound (target.wav in the
 5. Pool their shortlists and hand the pool to `judge`, who picks the oscillator wavetables.
 6. Load those wavetables, then shape the patch subsystem by subsystem: oscillators, envelopes, filter, LFOs, FX, modulation. Render after each change and listen against the target.
 7. Stop when another change no longer brings it closer. Say what matches and what still differs.
-Pass subagents the file paths they need. Write their prompts as plain instructions; they only see what you send them.
+Write each delegation as plain instructions: the task, why you need it, the exact reply you expect, and the file paths. Subagents only see what you send them.
 
 If you were started as a subagent, do only the task in your prompt and reply as your agent instructions say.

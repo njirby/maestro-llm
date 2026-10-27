@@ -14,9 +14,9 @@ from pathlib import Path
 
 CSS = """
 :root { --bg:#fff; --fg:#1d1d1f; --mut:#6b6b70; --line:#e3e3e6; --sys:#f4f4f6; --ast:#eef4ff; --call:#fff7e6;
-        --resp:#f6f6f6; --user:#effaf1; }
+        --resp:#f6f6f6; --user:#effaf1; --think:#f5f0ff; }
 @media (prefers-color-scheme: dark) { :root { --bg:#151517; --fg:#e8e8ea; --mut:#9a9aa0; --line:#2c2c30;
-        --sys:#1d1d20; --ast:#18233a; --call:#2d2614; --resp:#1c1c1f; --user:#15281a; } }
+        --sys:#1d1d20; --ast:#18233a; --call:#2d2614; --resp:#1c1c1f; --user:#15281a; --think:#231a33; } }
 body { background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, sans-serif; margin:0 auto; max-width:1000px;
        padding:16px; }
 h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; border-top:1px solid var(--line); padding-top:16px; }
@@ -24,6 +24,7 @@ h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; border-top:1px soli
 .m .r { color:var(--mut); font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px; }
 .system { background:var(--sys); } .assistant { background:var(--ast); } .tool_call { background:var(--call); }
 .tool_response { background:var(--resp); } .user { background:var(--user); }
+.thinking { background:var(--think); font-style:italic; } .nothink { color:var(--mut); font-size:12px; margin:8px 0 0; }
 pre { white-space:pre-wrap; word-break:break-word; margin:0; font:12.5px/1.4 ui-monospace, monospace; }
 details summary { cursor:pointer; color:var(--mut); }
 audio { display:block; margin:6px 0; width:100%; max-width:520px; }
@@ -53,9 +54,18 @@ def _call_html(content: str, anchors: dict[str, str]) -> str:
 
 
 def record_html(rec: dict, page: Path, anchors: dict[str, str]) -> str:
-    out, ai = [], 0
+    out, ai, prev = [], 0, False
+    marks = any("reasoning_content" in m for m in rec["messages"])
     for i, m in enumerate(rec["messages"]):
         role, c = m["role"], m["content"]
+        step = role in ("assistant", "tool_call")
+        if step and not prev:
+            if "reasoning_content" in m:
+                out.append(f"<div class='m thinking'><div class='r'>thinking</div>"
+                           f"<pre>{html.escape(m['reasoning_content'])}</pre></div>")
+            elif marks:
+                out.append("<div class='nothink'>(no thinking: every attempt failed the checks)</div>")
+        prev = step
         if role == "tool_call":
             body = _call_html(c, anchors)
         elif role == "user" and "<audio>" in c:

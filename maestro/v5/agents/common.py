@@ -5,6 +5,8 @@ import json
 import re
 
 from maestro.dawfarm_dd import BashResult
+from maestro import notation
+from scripts import opencode_contract as oc
 
 from ..ctx import Ctx
 from ..record import Record
@@ -34,6 +36,27 @@ def listen(rec: Record, ctx: Ctx, rel: str) -> str:
 
 
 def notes_json(bpm: float, notes: list[dict]) -> str:
-    """notes.json as an agent writes it: one note per line."""
-    rows = ",\n".join("  " + json.dumps({k: n[k] for k in ("pitch", "velocity", "start_s", "dur_s")}) for n in notes)
-    return f'{{"bpm": {json.dumps(float(bpm))}, "notes": [\n{rows}\n]}}\n'
+    """notes.json as an agent writes it: measures and note values, one note per line (maestro.notation)."""
+    return notation.beat_form_json(bpm, notes)
+
+
+SKILL_MD = (oc.OPENCODE_DIR / "skills" / "vital" / "SKILL.md").read_text()
+
+
+def skill_files() -> list[str]:
+    """The <skill_files> sample exactly as captured from OpenCode (ripgrep order), rebased onto CONFIG_DIR."""
+    import re
+    case = next(c for c in json.loads((oc.GOLDENS_DIR / "with_plugin" / "tool_results.json").read_text())
+                if c["case"] == "skill_vital")
+    return [f.replace("{CONFIG_DIR}", oc.CONFIG_DIR) for f in re.findall(r"<file>(.*?)</file>", case["output"])]
+
+
+def skill_response() -> str:
+    return oc.skill_output("vital", f"{oc.CONFIG_DIR}/skills/vital/SKILL.md", SKILL_MD, files=skill_files())
+
+
+def open_session(rec: Record, ctx: Ctx) -> str:
+    """How every agent's session starts (what real models do with these prompts): load the `vital` skill, then
+    listen to the target. Returns the target's host copy."""
+    rec.step([oc.skill_call("vital")], [skill_response()])
+    return listen(rec, ctx, "target.wav")

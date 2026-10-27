@@ -22,28 +22,13 @@ from ..ctx import Ctx, OracleRenderer
 from ..mistakes import code_mistake
 from ..planner import Edit, Plan, build_plan, vitallib, wt_ref
 from ..record import Record, final_text
-from .common import INIT, RENDER, listen, run
+from .common import INIT, RENDER, listen, open_session, run, skill_response  # noqa: F401  (re-export)
 from .judge import run_judge
 from .searcher import WT, run_searcher
 from .transcriber import run_transcriber
 
 AGENT = "maestro"
 USER_PROMPT = "Recreate the sound in target.wav in Vital."
-SKILL_MD = (oc.OPENCODE_DIR / "skills" / "vital" / "SKILL.md").read_text()
-
-
-def skill_files() -> list[str]:
-    """The <skill_files> sample exactly as captured from OpenCode (ripgrep order), rebased onto CONFIG_DIR."""
-    import re
-    case = next(c for c in json.loads((oc.GOLDENS_DIR / "with_plugin" / "tool_results.json").read_text())
-                if c["case"] == "skill_vital")
-    return [f.replace("{CONFIG_DIR}", oc.CONFIG_DIR) for f in re.findall(r"<file>(.*?)</file>", case["output"])]
-
-
-def skill_response() -> str:
-    return oc.skill_output("vital", f"{oc.CONFIG_DIR}/skills/vital/SKILL.md", SKILL_MD, files=skill_files())
-
-
 def _changed(before: dict, after: dict) -> dict[str, tuple]:
     b, a = before["settings"], after["settings"]
     out = {k: (b.get(k), v) for k, v in a.items() if not isinstance(v, (list, dict)) and b.get(k) != v
@@ -127,8 +112,7 @@ class Main:
         ctx, rec, rng, s = self.ctx, self.rec, self.rng, self.s
         target, notes_path = ctx.path("target.wav"), ctx.path("notes.json")
 
-        rec.step([oc.skill_call("vital")], [skill_response()])
-        target_host = listen(rec, ctx, "target.wav")
+        target_host = open_session(rec, ctx)
         rec.say(narration.first_impression(
             target_wav=Path(target_host), notes=self.notes_d, gt_preset=self.gt, renderer=self.renderer, log=ctx.note,
             slot=self.slot("first_impression", target=self.gt)))

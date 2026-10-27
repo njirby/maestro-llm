@@ -79,7 +79,7 @@ class H(BaseHTTPRequestHandler):
                 with open(path + ".part", "wb") as f:
                     f.write(raw)
                 os.replace(path + ".part", path)
-        text, calls, error = None, [], None
+        text, calls, error, reasoning = None, [], None, None
         if kind == "title":
             text = TITLE
         elif key is None:
@@ -88,6 +88,7 @@ class H(BaseHTTPRequestHandler):
             steps = SCENARIO["records"][key]["steps"]
             if step < len(steps):
                 text, calls = steps[step]["text"], steps[step]["calls"]
+                reasoning = steps[step].get("reasoning")
             else:
                 text, error = "REPLAY_EXHAUSTED", f"record has {len(steps)} steps, asked for step {step}"
         with _lock:
@@ -109,15 +110,27 @@ class H(BaseHTTPRequestHandler):
             obj = {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
             self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
 
+        # Reasoning (scenario "reasoning_mode"): streamed in two deltas under that field name, the way
+        # vLLM's reasoning parsers emit it, or as a <think> block at the head of content ("think_tag").
+        mode = SCENARIO.get("reasoning_mode", "reasoning_content")
+        sent_role = False
+        if reasoning and mode == "think_tag":
+            text = f"<think>\n{reasoning}\n</think>\n\n" + (text or "")
+        elif reasoning:
+            half = len(reasoning) // 2
+            chunk({"role": "assistant", mode: reasoning[:half]})
+            chunk({mode: reasoning[half:]})
+            sent_role = True
         if text:
-            chunk({"role": "assistant", "content": text})
+            chunk({"content": text} if sent_role else {"role": "assistant", "content": text})
+            sent_role = True
         if calls:
             tcs = [{"index": i, "id": f"call_{agent}_{step}_{i}", "type": "function",
                     "function": {"name": n, "arguments": a}} for i, (n, a) in enumerate(calls)]
-            chunk({"role": "assistant", "tool_calls": tcs} if not text else {"tool_calls": tcs})
+            chunk({"tool_calls": tcs} if sent_role else {"role": "assistant", "tool_calls": tcs})
             chunk({}, "tool_calls")
         else:
-            if not text:
+            if not sent_role:
                 chunk({"role": "assistant", "content": ""})
             chunk({}, "stop")
         usage = {**base, "choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}

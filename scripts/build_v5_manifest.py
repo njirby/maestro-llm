@@ -4,7 +4,8 @@
   .venv/bin/python scripts/build_v5_manifest.py --name pilot20 [--n 20] [--seed 0] [--jobs 6]
 
 Per sample: an archetype from a balanced, seeded mix over preset_gen.ARCHETYPES; a preset from preset_gen; a melodic
-Lakh clip (sounddiff.edits.load_clips/clip_notes, zero-length notes dropped); the target rendered with the skill's
+Lakh clip (sounddiff.edits.load_clips/clip_notes, zero-length notes dropped), snapped to the sixteenth grid so the
+melody is writable as measures and note values (maestro.notation; the notes file is in that form); the target rendered with the skill's
 render.py in the daw-farm container (exactly what the agent's own renders go through). A render outside
 preset_gen.LOUDNESS_BAND_DBFS gets its master volume normalized (preset_gen.normalize_volume) and is rendered again;
 a candidate failing preset_gen.level_qc (digital silence, non-finite, too quiet) after that is regenerated with the
@@ -34,6 +35,7 @@ import soundfile as sf
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+from maestro import notation  # noqa: E402
 from maestro.sounddiff.edits import clip_notes, load_clips  # noqa: E402
 from maestro.synth.preset_gen import ARCHETYPES, generate_preset, level_qc, normalize_volume, render_level  # noqa: E402
 from maestro.synth.wavetable_lib import load_wavetable_lib  # noqa: E402
@@ -108,6 +110,9 @@ def candidate(seed: int, i: int, k: int, archetype: str, lib: list[dict], clips:
     rng = random.Random(f"v5:{seed}:{i}:{k}")
     preset = generate_preset(archetype, rng, wavetable_lib=lib, name=f"v5_{seed}_{i:04d}")
     c, notes = pick_clip(clips, rng)
+    while len(notation.quantize(float(c["bpm"]), notes)) < 3:
+        c, notes = pick_clip(clips, rng)  # the grid merged a note away; redraw
+    notes = notation.quantize(float(c["bpm"]), notes)
     preset["settings"]["beats_per_minute"] = c["bpm"] / 60.0  # as sounddiff.edits; Vital takes host tempo anyway
     if preset["settings"]["portamento_on"] and overlap_share(notes) >= OVERLAP_LEGATO:
         preset["settings"]["portamento_force"] = 0.0  # legato-heavy clip: overlapping notes already glide
@@ -235,7 +240,7 @@ def build(a, out, mix, lib, clips, renderer, accepted, tries, current, glide, qc
                 tries[i] += 1
             cand = current[i]
             (out / "presets" / f"{sid}.vital").write_text(json.dumps(cand["preset"], separators=(",", ":")))
-            (out / "notes" / f"{sid}.json").write_text(json.dumps({"bpm": cand["bpm"], "notes": cand["notes"]}))
+            (out / "notes" / f"{sid}.json").write_text(notation.beat_form_json(cand["bpm"], cand["notes"]))
             (out / "targets" / f"{sid}.wav").unlink(missing_ok=True)
             batch[sid] = i
         renderer.render(out, list(batch))

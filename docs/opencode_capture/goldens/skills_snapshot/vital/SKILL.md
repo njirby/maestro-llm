@@ -15,9 +15,15 @@ metadata:
   top level `author, comments, macro1..4` (macro label strings), `preset_name, preset_style,
   synth_version, settings`. `settings` holds ~776 parameters plus `wavetables[3]`, `lfos[8]`
   (LFO shapes), `modulations[64]`, `sample`. Editing the file = changing the synth.
-- **`notes.json`** = the MIDI and tempo: `{"bpm": 120.0, "notes": [{"pitch": 60, "velocity": 100,
-  "start_s": 0.0, "dur_s": 0.5}, ...]}`. `bpm` is optional (default 120); a bare list of notes
-  also works.
+- **`notes.json`** = the melody and tempo, written the way a musician writes them:
+  `{"bpm": 120, "time_signature": "4/4", "notes": [{"pitch": 60, "velocity": 100, "bar": 1,
+  "beat": 1, "duration": "eighth"}, ...]}`. `bar`/`beat` place the note on the grid (beat 1 is the
+  first beat of the bar; fractions land on sixteenths); `duration` is a note value:
+  `whole`, `dotted half`, `half`, `dotted quarter`, `quarter`, `dotted eighth`, `eighth`,
+  `dotted sixteenth`, `sixteenth`, `dotted thirty-second`, `thirty-second`, or a triplet
+  (three in the time of two): `triplet quarter`, `triplet eighth`, `triplet sixteenth`,
+  `triplet thirty-second`. `bpm` and `time_signature` are optional (120 and 4/4); a bare
+  list of notes also works.
 - **You judge by ear.** Render, then listen to the wav; compare with the target one audio at a
   time. There are no analysis tools on purpose.
 - Scripts live in `$VITAL_SKILL/scripts/` (`$VITAL_SKILL` = this skill's base directory; it is
@@ -167,9 +173,10 @@ Enum labels for any switch/selector: `show.py preset.json KEY` (e.g. `delay_temp
    by the host). LFOs, randoms and chorus/delay/phaser/flanger default to tempo sync; use
    `*_sync=Seconds` for absolute rates.
 8. **env 1 owns the voice lifetime**: motion and sound stop when its release ends.
-9. **Wavetables: shortlist, don't page.** Pick 2-4 candidates by name/kind, audition each with
-   the session notes, keep the closest. Tables listed as `silent at frame 0` need
-   `osc_N_wave_frame` > 0.
+9. **Wavetables: audition a wide net, shortlist the rest.** Pick a wide net from the listing —
+   at least 8-12 candidates, more if the slice is small — audition each with the session notes,
+   keep the 2-4 closest. Never page through the whole library one by one. Tables listed as
+   `silent at frame 0` need `osc_N_wave_frame` > 0.
 10. **Copy, don't overwrite, to compare**: `cp preset.json try.json`, edit try.json, render both,
     keep the better one as preset.json.
 

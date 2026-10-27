@@ -108,7 +108,10 @@ def test_task_roundtrip_matches_golden():
     assert oc.judge_dispatch_prompt(f"{wd}/target.wav", ["Basic Shapes", "Harmonic Series"],
                                     notes_path=f"{wd}/notes.json") == by["judge"]["prompt"]
     assert oc.search_dispatch_prompt(f"{wd}/target.wav", f"{wd}/notes.json", 0, 48) == \
-        f"Target: {wd}/target.wav.\nNotes: {wd}/notes.json.\nSlice: wavetables wt001-wt048."
+        ("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. "
+         "Pick a wide net from your slice's listing, render each candidate with the session notes, listen "
+         "against the target one at a time, and shortlist the 2-4 closest, each with a few words on what it "
+         f"gets right.\n\nTarget: {wd}/target.wav\nNotes: {wd}/notes.json.\nSlice: wavetables wt001-wt048.")
     for c in rt:
         sub = Record(c["subagent_type"], "s", wd, c["prompt"]).finish(c["subagent_final_text"])
         assert sub["messages"][1] == c["subagent_first_user"]

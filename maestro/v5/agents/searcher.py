@@ -1,5 +1,6 @@
-"""searcher: lists its library slice, renders a handful of candidates through the session notes (init patch, only the
-osc 1 wavetable swapped), listens to the target and then to each probe one at a time, replies with a 2-4 name shortlist.
+"""searcher: loads the skill, listens to the target, lists its library slice, renders a wide net of candidates through
+the session notes (init patch, only the osc 1 wavetable swapped), listens to each probe one at a time, replies with a
+2-4 name shortlist.
 
 Oracle: every GT table inside the slice is auditioned and shortlisted. The other candidates are drawn from the slice;
 the rest of the shortlist is the candidates nearest (audio.distance) to a probe of a GT table, so the order is measured.
@@ -12,7 +13,7 @@ from ..audio import distance, peak_dbfs
 from ..ctx import Ctx
 from ..planner import vitallib, wt_ref
 from ..record import Record
-from .common import INIT, RENDER, listen, run
+from .common import INIT, RENDER, listen, open_session, run
 
 AGENT = "searcher"
 WT = "python3 $VITAL_SKILL/scripts/wavetable.py"
@@ -43,6 +44,7 @@ def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, 
     idx = vitallib.wt_index()
     sl = idx[start:end]
     rec = Record(AGENT, rid, ctx.wd, prompt)
+    open_session(rec, ctx)        # skill, then the target: candidates are picked after hearing it
     run(rec, ctx, f"{WT} list --ids {sl[0]['id']}-{sl[-1]['id']}")
 
     gt_ids = {e["id"] for e in gt}
@@ -56,7 +58,7 @@ def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, 
             named.append(e)
             seen.add(e["name"].lower())
     unnamed = [e for e in pool if e not in named]
-    n_other = max(rng.randint(4, 6) - len(mine), 2)
+    n_other = max(rng.randint(8, 12) - len(mine), 4)
     n_unnamed = min(len(unnamed), sum(rng.random() < 0.2 for _ in range(n_other)))
     cands = (mine + rng.sample(named, min(len(named), n_other - n_unnamed))
              + rng.sample(unnamed, min(len(unnamed), n_other - min(len(named), n_other - n_unnamed))))
@@ -67,8 +69,6 @@ def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, 
         cands.insert(rng.randrange(len(cands)), rng.choice(silent))  # never last: its note must not join the reply
     out_dir = f"probes/s{k}"
     run(rec, ctx, probe_lines(cands, out_dir))
-
-    listen(rec, ctx, "target.wav")
     dist = {}
     quiet = set()
     for e in cands:
