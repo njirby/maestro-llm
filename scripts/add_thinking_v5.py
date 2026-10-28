@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import itertools
 import json
 import re
 import sys
@@ -218,6 +219,14 @@ def main():
         dst = a.out / f"{sid}.jsonl"
         done = {(x["route"], x["step"]) for x in map(json.loads, open(dst))} if dst.exists() else set()
         jobs = [j for j in jobs if (j[0], j[1]) not in done]
+        urls = a.url.split(",")
+        if len(urls) > 1:
+            # interleave the queue across servers: in route order the workers would all sit on one conversation's
+            # server while the other idles (each conversation sticks to one server, for its prefix cache)
+            lanes: dict[str, list] = {}
+            for j in jobs:
+                lanes.setdefault(for_server(a, sid, j[0]).url, []).append(j)
+            jobs = [j for group in itertools.zip_longest(*lanes.values()) for j in group if j is not None]
 
         def one(job):
             route, k, r, nxt = job
