@@ -96,8 +96,10 @@ def attempt_native(a, sid, route, r, nxt, run):
         fails.append(f"native action {sorted(calls_subs(res['tool_calls']))} != record {sorted(calls_subs(oracle))}")
     replays = []
     if not fails and not a.no_verify:
+        # same messages as the B2 call minus the plan (the system prompt keeps the fixed B2 instruction), so this call
+        # reuses that call's cached prefix instead of re-reading the whole context: thinking is prompt-processing-bound
         body = dict(ctx)
-        body.update(messages=ctx["messages"] + [{"role": "assistant", "content": f"<think>\n{th}\n</think>\n\n"}],
+        body.update(messages=msgs[:-1] + [{"role": "assistant", "content": f"<think>\n{th}\n</think>\n\n"}],
                     add_generation_prompt=False, continue_final_message=True)
         for _ in range(2):
             rr = h.call(a.url, body)

@@ -91,9 +91,11 @@ def _ord(k: int) -> str:
 def melody_diff(written: dict, sid: str) -> str:
     """What a transcriber hears comparing its render (its notes through the default patch) with the target: the melody
     against the ground-truth notes, in listener words. Exact, since both note lists are known."""
-    gt = json.loads((RUN / "oracle" / sid / "notes.json").read_text())
+    from maestro import notation   # notes.json may be in seconds or in the skill's bars-and-beats form
+    gt = notation.to_seconds((RUN / "oracle" / sid / "notes.json").read_text())[0]
+    mine = notation.to_seconds(json.dumps(written))[0]
     key = lambda n: (round(n["start_s"], 3), n["pitch"])
-    a, b = sorted(written["notes"], key=key), sorted(gt["notes"], key=key)
+    a, b = sorted(mine, key=key), sorted(gt, key=key)
     L = []
     # align the two sequences (edit distance on onset + pitch) so one missing or extra note doesn't shift every later pair
     cost = lambda x, y: min(abs(x["start_s"] - y["start_s"]) * 4, 2.0) + (0 if x["pitch"] == y["pitch"] else 0.5)

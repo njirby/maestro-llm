@@ -31,7 +31,8 @@ start_omni() { log "starting Omni-Instruct on :8000"; PATH="$PWD/.venv/bin:$PATH
 if [ -n "$BUILD_PID" ]; then log "waiting for build pid $BUILD_PID"; while kill -0 "$BUILD_PID" 2>/dev/null; do sleep 30; done; fi
 log "build done: $(grep -cE 'validation OK.*GT gate pass' "$RUN.build.log" 2>/dev/null) rollouts pass"
 
-# ---- narration ----------------------------------------------------------------------------------------------------
+# ---- narration (RESUME=1: already done, skip) -----------------------------------------------------------------------
+if [ -z "${RESUME:-}" ]; then
 [ -z "$(port_pid 8001)" ] && { stop_port 8000; start_27b 32; }
 log "narration: edit modes (27B)"
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --modes self_edit,target_vs_current --url http://localhost:8001/v1 --arm text --workers 12 > "$RUN.narr_edit.log" 2>&1
@@ -42,6 +43,8 @@ $PY scripts/narrate_rollouts_v5.py --run "$RUN" --modes first_impression --url h
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --finalize > "$RUN.finalize2.log" 2>&1
 log "narration report: $(tr -d '\n ' < "$RUN/narration_report.json" | head -c 400)"
 stop_port 8000; start_27b 48
+fi
+[ -z "$(port_pid 8001)" ] && start_27b 48
 
 # ---- per rollout: replay -> perceptions -> thinking ------------------------------------------------------------------
 SIDS=$($PY -c "import json,sys; print(' '.join(json.loads(l)['sample_id'] for l in open('$RUN/index.jsonl') if 'main_id' in json.loads(l)))")
@@ -49,8 +52,13 @@ log "chains for: $SIDS"
 export RUN REPLAY THINK PY
 chain() {
   s="$1"
-  $PY -u scripts/replay_in_opencode.py rollout "$RUN" --sample "$s" --out "$REPLAY" --jobs 1 > "$REPLAY.$s.log" 2>&1 || { echo "[$(date +%T)] $s REPLAY FAILED"; return; }
-  REPLAY_DIR="$PWD/$REPLAY" RUN_DIR="$PWD/$RUN" RENDER_JOBS=8 $PY scripts/build_probe_perceptions.py "$s" > "$PROBES_DIR/$s.log" 2>&1 || { echo "[$(date +%T)] $s PERCEPTIONS FAILED"; return; }
+  # resumable: a finished replay (report.json) and finished perceptions (<sid>.json + done log) are kept
+  if [ ! -f "$REPLAY/$s/report.json" ]; then
+    $PY -u scripts/replay_in_opencode.py rollout "$RUN" --sample "$s" --out "$REPLAY" --jobs 1 > "$REPLAY.$s.log" 2>&1 || { echo "[$(date +%T)] $s REPLAY FAILED"; return; }
+  fi
+  if ! grep -q "judge/" "$PROBES_DIR/$s.log" 2>/dev/null; then
+    REPLAY_DIR="$PWD/$REPLAY" RUN_DIR="$PWD/$RUN" RENDER_JOBS=8 $PY scripts/build_probe_perceptions.py "$s" > "$PROBES_DIR/$s.log" 2>&1 || { echo "[$(date +%T)] $s PERCEPTIONS FAILED"; return; }
+  fi
   $PY scripts/add_thinking_v5.py --mode native --run "$RUN" --replay "$REPLAY" --sids "$s" --out "$THINK" --workers 16 > "$THINK/$s.log" 2>&1 || { echo "[$(date +%T)] $s THINKING FAILED"; return; }
   echo "[$(date +%T)] $s done: replay $(python3 -c "import json;r=json.load(open('$REPLAY/$s/report.json'));print(r['matches'],'/',r['requests'],'diffs',r['diffs'])") ; $(grep '^==' "$THINK/$s.log" | tail -1)"
 }
