@@ -73,10 +73,11 @@ def main_script(WD, PORT):
          call("task", description="Search wavetables 0-47", subagent_type="searcher",
               prompt=("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator "
                       "wavetables. Audition every table in your chunk: render each one with the session notes "
-                      "and listen against the target one at a time. Then combine the closest ones into pairs — "
-                      "both oscillator orders, since osc 1 leads — render and listen to those too. Reply with "
-                      "your best 2-3 configurations for the target in this chunk: tables in oscillator order, "
-                      "each with a few words on what it explains.\n\n"
+                      "and listen to them in batches of ~8, saying what each batch is or isn't close to. Then "
+                      "combine the closest ones into pairs — both oscillator orders, since osc 1 leads — render "
+                      "and listen to those in batches too. Reply with your best 2-3 configurations for the "
+                      "target in this chunk: tables in oscillator order, each with a few words on what it "
+                      "explains.\n\n"
                       f"Target: {WD}/target.wav\nNotes: {WD}/notes.json.\nChunk: wavetables 0-47.")),
          call("task", description="Judge wavetable pool", subagent_type="judge",
               prompt=("Pick the oscillator wavetables for the target clip. The pool is the best configurations "

@@ -174,10 +174,11 @@ Enum labels for any switch/selector: `show.py preset.json KEY` (e.g. `delay_temp
    `*_sync=Seconds` for absolute rates.
 8. **env 1 owns the voice lifetime**: motion and sound stop when its release ends.
 9. **Wavetables: audition the whole chunk, then combine.** Render every table in the chunk you
-   were given with the session notes and listen to each against the target one at a time; a
-   near-silent render is dropped. Then render pairs from the ~8 closest tables (both oscillator
-   orders — osc 1 leads) and listen to those too, and reply with the 2-3 configurations that
-   explain the target best. Tables listed as `silent at frame 0` need `osc_N_wave_frame` > 0.
+   were given with the session notes and listen to them in batches of ~8, saying what each batch
+   is or isn't close to; a near-silent render is dropped. Then render pairs from the ~8 closest
+   tables (both oscillator orders — osc 1 leads), listen to those in batches too, and reply with
+   the 2-3 configurations that explain the target best. Tables listed as `silent at frame 0`
+   need `osc_N_wave_frame` > 0.
 10. **Copy, don't overwrite, to compare**: `cp preset.json try.json`, edit try.json, render both,
     keep the better one as preset.json.
 

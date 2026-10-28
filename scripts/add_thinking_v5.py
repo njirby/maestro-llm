@@ -95,7 +95,7 @@ def attempt_native(a, sid, route, r, nxt, run):
     if calls_subs(res["tool_calls"]) != calls_subs(oracle):
         fails.append(f"native action {sorted(calls_subs(res['tool_calls']))} != record {sorted(calls_subs(oracle))}")
     replays = []
-    if not fails:
+    if not fails and not a.no_verify:
         body = dict(ctx)
         body.update(messages=ctx["messages"] + [{"role": "assistant", "content": f"<think>\n{th}\n</think>\n\n"}],
                     add_generation_prompt=False, continue_final_message=True)
@@ -134,12 +134,16 @@ def attempt(a, sid, route, r, nxt, run):
     g = h.call(a.url, {**ctx, "messages": ctx["messages"] + [{"role": "user", "content": h.GUESSES["g2"].format(turn=turn)}],
                        "chat_template_kwargs": {"reasoning_effort": a.effort}})
     thinking = g["content"].strip()
-    body = dict(ctx)
-    body.update(messages=ctx["messages"] + [{"role": "assistant", "content": f"<think>\n{thinking}\n</think>\n\n"}],
-                add_generation_prompt=False, continue_final_message=True)
-    res = h.call(a.url, body)
-    text = res["reasoning"] + res["content"]
-    calls = res["tool_calls"] or h.parse_calls(text)
+    if a.no_verify:
+        # keep the first guess that passes the text checks; no replay-verification call
+        text, calls = "", None
+    else:
+        body = dict(ctx)
+        body.update(messages=ctx["messages"] + [{"role": "assistant", "content": f"Think silently\n{thinking}\nThink silently\n\n"}],
+                    add_generation_prompt=False, continue_final_message=True)
+        res = h.call(a.url, body)
+        text = res["reasoning"] + res["content"]
+        calls = res["tool_calls"] or h.parse_calls(text)
     heard = " ".join(p["text"] for x in ctx["messages"] if isinstance(x.get("content"), list)
                      for p in x["content"] if p.get("text", "").startswith("<heard"))
     call_part = turn.split("[tool call]", 1)[-1] if "[tool call]" in turn else ""
@@ -147,7 +151,7 @@ def attempt(a, sid, route, r, nxt, run):
     if not thinking:
         fails.append("empty")
     soft = False
-    if h.subs(oracle) != h.subs(calls):
+    if calls is not None and h.subs(oracle) != h.subs(calls):
         # batch steps (several renders in one command) can't be inferred from thinking: a natural replay looks around first.
         # Those pass when the thinking plans the render step itself; the record says the action check was skipped.
         batch = {"render.py", "wavetable.py"} <= h.subs(oracle) or len(h.subs(oracle)) >= 5
@@ -166,7 +170,8 @@ def attempt(a, sid, route, r, nxt, run):
     nums = sorted({x.group(0) for x in h.NUM_RE.finditer(thinking) if call_part and x.group(0) in call_part})
     if nums:
         fails.append(f"copies values: {nums[:5]}")
-    return {"thinking": thinking, "fails": fails, "soft": soft, "replay": {"text": text[:2000], "calls": calls}, "turn": turn}
+    return {"thinking": thinking, "fails": fails, "soft": soft,
+            "replay": None if calls is None else {"text": text[:2000], "calls": calls}, "turn": turn}
 
 
 def main():
@@ -177,6 +182,8 @@ def main():
     ap.add_argument("--sids", nargs="+", required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--tries", type=int, default=3)
+    ap.add_argument("--no-verify", action="store_true",
+                    help="keep the first guess passing the text checks; skip the replay-verification call")
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--url", default="http://127.0.0.1:8001/v1")

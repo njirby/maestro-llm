@@ -51,10 +51,10 @@ wrong: it was measured at frame 0 only.
 ## Auditioning (ears only)
 
 - Render with the session's own notes.json so a table is judged in context.
-- Judge one candidate at a time against the target, then move on. Audition the whole chunk you
-  were given, then combine: render pairs from the ~8 closest tables — both oscillator orders,
-  since osc 1 leads — listen to each pair, and keep the 2-3 configurations that explain the
-  target best.
+- Audition in batches: render the whole chunk you were given, listen to ~8 probes at a time, and
+  after each batch say what it is or isn't close to. Then combine: render pairs from the ~8
+  closest tables — both oscillator orders, since osc 1 leads — listen to those in batches too,
+  and keep the 2-3 configurations that explain the target best.
 - For morphing tables (many frames) also try `osc_N_wave_frame` 64 / 128 / 192 — a table
   can be dull at frame 0 and right mid-table.
 - If a swap "changes nothing", check `show.py preset.json osc` (osc off, level 0, or

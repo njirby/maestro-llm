@@ -66,7 +66,8 @@ def stage_root(root: Path, with_plugin: bool = True) -> None:
     for d in ("config", "home", "data", "cache/opencode/bin"):
         (root / d).mkdir(parents=True)
     skip = STAGE_SKIP | (set() if with_plugin else {"plugin"})
-    for src in sorted((REPO / "opencode").iterdir()):
+    src_root = Path(os.environ.get("OC_STAGE_SRC") or (REPO / "opencode"))  # pin a historical opencode/ for old records
+    for src in sorted(src_root.iterdir()):
         if src.name not in skip and not src.name.startswith("."):
             os.symlink(src, root / "config" / src.name)
     shutil.copy(RG_BIN, root / "cache/opencode/bin/rg")
@@ -161,7 +162,10 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
     argv = ["run", "-d", "--init", "--name", name, "--user", f"{os.getuid()}:{os.getgid()}",
             "--network", "none", "--label", "maestro/wsd-replay=1",
             "-v", f"{rollouts}:{ROLLOUT_ROOT}", "-v", f"{root}:{OC_ROOT}",
-            "-v", f"{REPO / 'opencode'}:{REPO / 'opencode'}:ro",
+            # staged config entries are symlinks into the source tree; mount that tree (the live
+            # repo's opencode/ by default, an OC_STAGE_SRC extraction otherwise) so they resolve
+            "-v", f"{Path(os.environ.get('OC_STAGE_SRC') or (REPO / 'opencode')).resolve()}:"
+                 f"{Path(os.environ.get('OC_STAGE_SRC') or (REPO / 'opencode')).resolve()}:ro",
             "-v", f"{OPENCODE_BIN}:/opt/opencode/bin/opencode:ro",
             "-v", f"{RG_BIN}:/usr/local/bin/rg:ro",
             "-v", f"{Path(__file__).resolve().parent}:/opt/replay:ro",

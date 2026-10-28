@@ -19,6 +19,7 @@ import soundfile as sf
 
 DEFAULT_MAX_DB = 10.0
 SILENT_PEAK_DBFS = -60.0  # a clip whose peak is below this counts as silent
+SILENCE_HYSTERESIS_DB = 5.0  # silent-vs-loud only fails when the loud side is this far above the floor
 BLOCK = 512  # samples: render block size; lengths may differ by at most this
 
 
@@ -56,9 +57,12 @@ def compare(expected: str | Path, got: str | Path, max_db: float = DEFAULT_MAX_D
         return {**out, "equivalent": False, "reason": f"length differs by {abs(len(a) - len(b))} samples"}
     pa, pb = peak_dbfs(a), peak_dbfs(b)
     out.update(peak_dbfs_expected=round(pa, 1), peak_dbfs_got=round(pb, 1))
-    if (pa < SILENT_PEAK_DBFS) != (pb < SILENT_PEAK_DBFS):
+    if (pa < SILENT_PEAK_DBFS) != (pb < SILENT_PEAK_DBFS) and max(pa, pb) >= SILENT_PEAK_DBFS + SILENCE_HYSTERESIS_DB:
+        # the loud side is clearly audible: a true silent-vs-sounding flip
         return {**out, "equivalent": False,
                 "reason": f"silence mismatch: peak {pa:.1f} vs {pb:.1f} dBFS (silent < {SILENT_PEAK_DBFS})"}
+    # borderline (the loud side is within a few dB of the floor): render noise can flip such clips
+    # across the threshold run to run — let the mel distance judge them
     if pa < SILENT_PEAK_DBFS and pb < SILENT_PEAK_DBFS:
         return {**out, "equivalent": True, "reason": "both silent"}  # mel_dist of near-silence is noise
     d = mel_dist(a, b, sra)

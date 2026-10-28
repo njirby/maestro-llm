@@ -260,7 +260,7 @@ _SUBS = [
     (re.compile(r"/tmp/tmp[A-Za-z0-9_]{6,}"), "{TMPDIR}"),
 ]
 _SKILL_FILES = re.compile(r"(Base directory for this skill: )(\S+)(\n(?:.*\n)*?<skill_files>\n)(.*?)(\n</skill_files>)", re.S)
-_SHELL_META = re.compile(r"\n*<shell_metadata>.*?</shell_metadata>")
+_SHELL_META = re.compile(r"\n*<shell_metadata>.*?</shell_metadata>", re.S)
 
 WHITELIST = {
     "date": "`Today's date: <Date.toDateString()>` in the <env> block",
@@ -300,7 +300,7 @@ def norm_text(s: str) -> str:
     s = _SHELL_META.sub("", s)
     if "<skill_files>" in s:
         s = _norm_skill_files(s)
-    return s
+    return s.rstrip("\n")  # trailing blank lines in tool output are not stable across runs
 
 
 def _norm_glob(s: str) -> str:

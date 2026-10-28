@@ -35,6 +35,13 @@ def listen(rec: Record, ctx: Ctx, rel: str) -> str:
     return host
 
 
+def listen_many(rec: Record, ctx: Ctx, rels: list[str]) -> list[str]:
+    """A batch of audio reads as one step (parallel reads, a single attachment message); returns the host copies."""
+    hosts = [ctx.fetch(r) for r in rels]
+    rec.audio_step([ctx.path(r) for r in rels], hosts)
+    return hosts
+
+
 def notes_json(bpm: float, notes: list[dict]) -> str:
     """notes.json as an agent writes it: measures and note values, one note per line (maestro.notation)."""
     return notation.beat_form_json(bpm, notes)

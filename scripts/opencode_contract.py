@@ -729,10 +729,11 @@ def search_dispatch_prompt(target_audio_path, notes_path, start: int, end: int) 
     The searcher audits EVERY table in the chunk and replies with the best 2-3 configurations (tables in
     oscillator order) for the target in that chunk."""
     return ("Audition wavetables for the target clip — I'm recreating its sound and need the oscillator wavetables. "
-            "Audition every table in your chunk: render each one with the session notes and listen against the "
-            "target one at a time. Then combine the closest ones into pairs — both oscillator orders, since osc 1 "
-            "leads — render and listen to those too. Reply with your best 2-3 configurations for the target in "
-            "this chunk: tables in oscillator order, each with a few words on what it explains.\n\n"
+            "Audition every table in your chunk: render each one with the session notes and listen to them in "
+            "batches of ~8, saying what each batch is or isn't close to. Then combine the closest ones into pairs "
+            "— both oscillator orders, since osc 1 leads — render and listen to those in batches too. Reply with "
+            "your best 2-3 configurations for the target in this chunk: tables in oscillator order, each with a "
+            "few words on what it explains.\n\n"
             f"Target: {target_audio_path}\n"
             f"Notes: {notes_path}.\n"
             f"Chunk: wavetables {wavetable_slice_label(start, end)}.")

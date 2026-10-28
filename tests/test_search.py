@@ -77,6 +77,18 @@ def test_widen_pairs_two_missed():
     assert len(extra) == 10                        # 2 missed × 2 top × 2 orders + 2 GT×GT
 
 
+def test_batch_impression():
+    from maestro.v5.agents.searcher import _batch_impression
+    a, b, q = ({"id": x} for x in ("a", "b", "q"))
+    dist = {"a": 5.0, "b": 3.0, "q": 9.0}
+    line = _batch_impression([a, b, q], dist, {"q"}, None, lambda it: it["id"])
+    assert line == ("b is the closest of that batch, but still not the target. "
+                    "q renders near-silent on this patch; dropping it.")
+    assert _batch_impression([a], dist, set(), b, lambda it: it["id"]) == "Nothing in that batch beats b."
+    assert _batch_impression([q], dist, {"q"}, None, lambda it: it["id"]) == \
+        "q renders near-silent on this patch; dropping it."
+
+
 def test_combo_lines_two_osc():
     e1 = {"id": "wt001_a"}
     e2 = {"id": "wt002_b", "silent_frame0": True}
