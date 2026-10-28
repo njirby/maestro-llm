@@ -48,7 +48,7 @@ def one(job):
     sid, route, k, r, nxt = job
     t = time.time()
     try:
-        x = at.attempt_native(a, sid, route, r, nxt, a.run)
+        x = at.attempt_native(at.for_server(a, sid, route), sid, route, r, nxt, a.run)
     except Exception as e:  # counted as a failure
         return {"ok": False, "err": str(e)[:200], "s": time.time() - t}
     return {"ok": not x["fails"], "fails": x["fails"], "s": time.time() - t, "chars": len(x["thinking"])}

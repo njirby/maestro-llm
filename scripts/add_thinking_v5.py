@@ -125,6 +125,18 @@ def last_turn(run: Path, sid: str, route: str) -> tuple[str, dict]:
     raise KeyError(rid)
 
 
+def for_server(a, sid: str, route: str):
+    """--url may list several servers (comma-separated, e.g. two model copies): a conversation (sample + agent) always
+    goes to the same one, so that server's prefix cache holds its history."""
+    urls = a.url.split(",")
+    if len(urls) == 1:
+        return a
+    import zlib
+    b = argparse.Namespace(**vars(a))
+    b.url = urls[zlib.crc32(f"{sid}/{route}".encode()) % len(urls)]
+    return b
+
+
 def attempt(a, sid, route, r, nxt, run):
     sub = route != "main"
     ctx = h.transform(r["body"], sid, h.PREAMBLES["sub" if sub else "v2"], a.model, [])
@@ -212,7 +224,8 @@ def main():
             atts = []
             for _ in range(a.tries):
                 try:
-                    x = (attempt_native if a.mode == "native" else attempt)(a, sid, route, r, nxt, a.run)
+                    x = (attempt_native if a.mode == "native" else attempt)(for_server(a, sid, route), sid, route, r, nxt,
+                                                                            a.run)
                 except Exception as e:  # recorded as a failed attempt; the turn is retried
                     x = {"thinking": "", "fails": [f"error: {str(e)[:200]}"]}
                 atts.append(x)

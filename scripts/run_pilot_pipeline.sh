@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Everything after the build for one v5 run: narration (27B edit modes, then Omni first impressions, with the GPU
 # swaps), then per rollout, CHAINS at a time: conformance replay -> probe perceptions -> thinking (27B), then merge
-# + viewer pages. Run from the repo root; only touches model servers this script (or its caller) started on
+# + viewer pages. THINK_URL may list several servers (e.g. two 2-card copies of the 27B on :8001,:8002; each
+# conversation sticks to one). Run from the repo root; only touches model servers this script (or its caller) started on
 # :8000 / :8001, found by port.
 #
 #   scripts/run_pilot_pipeline.sh <run name> [build pid to wait for]
@@ -59,7 +60,8 @@ chain() {
   if ! grep -q "judge/" "$PROBES_DIR/$s.log" 2>/dev/null; then
     REPLAY_DIR="$PWD/$REPLAY" RUN_DIR="$PWD/$RUN" RENDER_JOBS=8 $PY scripts/build_probe_perceptions.py "$s" > "$PROBES_DIR/$s.log" 2>&1 || { echo "[$(date +%T)] $s PERCEPTIONS FAILED"; return; }
   fi
-  $PY scripts/add_thinking_v5.py --mode native --run "$RUN" --replay "$REPLAY" --sids "$s" --out "$THINK" --workers 16 > "$THINK/$s.log" 2>&1 || { echo "[$(date +%T)] $s THINKING FAILED"; return; }
+  $PY scripts/add_thinking_v5.py --mode native --run "$RUN" --replay "$REPLAY" --sids "$s" --out "$THINK" --workers 16 \
+      --url "${THINK_URL:-http://127.0.0.1:8001/v1}" > "$THINK/$s.log" 2>&1 || { echo "[$(date +%T)] $s THINKING FAILED"; return; }
   echo "[$(date +%T)] $s done: replay $(python3 -c "import json;r=json.load(open('$REPLAY/$s/report.json'));print(r['matches'],'/',r['requests'],'diffs',r['diffs'])") ; $(grep '^==' "$THINK/$s.log" | tail -1)"
 }
 export -f chain
