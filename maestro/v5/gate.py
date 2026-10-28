@@ -95,6 +95,27 @@ def audio(renderer, gt: dict, final: dict, notes: dict) -> dict:
             "len_final": len(w["final"]), "len_gt": len(w["gt"])}
 
 
+def same_in_context(renderer, gt: dict, final: dict, slots: list[int]) -> list[int]:
+    """Of the wavetable-diff `slots`, those where the final tables sound identical to the GT's in the GT's own
+    (stripped) patch: wt_rank distance < SAME_EPS with the final's tables swapped in. A table pair can be identical
+    under one patch's oscillator settings without being on the fixed frame-0 duplicate list."""
+    import copy
+    from . import wt_rank
+    base = wt_rank.stripped(gt)
+    alt = copy.deepcopy(base)
+    for n in slots:
+        alt["settings"]["wavetables"][n - 1] = final["settings"]["wavetables"][n - 1]
+    y = renderer({"gt": base, "alt": alt}, wt_rank.PATTERN)
+    d = float(wt_rank.distance(wt_rank.sustain_frames(y["gt"]), wt_rank.sustain_frames(y["alt"])))
+    return list(slots) if d < wt_rank.SAME_EPS else []
+
+
 def gate(renderer, gt: dict, final: dict, notes: dict) -> dict:
     st, au = structural(gt, final), audio(renderer, gt, final, notes)
+    if st["wavetable_diffs"]:
+        same = same_in_context(renderer, gt, final, st["wavetable_diffs"])
+        if same:
+            st["wavetables_same_in_context"] = same
+            st["wavetable_diffs"] = [n for n in st["wavetable_diffs"] if n not in same]
+            st["pass"] = not (st["n_param_diffs"] or st["route_diffs"] or st["wavetable_diffs"] or st["lfo_shape_diffs"])
     return {"pass": st["pass"] and au["pass"], "structural": st, "audio": au}

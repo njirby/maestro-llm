@@ -162,6 +162,9 @@ def replay(main: dict[str, Any], subagents: list[dict[str, Any]], run_dir: str |
     name = CONTAINER_PREFIX + run_dir.name.replace("_", "-")[:40] + "-" + uuid.uuid4().hex[:6]
     argv = ["run", "-d", "--init", "--name", name, "--user", f"{os.getuid()}:{os.getgid()}",
             "--network", "none", "--label", "maestro/wsd-replay=1",
+            # hard cap below the host's 30 GB: a runaway replay is OOM-killed in its container instead of
+            # pushing the host into swap (node's heap cap alone doesn't bound off-heap audio buffers)
+            "--memory", "20g", "--memory-swap", "20g",
             "-v", f"{rollouts}:{ROLLOUT_ROOT}", "-v", f"{root}:{OC_ROOT}",
             # staged config entries are symlinks into the source tree; mount that tree (the live
             # repo's opencode/ by default, an OC_STAGE_SRC extraction otherwise) so they resolve

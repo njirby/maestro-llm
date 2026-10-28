@@ -137,6 +137,7 @@ def main() -> int:
         def inputs_sig() -> dict:
             return {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(run.glob("*.jsonl"))}
         sig0 = inputs_sig()
+        index = [e for e in index if "main_id" in e]   # rows of gate-dropped samples have no records to replay
         if a.sample:
             index = [e for e in index if e["sample_id"] in a.sample]
         init_root = Path(a.init_root) if a.init_root else run / "init"

@@ -31,6 +31,8 @@ NFFT = 2048
 FRAMES_PER_NOTE = 4
 FLOOR_DB = 80.0          # bins more than this far below the target's peak are clamped to the floor
 P_WEIGHT = 0.5           # bin weight = power ** P_WEIGHT (see distance)
+SAME_EPS = 0.01          # a configuration scoring below this against the target sounds identical to it in its patch
+                         # (distances are exact: identical renders score 0.00; the closest audible swaps score >= ~0.3)
 DUPES = Path(__file__).resolve().parent / "wavetable_frame0_dupes.json"   # scripts/wt_fingerprint.py
 
 
@@ -124,24 +126,34 @@ def table_scores(ranked: list[Ranked]) -> dict[str, float]:
     return out
 
 
-def slot_frames(renderer, gt: dict, candidates: list[dict], notes: dict = PATTERN):
-    """(target frames, active slots, ids + [None], per-slot frames (options, frames, bins); the None option is 0)."""
+def slot_frames(renderer, gt: dict, candidates: list[dict], notes: dict = PATTERN, fill: bool = False):
+    """(target frames, active slots, ids + [None], per-slot frames (options, frames, bins)). The None option is
+    silence, or with `fill` the target's own table in that slot."""
     base = stripped(gt)
     slots = active_slots(base)
     jobs = {"target": base}
     for k in slots:
         for e in candidates:
             jobs[f"{k}/{e['id']}"] = slot_preset(base, k, vl.wt_load(e))
+        if fill:
+            jobs[f"{k}/own"] = slot_preset(base, k, base["settings"]["wavetables"][k - 1])
     ys = renderer.render(jobs, notes)
     T = sustain_frames(ys["target"], notes)
     ids = [e["id"] for e in candidates] + [None]
-    X = [np.array([sustain_frames(ys[f"{k}/{i}"], notes) for i in ids[:-1]] + [np.zeros_like(T)]) for k in slots]
+    X = [np.array([sustain_frames(ys[f"{k}/{i}"], notes) for i in ids[:-1]] +
+                  [sustain_frames(ys[f"{k}/own"], notes) if fill else np.zeros_like(T)]) for k in slots]
     return T, slots, ids, X
 
 
-def rank_subsets(renderer, gt: dict, candidates: list[dict], notes: dict = PATTERN, top: int = 1000) -> list[Ranked]:
-    """Every assignment of candidates (or nothing) to each active GT slot, scored exactly; the best `top`."""
-    T, slots, ids, X = slot_frames(renderer, gt, candidates, notes)
+def rank_subsets(renderer, gt: dict, candidates: list[dict], notes: dict = PATTERN, top: int = 1000,
+                 fill: bool = False) -> list[Ranked]:
+    """Every assignment of candidates (or nothing) to each active GT slot, scored exactly; the best `top`.
+
+    fill=False: an unassigned slot is silent (the judge ranking a pool that should cover every oscillator).
+    fill=True: an unassigned slot keeps the target's own table, so a candidate set is scored by how well it completes
+    the target in the roles it takes (a searcher's chunk usually holds at most some of the target's tables; without
+    fill, the slots it can't fill swamp the score and its one right table ties with any other)."""
+    T, slots, ids, X = slot_frames(renderer, gt, candidates, notes, fill)
     rest = list(itertools.product(range(len(ids)), repeat=len(slots) - 1))
     R = np.array([sum((X[s + 1][c] for s, c in enumerate(combo)), np.zeros_like(T)) for combo in rest])
     res = []
@@ -153,3 +165,8 @@ def rank_subsets(renderer, gt: dict, candidates: list[dict], notes: dict = PATTE
                 res.append(Ranked(float(d[ci]), tables))
     res.sort(key=lambda r: r.score_db)
     return res[:top]
+
+
+def sounds_like_target(score_db: float) -> bool:
+    """Scores below SAME_EPS: identical to the target in its own patch, so as correct as the GT tables."""
+    return score_db < SAME_EPS

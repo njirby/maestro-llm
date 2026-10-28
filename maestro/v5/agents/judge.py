@@ -32,6 +32,8 @@ def run_judge(ctx: Ctx, prompt: str, rid: str, pool: list[dict[int, dict]], gt_p
         if not cfg or any(len(cfg) == len(p) and all(n in p and wt_rank.same_table(p[n]["id"], e["id"])
                                                       for n, e in cfg.items()) for p, _ in picks):
             continue           # an empty assignment, or the same configuration up to frame-0 duplicates
+        if picks and wt_rank.sounds_like_target(picks[0][1]) and wt_rank.sounds_like_target(r.score_db):
+            continue           # sounds identical to the choice in this patch: not an alternative
         picks.append((cfg, r.score_db))
         if len(picks) == 1 + MAX_ALTS:
             break
@@ -51,6 +53,7 @@ def run_judge(ctx: Ctx, prompt: str, rid: str, pool: list[dict[int, dict]], gt_p
     gt = {n: e["id"] for n, e in zip(slots, gt_tables)}
     ctx.note(agent=AGENT, combos=[{n: e["id"] for n, e in c.items()} for c, _ in picks],
              scores=[round(sc, 2) for _, sc in picks], choice=refs,
-             choice_is_gt=all(n in choice and wt_rank.same_table(choice[n]["id"], t) for n, t in gt.items())
+             choice_is_gt=(wt_rank.sounds_like_target(picks[0][1]) or
+                           all(n in choice and wt_rank.same_table(choice[n]["id"], t) for n, t in gt.items()))
              if gt else None, pool=[{n: e["id"] for n, e in c.items()} for c in pool])
     return rec.finish(json.dumps({"tuple": refs, "reasoning": reasoning}, ensure_ascii=False)), choice

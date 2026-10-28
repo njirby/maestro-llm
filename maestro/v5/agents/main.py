@@ -84,6 +84,18 @@ def _cfg_key(cfg: dict) -> tuple:
     return tuple(sorted((n, e["id"]) for n, e in cfg.items()))
 
 
+WAVE = 4   # searchers per dispatch message: one OpenCode process holds every parallel searcher's audio history
+
+
+def _best_so_far(best) -> str:
+    """The main agent's remark between waves, from the replies it has read (their top configurations)."""
+    if best is None:
+        return "Nothing usable back yet."
+    _, cfg, k = best
+    tables = " + ".join(wt_ref(e) + (f" (osc {n})" if len(cfg) > 1 else "") for n, e in sorted(cfg.items()))
+    return f"Best so far: {tables}, from searcher {k}."
+
+
 class Main:
     def __init__(self, ctx: Ctx, code_mistake_rate: float = 0.08, mistake_rate: float = 0.10,
                  render_mistake_rate: float = 0.0, retranscribe_rate: float = 0.0,
@@ -210,18 +222,28 @@ class Main:
         a0, b0 = regions[0]
         n_tables = b0 - a0
         spans = [(a0 + a, a0 + b) for a, b in search.chunks(n_tables)]
-        calls, resps, pool = [], [], []
-        for k, (a, b) in enumerate(spans, 1):
-            prompt = oc.search_dispatch_prompt(target, notes_path, a, b)
-            r, cfgs = run_searcher(ctx, k, prompt, f"{s.id}.searcher{k}", a, b, self.gt, self.renderer, gt_tables)
-            call, resp = self.task("searcher", k, f"Search wavetables {oc.wavetable_slice_label(a, b)}", prompt, r)
-            calls.append(call)
-            resps.append(resp)
-            have = {_cfg_key(c) for c in pool}
-            pool += [c for c in cfgs if _cfg_key(c) not in have]
+        pool, best = [], None          # best: (score, configuration, searcher k) over the replies so far
         what = "the whole library" if n_tables == 499 else f"{n_tables} of the 499 tables"
-        rec.say(f"Searching {what} — {len(spans)} chunks, every table auditioned.")
-        rec.step(calls, resps)
+        for w in range(0, len(spans), WAVE):
+            calls, resps = [], []
+            for k, (a, b) in enumerate(spans[w:w + WAVE], w + 1):
+                prompt = oc.search_dispatch_prompt(target, notes_path, a, b)
+                r, cfgs, scores = run_searcher(ctx, k, prompt, f"{s.id}.searcher{k}", a, b, self.gt, self.renderer,
+                                               gt_tables)
+                call, resp = self.task("searcher", k, f"Search wavetables {oc.wavetable_slice_label(a, b)}", prompt, r)
+                calls.append(call)
+                resps.append(resp)
+                have = {_cfg_key(c) for c in pool}
+                pool += [c for c in cfgs if _cfg_key(c) not in have]
+                if cfgs and (best is None or scores[0] < best[0]):
+                    best = (scores[0], cfgs[0], k)
+            if w == 0:
+                rec.say(f"Searching {what} — {len(spans)} chunks, every table auditioned, "
+                        f"{min(WAVE, len(spans))} searchers at a time.")
+            else:
+                rec.say(_best_so_far(prev_best) + f" Next: chunks {w + 1}-{min(w + WAVE, len(spans))}.")
+            rec.step(calls, resps)
+            prev_best = best
 
         # judge: recombines across the pooled configurations and picks the oscillator tables
         j_prompt = oc.judge_dispatch_prompt(target, [[wt_ref(e) for _, e in sorted(c.items())] for c in pool],

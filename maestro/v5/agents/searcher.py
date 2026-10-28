@@ -4,9 +4,10 @@ listened to; replies with the best configurations for the target in this chunk (
 
 What counts as "closest" is the superposition ranking (maestro/v5/wt_rank.py, docs/wavetable_search_heuristic.md):
 every assignment of the chunk's tables to the target's oscillators, scored exactly against the target from
-single-oscillator renders of the stripped target patch (oracle, host-side). Nothing is forced: the reply is the
-ranking's top configurations, whether or not they hold the GT tables (frame-0 duplicates of a GT table are equally
-correct).
+single-oscillator renders of the stripped target patch (oracle, host-side); an oscillator the chunk doesn't fill keeps
+the target's own table, so the chunk is scored on how well its tables complete the target in the roles they take.
+Nothing is forced: the reply is the ranking's top configurations, whether or not they hold the GT tables (frame-0
+duplicates of a GT table are equally correct).
 """
 from __future__ import annotations
 
@@ -84,9 +85,9 @@ def _label(cfg: dict[int, dict]) -> str:
 
 
 def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, gt_preset: dict, renderer,
-                 gt_tables: list[dict] = ()) -> tuple[dict, list[dict[int, dict]]]:
-    """Returns (record, configurations in reply order — each {oscillator slot: library entry}). gt_tables only feeds
-    the diagnostics in the event log (did the reply hold the chunk's GT tables?)."""
+                 gt_tables: list[dict] = ()) -> tuple[dict, list[dict[int, dict]], list[float]]:
+    """Returns (record, configurations in reply order — each {oscillator slot: library entry} — and their ranking
+    scores). gt_tables only feeds the diagnostics in the event log (did the reply hold the chunk's GT tables?)."""
     idx = vitallib.wt_index()
     chunk = idx[start:end]
     by_id = {e["id"]: e for e in chunk}
@@ -98,7 +99,7 @@ def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, 
 
     # the ranking (oracle, host-side): every assignment of this chunk's tables to the target's oscillators
     slots = wt_rank.active_slots(gt_preset)
-    ranked = wt_rank.rank_subsets(renderer, gt_preset, chunk)
+    ranked = wt_rank.rank_subsets(renderer, gt_preset, chunk, fill=True)   # roles the chunk can't fill keep the target's
     tscore = wt_rank.table_scores(ranked)
 
     # ---- the full audition — every table in the chunk as an osc-1 probe -------------------------------------
@@ -140,4 +141,4 @@ def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, 
     ctx.note(agent=AGENT, k=k, chunk=[start, end], label=label, need=need, quiet=sorted(quiet),
              reply_holds_gt=held, configs=[{n: e["id"] for n, e in c.items()} for c in top],
              scores=[round(sc, 2) for _, sc in configs[:TOP_K]])
-    return rec.finish("\n".join(lines)), top
+    return rec.finish("\n".join(lines)), top, [sc for _, sc in configs[:TOP_K]]

@@ -52,7 +52,8 @@ with ContainerRenderer(ROOT / "outputs/wt_rank/rank_cache", jobs=8) as r:
         cands.update({e["id"]: e for e in gts})
         ranked = [x for x in wr.rank_subsets(r, gt, list(cands.values())) if None not in x.tables]
         want = tuple(e["id"] for e in gts)
-        alts = [x for x in ranked if not all(wr.same_table(t, w) for t, w in zip(x.tables, want))]
+        alts = [x for x in ranked if not all(wr.same_table(t, w) for t, w in zip(x.tables, want))
+                and not wr.sounds_like_target(x.score_db)]   # sound-identical in this patch = the GT too
         if len(alts) < 10:
             continue
         near = alts[:2]
