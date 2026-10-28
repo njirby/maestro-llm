@@ -1,21 +1,22 @@
 """searcher: loads the skill, listens to the target, lists its chunk, then the full audition: every table in the
-chunk rendered as an osc-1 probe (init patch) and listened to one at a time; the B closest singles beamed into
-oriented pairs (both orders), rendered and listened to; replies with the best 2-3 configurations for the target
-in this chunk (tables in oscillator order).
+chunk rendered as an osc-1 probe (init patch) and listened to in batches; then its closest combinations rendered and
+listened to; replies with the best configurations for the target in this chunk (tables per oscillator).
 
-Oracle: distances are measured against the TARGET only — never against the GT. The GT matters only to the local
-gate: every GT table in the chunk must appear in one of the returned configurations (in relative order), else the
-judge can never reassemble the answer. If the search misses, widen the beam once, then rescue the GT configuration
-into the reply.
+What counts as "closest" is the superposition ranking (maestro/v5/wt_rank.py, docs/wavetable_search_heuristic.md):
+every assignment of the chunk's tables to the target's oscillators, scored exactly against the target from
+single-oscillator renders of the stripped target patch (oracle, host-side). Nothing is forced: the reply is the
+ranking's top configurations, whether or not they hold the GT tables (frame-0 duplicates of a GT table are equally
+correct).
 """
 from __future__ import annotations
 
-from ..audio import distance, peak_dbfs
+from .. import wt_rank
+from ..audio import peak_dbfs
 from ..ctx import Ctx
 from ..planner import vitallib, wt_ref
 from ..record import Record
 from .common import INIT, RENDER, listen_many, open_session, run
-from ..search import BEAM, TOP_K, batched, beam, combo_lines, gate_missing, oriented_pairs, pair_label, widen_pairs
+from ..search import BEAM, TOP_K, batched, combo_lines
 
 AGENT = "searcher"
 WT = "python3 $VITAL_SKILL/scripts/wavetable.py"
@@ -45,18 +46,13 @@ def _batch_impression(batch: list[dict], dist: dict, quiet_now: set, running_bes
     return base
 
 
-def _listen_batched(rec: Record, ctx: Ctx, out_dir: str, items: list[dict], dist: dict, quiet: set,
-                    target_host: str, name) -> dict | None:
-    """Measure every rendered probe against the target (oracle, host-side), listen to them in batches of
-    LISTEN_BATCH, and say one short impression per batch. Returns the running-best item (or None)."""
+def _listen_batched(rec: Record, ctx: Ctx, out_dir: str, items: list[dict], dist: dict, quiet: set, name) -> dict | None:
+    """Listen to rendered probes in batches of LISTEN_BATCH and say one short impression per batch. `dist` holds the
+    ranking's score per item (lower = closer). Returns the running-best item (or None)."""
     running_best = None
     for i in range(0, len(items), LISTEN_BATCH):
         b = items[i:i + LISTEN_BATCH]
-        hosts = {}
-        for it in b:
-            h = ctx.fetch(f"{out_dir}/{it['id']}.wav")
-            hosts[it["id"]] = h
-            dist[it["id"]] = distance(h, target_host)
+        hosts = {it["id"]: ctx.fetch(f"{out_dir}/{it['id']}.wav") for it in b}
         quiet_now = {k for k, h in hosts.items() if peak_dbfs(h) < QUIET_DBFS}
         quiet |= quiet_now
         listen_many(rec, ctx, [f"{out_dir}/{it['id']}.wav" for it in b])
@@ -69,103 +65,79 @@ def _listen_batched(rec: Record, ctx: Ctx, out_dir: str, items: list[dict], dist
     return running_best
 
 
-def config_line(i: int, entries: list[dict], why: str) -> str:
+def config_line(i: int, cfg: dict[int, dict], why: str) -> str:
+    """cfg: {oscillator slot: library entry}."""
     refs = []
-    for n, e in enumerate(entries, 1):
+    for n, e in sorted(cfg.items()):
         ref, wid = wt_ref(e), e["id"]
-        core = f"{ref} (osc {n})" if len(entries) > 1 else ref
+        core = f"{ref} (osc {n})" if len(cfg) > 1 or n != 1 else ref
         refs.append(f"{core} ({wid})" if ref != wid else core)
     return f"{i}. " + " + ".join(refs) + f": {why}"
 
 
-def _why(i: int, last: bool, rescued: bool) -> str:
-    if rescued and last:
-        return "worth a second look"
-    return ("closest to the target in this chunk" if i == 0 else
-            "also close" if i == 1 else "close, a bit further off")
+def _why(i: int) -> str:
+    return "closest to the target in this chunk" if i == 0 else "also close" if i == 1 else "close, a bit further off"
 
 
-def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, gt: list[dict],
-                 arity: int, target_host: str) -> tuple[dict, list[list[dict]]]:
-    """Returns (record, configurations in reply order — each a list of entries in oscillator order)."""
+def _label(cfg: dict[int, dict]) -> str:
+    return "_".join(e["id"] for _, e in sorted(cfg.items()))
+
+
+def run_searcher(ctx: Ctx, k: int, prompt: str, rid: str, start: int, end: int, gt_preset: dict, renderer,
+                 gt_tables: list[dict] = ()) -> tuple[dict, list[dict[int, dict]]]:
+    """Returns (record, configurations in reply order — each {oscillator slot: library entry}). gt_tables only feeds
+    the diagnostics in the event log (did the reply hold the chunk's GT tables?)."""
     idx = vitallib.wt_index()
     chunk = idx[start:end]
+    by_id = {e["id"]: e for e in chunk}
     rec = Record(AGENT, rid, ctx.wd, prompt)
     open_session(rec, ctx)        # skill, then the target: candidates are picked after hearing it
     run(rec, ctx, f"{WT} list --ids {chunk[0]['id']}-{chunk[-1]['id']}")
-
     label = f"{chunk[0]['id']}-{chunk[-1]['id']}"
     out_dir = f"probes/s{k}"
-    chunk_ids = {e["id"] for e in chunk}
-    need = [e["id"] for e in gt if e["id"] in chunk_ids]  # the chunk's GT tables, in plan order
 
-    # ---- stage 1: the full audition — every table in the chunk as an osc-1 probe ------------------------------
-    singles = list(chunk)
-    for step in batched(combo_lines([(e["id"], [e]) for e in singles], out_dir, INIT, SET, WT, RENDER)):
+    # the ranking (oracle, host-side): every assignment of this chunk's tables to the target's oscillators
+    slots = wt_rank.active_slots(gt_preset)
+    ranked = wt_rank.rank_subsets(renderer, gt_preset, chunk)
+    tscore = wt_rank.table_scores(ranked)
+
+    # ---- the full audition — every table in the chunk as an osc-1 probe -------------------------------------
+    for step in batched(combo_lines([(e["id"], [e]) for e in chunk], out_dir, INIT, SET, WT, RENDER)):
         run(rec, ctx, step)
-    dist1: dict[str, float] = {}
+    dist = {e["id"]: tscore.get(e["id"], float("inf")) for e in chunk}
     quiet: set[str] = set()
-    _listen_batched(rec, ctx, out_dir, singles, dist1, quiet, target_host, wt_ref)
+    _listen_batched(rec, ctx, out_dir, list(chunk), dist, quiet, wt_ref)
 
-    ranked1 = sorted((e for e in singles if e["id"] not in quiet), key=lambda e: dist1[e["id"]])
-    widened = rescued = False
-    rendered: set[str] = set()
-    d2: dict[str, float] = {}
-
-    if arity == 1:
-        top = [[e] for e in ranked1[:TOP_K]]
-    else:
-        # ---- stage 2: the beam — oriented pairs from the closest singles (both orders; osc 1 leads) -------------
-        pairs = oriented_pairs(beam(ranked1, BEAM))
-        for step in batched(combo_lines([(pair_label(a, b), [a, b]) for a, b in pairs], out_dir, INIT, SET, WT, RENDER)):
+    # ---- the closest configurations: render the multi-table ones (singles were just heard) ---------------------
+    configs, seen = [], set()
+    for r in ranked:
+        cfg = {slot: by_id[t] for slot, t in zip(slots, r.tables) if t is not None}
+        key = tuple(sorted((n, e["id"]) for n, e in cfg.items()))
+        if key in seen or any(e["id"] in quiet for e in cfg.values()):
+            continue
+        seen.add(key)
+        configs.append((cfg, r.score_db))
+        if len(configs) == BEAM:
+            break
+    combos = [(cfg, sc) for cfg, sc in configs if len(cfg) > 1]
+    if combos:
+        for step in batched(combo_lines([(_label(c), [e for _, e in sorted(c.items())]) for c, _ in combos],
+                                        out_dir, INIT, SET, WT, RENDER)):
             run(rec, ctx, step)
-        pair_items = [{"id": pair_label(a, b), "ab": (a, b)} for a, b in pairs]
-        rendered = {it["id"] for it in pair_items}
-        _listen_batched(rec, ctx, out_dir, pair_items, d2, set(), target_host,
-                        lambda it: f"{wt_ref(it['ab'][0])} + {wt_ref(it['ab'][1])}")
-        n_base = len(pairs)
-        n_extra = 0
-        all_pairs = list(pairs)
-        if gate_missing([[a, b] for a, b in sorted(pairs, key=lambda p: d2[pair_label(*p)])[:TOP_K]], need):
-            # a GT single just missed the beam: render only the pairs that involve it (both orders)
-            top_b = beam(ranked1, BEAM)
-            missed = [e for e in chunk if e["id"] in set(need) and e["id"] not in {x["id"] for x in top_b}]
-            extra = widen_pairs(missed, top_b, rendered)
-            if extra:
-                for step in batched(combo_lines([(pair_label(a, b), [a, b]) for a, b in extra], out_dir, INIT, SET, WT, RENDER)):
-                    run(rec, ctx, step)
-                extra_items = [{"id": pair_label(a, b), "ab": (a, b)} for a, b in extra]
-                rendered |= {it["id"] for it in extra_items}
-                _listen_batched(rec, ctx, out_dir, extra_items, d2, set(), target_host,
-                                lambda it: f"{wt_ref(it['ab'][0])} + {wt_ref(it['ab'][1])}")
-                widened, n_extra = True, len(extra)
-                all_pairs += extra
-        ranked2 = sorted(all_pairs, key=lambda p: d2[pair_label(*p)])
-        top = [[a, b] for a, b in ranked2[:TOP_K]]
-        if not top and ranked1:  # degenerate (every pair quiet): fall back to the best single
-            top = [[ranked1[0]]]
-        if gate_missing(top, need):
-            g = {e["id"]: e for e in chunk if e["id"] in set(need)}
-            cfg = [g[i] for i in need]
-            if len(cfg) == 1:  # only one GT table here: pair it with the chunk's best other table
-                cfg.append(next(e for e in ranked1 if e["id"] not in set(need)))
-            top.append(cfg)
-            rescued = True
+        items = [{"id": _label(c), "cfg": c} for c, _ in combos]
+        d2 = {_label(c): sc for c, sc in combos}
+        _listen_batched(rec, ctx, out_dir, items, d2, set(),
+                        lambda it: " + ".join(wt_ref(e) for _, e in sorted(it["cfg"].items())))
+    top = [cfg for cfg, _ in configs[:TOP_K]]
 
-    header = f"Auditioned all {len(singles)} tables in {label}"
-    if arity == 1:
-        header += " with the session notes."
-    else:
-        header += f", then {n_base} combinations of the closest {BEAM}"
-        header += f", plus {n_extra} more pairing the near-misses." if widened else "."
-    lines = [header, "My best for the target in this chunk:" if arity == 1
-             else "My best configurations for the target in this chunk:"]
-    n = len(top)
-    for i, cfg in enumerate(top):
-        lines.append(config_line(i + 1, cfg, _why(i, i == n - 1, rescued)))
+    header = f"Auditioned all {len(chunk)} tables in {label}"
+    header += f", then {len(combos)} of the closest combinations." if combos else " with the session notes."
+    lines = [header, "My best configurations for the target in this chunk:" if len(slots) > 1
+             else "My best for the target in this chunk:"]
+    lines += [config_line(i + 1, cfg, _why(i)) for i, cfg in enumerate(top)]
+    need = {n: e["id"] for n, e in zip(slots, gt_tables) if e["id"] in by_id}
+    held = any(all(n in c and wt_rank.same_table(c[n]["id"], t) for n, t in need.items()) for c in top) if need else None
     ctx.note(agent=AGENT, k=k, chunk=[start, end], label=label, need=need, quiet=sorted(quiet),
-             beam=BEAM, widened=widened, rescued=rescued,
-             dist1={i: round(d, 2) for i, d in dist1.items()},
-             pairs=sorted(rendered),
-             configs=[[e["id"] for e in c] for c in top])
+             reply_holds_gt=held, configs=[{n: e["id"] for n, e in c.items()} for c in top],
+             scores=[round(sc, 2) for _, sc in configs[:TOP_K]])
     return rec.finish("\n".join(lines)), top

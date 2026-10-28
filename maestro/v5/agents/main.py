@@ -80,6 +80,10 @@ def _changed(before: dict, after: dict) -> dict[str, tuple]:
     return out
 
 
+def _cfg_key(cfg: dict) -> tuple:
+    return tuple(sorted((n, e["id"]) for n, e in cfg.items()))
+
+
 class Main:
     def __init__(self, ctx: Ctx, code_mistake_rate: float = 0.08, mistake_rate: float = 0.10,
                  render_mistake_rate: float = 0.0, retranscribe_rate: float = 0.0,
@@ -198,8 +202,8 @@ class Main:
             ctx.note(agent=AGENT, event="residual_transcription", mutations=residual[1], recheck_after=recheck_after)
         rec.step([call], [resp])
 
-        # searchers: the window, chunked — every table in each chunk auditioned, the closest beamed into pairs,
-        # the best configurations pooled
+        # searchers: the window, chunked — every table in each chunk auditioned; each replies with its chunk's best
+        # configurations by the superposition ranking (maestro/v5/wt_rank.py); the configurations are pooled
         run(rec, ctx, f"{WT} list --limit 0")
         gt_tables = [e for _, e in self.plan.wavetables]
         regions = self.coverage(gt_tables)
@@ -209,27 +213,28 @@ class Main:
         calls, resps, pool = [], [], []
         for k, (a, b) in enumerate(spans, 1):
             prompt = oc.search_dispatch_prompt(target, notes_path, a, b)
-            r, cfgs = run_searcher(ctx, k, prompt, f"{s.id}.searcher{k}", a, b, gt_tables, len(gt_tables), target_host)
+            r, cfgs = run_searcher(ctx, k, prompt, f"{s.id}.searcher{k}", a, b, self.gt, self.renderer, gt_tables)
             call, resp = self.task("searcher", k, f"Search wavetables {oc.wavetable_slice_label(a, b)}", prompt, r)
             calls.append(call)
             resps.append(resp)
-            have = {tuple(map(wt_ref, c)) for c in pool}
-            pool += [c for c in cfgs if tuple(map(wt_ref, c)) not in have]
+            have = {_cfg_key(c) for c in pool}
+            pool += [c for c in cfgs if _cfg_key(c) not in have]
         what = "the whole library" if n_tables == 499 else f"{n_tables} of the 499 tables"
         rec.say(f"Searching {what} — {len(spans)} chunks, every table auditioned.")
         rec.step(calls, resps)
 
         # judge: recombines across the pooled configurations and picks the oscillator tables
-        j_prompt = oc.judge_dispatch_prompt(target, [[wt_ref(e) for e in c] for c in pool], notes_path=notes_path)
-        j_rec = run_judge(ctx, j_prompt, f"{s.id}.judge", pool, gt_tables)
-        n_tab = len({r for c in pool for r in map(wt_ref, c)})
+        j_prompt = oc.judge_dispatch_prompt(target, [[wt_ref(e) for _, e in sorted(c.items())] for c in pool],
+                                            notes_path=notes_path)
+        j_rec, choice = run_judge(ctx, j_prompt, f"{s.id}.judge", pool, self.gt, self.renderer, gt_tables)
+        n_tab = len({e["id"] for c in pool for e in c.values()})
         rec.say(f"{n_tab} tables in {len(pool)} configurations; the judge recombines and picks the oscillator tables.")
         call, resp = self.task("judge", 0, "Judge wavetable pool", j_prompt, j_rec)
         rec.step([call], [resp])
 
-        # rounds
+        # rounds: the judge's tables go on (the GT's, or frame-0 duplicates of them, when the pool held them)
         wt_edit = Edit("wavetable", "\n".join(f"{WT} set preset.json --osc {n} {shlex.quote(wt_ref(e))}"
-                                             for n, e in self.plan.wavetables), {}, "wavetables")
+                                             for n, e in sorted(choice.items())), {}, "wavetables")
         rounds = self.plan.rounds
         if rounds and rounds[0].subsystem == "oscillator":
             rounds[0].edits.insert(0, wt_edit)

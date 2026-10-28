@@ -37,6 +37,17 @@ from maestro.synth.wavetable_lib import get_default_wavetable, get_n_frames, sam
 
 ARCHETYPES = ["bass", "lead", "pad", "keys", "pluck", "sequence"]
 
+# Proof-of-concept simplification: every oscillator plays its wavetable's first frame, with no frame spread and no
+# modulation of the frame position, so a table sounds the same in every patch (one render per table characterizes it
+# for the search heuristic, and the searcher's frame-0 probes match the targets). Tables silent at frame 0 are already
+# never picked (_SILENT_WAVETABLES). The random draws still happen, so other parameters keep their seeded values.
+FIRST_FRAME_ONLY = True
+# Same POC: no oscillator FM/RM's another oscillator. Without that cross-modulation (and with random phase off) the
+# oscillator mix is a plain sum, so the search heuristic can score every table combination from single-oscillator
+# renders (docs/wavetable_search_heuristic.md). The single-oscillator distortion modes stay.
+NO_CROSS_MOD = True
+_FRAME_TARGETS = frozenset({"osc_1_wave_frame", "osc_2_wave_frame", "osc_3_wave_frame"})
+
 # ---------------------------------------------------------------------------
 # Archetype specifications
 # ---------------------------------------------------------------------------
@@ -387,6 +398,8 @@ def _sample_osc(spec: ArchetypeSpec, rng: random.Random, osc_idx: int,
     # ever reached the first frames)
     p[f"osc_{osc_idx}_wave_frame"] = rng.uniform(0.0, float(max(1, n_frames - 1))) * (256.0 / (n_frames - 1)
                                                                                      if n_frames > 1 else 0.0)
+    if FIRST_FRAME_ONLY:
+        p[f"osc_{osc_idx}_wave_frame"] = 0.0
     # Transpose: +/- 2 octaves (discrete)
     # Transpose: archetype-biased so bass leans low, lead/sequence lean high
     _TRANSPOSE_POOLS = {
@@ -416,6 +429,8 @@ def _sample_osc(spec: ArchetypeSpec, rng: random.Random, osc_idx: int,
     live = set(active_oscs or (1, 2, 3))
     valid = [d for d in range(13) if d not in (9, 12)  # FM/RM <- Sample
              and not (d in (7, 10) and src_a not in live) and not (d in (8, 11) and src_b not in live)]
+    if NO_CROSS_MOD:
+        valid = [d for d in valid if d not in (7, 8, 10, 11)]
     if dist_type not in valid:
         dist_type = rng.choice(valid)
     p[f"osc_{osc_idx}_distortion_type"] = float(dist_type)
@@ -433,6 +448,8 @@ def _sample_osc(spec: ArchetypeSpec, rng: random.Random, osc_idx: int,
     p[f"osc_{osc_idx}_random_phase"] = rng.uniform(0.0, 0.5)
     # Frame spread (for complex wavetables with multiple frames)
     p[f"osc_{osc_idx}_frame_spread"] = rng.uniform(0.0, 0.3)
+    if FIRST_FRAME_ONLY:
+        p[f"osc_{osc_idx}_frame_spread"] = 0.0
     return p
 
 
@@ -768,7 +785,8 @@ def _sample_modulations(
         # Slow wavetable morph — gives pads their evolving texture
         if rng.random() < 0.85:
             amount = rng.uniform(0.20, 0.70)
-            _add_route(first_active_lfo, "osc_1_wave_frame", amount)
+            if not FIRST_FRAME_ONLY:
+                _add_route(first_active_lfo, "osc_1_wave_frame", amount)
 
     elif archetype == "keys" and 1 in active_filters:
         # Velocity → filter cutoff: expressiveness from playing dynamics
@@ -789,6 +807,8 @@ def _sample_modulations(
         target = rng.choice(available_targets[group])
         amount = abs(rng.gauss(0.35, 0.20))
         amount = _clamp(amount, 0.05, 1.0)
+        if FIRST_FRAME_ONLY and target in _FRAME_TARGETS:
+            continue
         _add_route(source, target, amount)
 
     # --- Complexity floor ---
@@ -817,7 +837,7 @@ def _sample_modulations(
         mv_tgt = None
         if 1 in active_filters:
             mv_tgt = "filter_1_cutoff"
-        elif active_oscs:
+        elif active_oscs and not FIRST_FRAME_ONLY:
             mv_tgt = f"osc_{active_oscs[0]}_wave_frame"
         if mv_src and mv_tgt:
             _add_route(mv_src, mv_tgt, rng.uniform(0.25, 0.65))

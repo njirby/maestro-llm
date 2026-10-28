@@ -33,6 +33,17 @@ def _wt_hash(t: dict) -> str:
     return hashlib.md5(json.dumps(t.get("groups"), sort_keys=True).encode()).hexdigest()
 
 
+def _same_wt(a: dict, b: dict) -> bool:
+    """Same table, or library tables whose frame-0 renders are identical (maestro/v5/wt_rank.same_table)."""
+    ha, hb = _wt_hash(a), _wt_hash(b)
+    if ha == hb:
+        return True
+    from .planner import _wt_by_hash
+    from .wt_rank import same_table
+    ea, eb = _wt_by_hash().get(ha), _wt_by_hash().get(hb)
+    return bool(ea and eb and same_table(ea["id"], eb["id"]))
+
+
 def _routes(s: dict) -> dict[tuple[str, str], float]:
     return {(r["source"], r["destination"]): float(r["amount"]) for r in vf.live_routes(s)
             if vf.why_dead(s, r["destination"]) is None}
@@ -56,7 +67,7 @@ def structural(gt: dict, final: dict) -> dict:
     routes = sorted(f"{s}->{d}" for s, d in set(rg) ^ set(rf))
     routes += sorted(f"{s}->{d} amount {rg[(s, d)]:.3f} vs {rf[(s, d)]:.3f}" for s, d in set(rg) & set(rf)
                      if abs(rg[(s, d)] - rf[(s, d)]) > ABS_TOL)
-    wts = [n + 1 for n in range(3) if _wt_hash(g["wavetables"][n]) != _wt_hash(f["wavetables"][n])]
+    wts = [n + 1 for n in range(3) if not _same_wt(g["wavetables"][n], f["wavetables"][n])]
     lfos = sorted({int(s.split("_")[1]) for s, _ in rg if s.startswith("lfo_")})
     shapes = [n for n in lfos if g["lfos"][n - 1] != f["lfos"][n - 1]]
     return {"pass": not (params or routes or wts or shapes), "n_live_params": sum(_live(g, k) for k in g),

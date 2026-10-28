@@ -14,6 +14,7 @@ import argparse
 import ast
 import concurrent.futures as cf
 import json
+import os
 import re
 import sys
 import time
@@ -80,7 +81,7 @@ def heard_block(name: str, perc: dict, render_ix: dict) -> str:
     return f"<heard>\n{body}\n</heard>"
 
 
-PROBES = OUT / "probe_perceptions"
+PROBES = Path(os.environ.get("PROBES_DIR", OUT / "probe_perceptions"))  # per-run: sample ids repeat across runs
 
 
 def _ord(k: int) -> str:

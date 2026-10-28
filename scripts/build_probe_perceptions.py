@@ -24,7 +24,7 @@ import os  # noqa: E402
 
 REPLAY = Path(os.environ.get("REPLAY_DIR", ROOT / "outputs/replay/v5_pilot20c"))
 ORACLE = Path(os.environ.get("RUN_DIR", ROOT / "outputs/v5_rollouts/pilot20c")) / "oracle"
-OUT = ROOT / "outputs/thinking_capture/hearing_lab/probe_perceptions"
+OUT = Path(os.environ.get("PROBES_DIR", ROOT / "outputs/thinking_capture/hearing_lab/probe_perceptions"))
 SKIP = ("- Your last edit", "- Did it get you closer", "- Next:")
 
 
