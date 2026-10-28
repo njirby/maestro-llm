@@ -215,19 +215,22 @@ def _shift_start(n: dict, delta_slots: int) -> None:
     _set_slot(n, max(0, _slot_of(n) + delta_slots))
 
 
-def mutate_transcription(notes_beat: list[dict], rng: random.Random) -> tuple[list[dict], list[dict], str] | None:
+def mutate_transcription(notes_beat: list[dict], rng: random.Random, n_muts: int | None = None,
+                         kinds: tuple[str, ...] | None = None) -> tuple[list[dict], list[dict], str] | None:
     """Corrupt a beat-form transcription the way a hurried transcriber does: a wrong pitch, an
     octave, a dropped or added note, a note that lands on the wrong grid slot. Returns
-    (wrong_notes, info_list, narration) or None if the phrase is too short to corrupt."""
+    (wrong_notes, info_list, narration) or None if the phrase is too short to corrupt.
+    n_muts: how many mutations (default 2..6 by phrase length); kinds: the mutation types to draw from."""
     if len(notes_beat) < 3:
         return None
 
-    n_muts = rng.randint(2, max(2, min(6, len(notes_beat) // 5)))
+    if n_muts is None:
+        n_muts = rng.randint(2, max(2, min(6, len(notes_beat) // 5)))
     wrong = copy.deepcopy(notes_beat)
     infos: list[dict] = []
 
     for _ in range(n_muts):
-        name = rng.choice(list(_MUTATION_NARRATION))
+        name = rng.choice(list(kinds or _MUTATION_NARRATION))
         idx = rng.randrange(len(wrong))
         if name == "pitch_shift":
             d = rng.choice([-2, -1, 1, 2])

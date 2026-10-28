@@ -64,9 +64,20 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--manifest", type=Path, help="WS-C manifest.jsonl (default: generate test inputs)")
     ap.add_argument("--workers", type=int, default=1, help="DawDreamer sessions in parallel")
+    ap.add_argument("--session-prefix", default=PREFIX,
+                    help="container name prefix; builds running side by side need different ones (stale cleanup "
+                         "removes every container with this prefix)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mistake-rate", type=float, default=0.10, help="per-param rate for v3 inject_mistakes")
     ap.add_argument("--code-mistake-rate", type=float, default=0.08, help="per edit call")
+    ap.add_argument("--render-mistake-rate", type=float, default=0.0, help="per main-agent render call")
+    ap.add_argument("--retranscribe-rate", type=float, default=0.0,
+                    help="per rollout: the transcriber leaves one error (record kept out of training), the main "
+                         "agent hears it after a later round and sends it back")
+    ap.add_argument("--transcriber-retries", default="1",
+                    help="weights for 1,2,3.. wrong transcription attempts in a row, e.g. 0.7,0.2,0.1")
+    ap.add_argument("--start-patch-rate", type=float, default=0.0,
+                    help="per rollout: the user hands a starting patch (partial or foreign, maestro/v5/start.py)")
     ap.add_argument("--no-view", action="store_true")
     ap.add_argument("--keep-gate-failures", action="store_true",
                     help="write rollouts that miss the GT gate (flagged in index.jsonl) instead of dropping them")
@@ -108,17 +119,21 @@ def main() -> int:
         "data_dir": oc.DATA_DIR, "rollout_root": "/work/rollouts", "audio_base": str(out / "audio"),
         "audios": "absolute host paths (copies under audio_base/<sample>/)",
         "init_dirs": str(out / "init"), "seed": a.seed,
+        "mistakes": {k: getattr(a, k) for k in ("mistake_rate", "code_mistake_rate", "render_mistake_rate",
+                                                "retranscribe_rate", "transcriber_retries", "start_patch_rate")},
         "narration": {k: getattr(a, k) for k in ("fi_url", "fi_model", "edit_arm", "edit_url", "edit_model",
                                                  "defer_narration")}, "manifest": str(a.manifest) if a.manifest else None},
         indent=1))
-    cleanup_stale(PREFIX)
-    pool = DawDreamerPool.start(min(a.workers, len(samples)), prefix=PREFIX, host_root=out / "_sessions",
+    cleanup_stale(a.session_prefix)
+    pool = DawDreamerPool.start(min(a.workers, len(samples)), prefix=a.session_prefix, host_root=out / "_sessions",
                                 skill_mount=oc.CONFIG_DIR + "/skills/vital")
 
     def one(sample):
         with pool.acquire() as sess:
             return run_one(sess, sample, out, seed=a.seed, mistake_rate=a.mistake_rate,
-                           code_mistake_rate=a.code_mistake_rate)
+                           code_mistake_rate=a.code_mistake_rate, render_mistake_rate=a.render_mistake_rate,
+                           retranscribe_rate=a.retranscribe_rate, start_patch_rate=a.start_patch_rate,
+                           transcriber_retry_weights=tuple(float(x) for x in a.transcriber_retries.split(",")))
 
     try:
         with ThreadPoolExecutor(max_workers=a.workers) as ex:

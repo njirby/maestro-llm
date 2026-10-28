@@ -19,11 +19,14 @@ from scripts.agent_sft_common import compute_round_coverage
 
 from .. import search
 
+from maestro import notation
+
 from .. import gate, narration
 from ..ctx import Ctx, OracleRenderer
-from ..mistakes import code_mistake
+from ..mistakes import code_mistake, render_mistake
 from ..planner import Edit, Plan, build_plan, vitallib, wt_ref
 from ..record import Record, final_text
+from ..start import START_FILE
 from .common import INIT, RENDER, listen, open_session, run, skill_response  # noqa: F401  (re-export)
 from .judge import run_judge
 from .searcher import WT, run_searcher
@@ -31,6 +34,35 @@ from .transcriber import run_transcriber
 
 AGENT = "maestro"
 USER_PROMPT = "Recreate the sound in target.wav in Vital."
+START_PROMPT = "Recreate the sound in target.wav in Vital, starting from my patch in {file}."
+_ORD = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth", 6: "sixth", 7: "seventh", 8: "eighth",
+        9: "ninth", 10: "tenth", 11: "eleventh", 12: "twelfth"}
+
+
+def _ordinal(i: int) -> str:
+    if i in _ORD:
+        return _ORD[i]
+    return f"{i}{'th' if 11 <= i % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(i % 10, 'th')}"
+
+
+def residual_problem(info: dict) -> str:
+    """What a single residual transcription error sounds like against the target (main agent's words)."""
+    n = _ordinal(info["note_idx"] + 1)
+    if info["type"] == "pitch_shift":
+        size = "a semitone" if abs(info["delta"]) == 1 else "a whole step"
+        return f"the {n} note is {size} {'high' if info['delta'] > 0 else 'low'}"
+    slots = abs(info["shift_slots"])
+    amt = "a sixteenth" if slots == 1 else ("an eighth" if slots == 2 else "a dotted eighth")
+    return f"the {n} note comes in {amt} {'late' if info['shift_slots'] > 0 else 'early'}"
+
+
+def recheck_dispatch_prompt(target_audio_path, notes_path, problem: str) -> str:
+    """Parent -> transcriber, mid-rollout: the notes in notes.json sound wrong against the target."""
+    return ("Check the transcription in notes.json against the target clip — with the patch getting close, the "
+            f"melody itself stands out now: {problem}. Listen to what's there next to the target, fix notes.json "
+            "in the format the `vital` skill documents, and make sure the rest still matches.\n\n"
+            f"Target: {target_audio_path}\n"
+            f"Notes: {notes_path}")
 def _changed(before: dict, after: dict) -> dict[str, tuple]:
     b, a = before["settings"], after["settings"]
     out = {k: (b.get(k), v) for k, v in a.items() if not isinstance(v, (list, dict)) and b.get(k) != v
@@ -49,12 +81,22 @@ def _changed(before: dict, after: dict) -> dict[str, tuple]:
 
 
 class Main:
-    def __init__(self, ctx: Ctx, code_mistake_rate: float = 0.08, mistake_rate: float = 0.10):
+    def __init__(self, ctx: Ctx, code_mistake_rate: float = 0.08, mistake_rate: float = 0.10,
+                 render_mistake_rate: float = 0.0, retranscribe_rate: float = 0.0,
+                 transcriber_retry_weights: tuple[float, ...] = (1.0,), start: dict | None = None):
+        """start: the user's starting patch (maestro/v5/start.py), already in the workdir as START_FILE."""
         self.ctx, self.rng, self.s = ctx, ctx.rng, ctx.sample
+        self.render_rate, self.retranscribe_rate = render_mistake_rate, retranscribe_rate
+        self.t_retry = transcriber_retry_weights
         self.gt, self.init, self.notes = self.s.gt_preset(), self.s.init_preset(), self.s.notes()
+        self.start_cmd = f"cp {INIT} preset.json"
+        prompt = USER_PROMPT
+        if start is not None:
+            self.init, self.start_cmd = start, f"cp {START_FILE} preset.json"
+            prompt = START_PROMPT.format(file=START_FILE)
         self.code_rate = code_mistake_rate
         self.plan: Plan = build_plan(self.gt, self.init, self.rng, mistake_rate=mistake_rate)
-        self.rec = Record(AGENT, f"{self.s.id}.main", ctx.wd, USER_PROMPT)
+        self.rec = Record(AGENT, f"{self.s.id}.main", ctx.wd, prompt)
         self.sub: dict[str, list[dict]] = {"transcriber": [], "searcher": [], "judge": []}
         self.links: list[dict] = []
         self._slots = 0
@@ -108,6 +150,25 @@ class Main:
                     ctx.host("preset.json").write_bytes(backup)
         run(rec, ctx, e.command())
 
+    def render(self, wav: str) -> None:
+        """render.py preset.json notes.json <wav>; with render_mistake_rate a broken variant runs first (for real:
+        render.py checks its arguments before rendering, so a failed call writes nothing)."""
+        ctx, rec, cmd = self.ctx, self.rec, f"{RENDER} preset.json notes.json {wav}"
+        if self.rng.random() < self.render_rate:
+            m = render_mistake(cmd, self.rng)
+            if m is not None:
+                before = {p.name for p in ctx.host(".").iterdir()}
+                call, out, res = ctx.bash(m.cmd)
+                if res.exit_code != 0 or "error:" in res.output:
+                    rec.step([call], [out])
+                    rec.say(m.diagnosis)
+                    ctx.note(agent=AGENT, event="code_mistake", kind=m.kind)
+                else:  # it rendered after all: remove what it wrote, record nothing
+                    for p in ctx.host(".").iterdir():
+                        if p.name not in before and p.is_file():
+                            p.unlink()
+        run(rec, ctx, cmd)
+
     # -- the rollout ---------------------------------------------------------------------------------------------
 
     def run(self) -> dict:
@@ -118,13 +179,23 @@ class Main:
         rec.say(narration.first_impression(
             target_wav=Path(target_host), notes=self.notes_d, gt_preset=self.gt, renderer=self.renderer, log=ctx.note,
             slot=self.slot("first_impression", target=self.gt)))
-        run(rec, ctx, f"cp {INIT} preset.json")
+        run(rec, ctx, self.start_cmd)
 
-        # transcriber
+        # transcriber. With retranscribe_rate it ends on notes with one residual error it doesn't catch (that record
+        # is kept out of training: link train=false); the main agent hears it after a later round and sends it back.
+        residual, recheck_after = None, None
+        if self.retranscribe_rate and len(self.plan.rounds) >= 3 and self.rng.random() < self.retranscribe_rate:
+            residual = self.residual_error()
+            if residual:
+                recheck_after = self.rng.randint(1, len(self.plan.rounds) - 2)
         t_prompt = oc.transcription_dispatch_prompt(target, notes_path)
-        t_rec = run_transcriber(ctx, t_prompt, f"{s.id}.transcriber")
+        t_rec = run_transcriber(ctx, t_prompt, f"{s.id}.transcriber", retry_weights=self.t_retry,
+                                final=residual[0] if residual else None)
         rec.say("First the notes.")
         call, resp = self.task("transcriber", 0, "Transcribe target melody", t_prompt, t_rec)
+        if residual:
+            self.links[-1]["train"] = False
+            ctx.note(agent=AGENT, event="residual_transcription", mutations=residual[1], recheck_after=recheck_after)
         rec.step([call], [resp])
 
         # searchers: the window, chunked — every table in each chunk auditioned, the closest beamed into pairs,
@@ -168,7 +239,7 @@ class Main:
             for e in r.edits:
                 self.edit(e)
             wav = f"r{i:02d}_{r.subsystem}.wav"
-            run(rec, ctx, f"{RENDER} preset.json notes.json {wav}")
+            self.render(wav)
             host = Path(listen(rec, ctx, wav))
             cur = ctx.read_json("preset.json")
             rec.say(narration.self_edit(
@@ -188,7 +259,7 @@ class Main:
                          mistakes=[m.__dict__ for m in r.mistakes])
                 self.edit(r.fix)
                 wav = f"r{i:02d}_{r.subsystem}_fix.wav"
-                run(rec, ctx, f"{RENDER} preset.json notes.json {wav}")
+                self.render(wav)
                 host = Path(listen(rec, ctx, wav))
                 cur = ctx.read_json("preset.json")
                 rec.say(narration.self_edit(
@@ -196,16 +267,59 @@ class Main:
                     changed=_changed(prev, cur), subsystem=r.subsystem, notes=self.notes_d, renderer=self.renderer,
                     log=ctx.note, slot=self.slot("self_edit", before=prev, after=cur)))
                 prev_wav, prev = host, cur
+            if i == recheck_after:
+                prev_wav = self.recheck_notes(residual, i, r.subsystem, target, notes_path)
 
         # final check
         run(rec, ctx, "python3 $VITAL_SKILL/scripts/show.py preset.json")
-        run(rec, ctx, f"{RENDER} preset.json notes.json final.wav")
+        self.render("final.wav")
         listen(rec, ctx, "target.wav")
         final_host = listen(rec, ctx, "final.wav")
         main = rec.finish(narration.final_verdict(target_wav=Path(target_host), final_wav=Path(final_host),
                                                   final_preset=ctx.read_json("preset.json"), gt_preset=self.gt,
                                                   notes=self.notes_d, renderer=self.renderer, log=ctx.note))
         return {"main": main, **self.sub, "links": self.links, "gate": self.gt_gate()}
+
+    def residual_error(self, tries: int = 10):
+        """One wrong pitch or one note off the grid that leaves the note order intact (so "the Nth note" is the one
+        you hear), with the shift as it actually landed. None if no such error fits the phrase."""
+        gt_b = notation.to_beat_form(self.s.bpm, self.notes)["notes"]
+        slot = notation._slot_of
+        for _ in range(tries):
+            mut = notation.mutate_transcription(gt_b, self.rng, n_muts=1, kinds=("pitch_shift", "timing_shift"))
+            if mut is None or len(mut[1]) != 1:
+                continue
+            wrong, (info,), narr = mut
+            if info["type"] == "timing_shift":
+                i = info["note_idx"]
+                moved = slot(wrong[i]) - slot(gt_b[i])
+                order = [slot(n) for n in wrong]
+                others = order[:i] + order[i + 1:]
+                if moved == 0 or order != sorted(order) or order[i] in others:
+                    continue
+                info = {**info, "shift_slots": moved}
+            return wrong, [info], narr
+        return None
+
+    def recheck_notes(self, residual, i: int, subsystem: str, target: str, notes_path: str) -> Path:
+        """The main agent hears the residual transcription error, sends the transcriber back to notes.json, then
+        re-renders the same patch with the fixed notes. Returns the new render (host copy)."""
+        ctx, rec, s = self.ctx, self.rec, self.s
+        problem = residual_problem(residual[1][0])
+        rec.say(f"Something else is off, and it isn't the patch: {problem} compared to the target. That's the "
+                f"transcription. Sending the transcriber back to check notes.json.")
+        prompt = recheck_dispatch_prompt(target, notes_path, problem)
+        what = f"{problem[0].upper()}{problem[1:]} compared to the target; the rest matches. Rewriting notes.json."
+        t_rec = run_transcriber(ctx, prompt, f"{s.id}.transcriber2", existing=(residual[0], residual[1], what),
+                                wav_prefix="transcription_check")
+        call, resp = self.task("transcriber", 1, "Recheck melody transcription", prompt, t_rec)
+        rec.step([call], [resp])
+        ctx.note(agent=AGENT, event="retranscribed", round=i, mutations=residual[1])
+        wav = f"r{i:02d}_{subsystem}_notes.wav"
+        self.render(wav)
+        host = Path(listen(rec, ctx, wav))
+        rec.say("Same patch, with the corrected notes; the melody lines up with the target now.")
+        return host
 
     def gt_gate(self) -> dict:
         """Does the rollout land on the GT? Structural + audio gates (maestro/v5/gate.py), host-side."""

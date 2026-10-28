@@ -136,10 +136,35 @@ def mod_args(route: dict) -> list[str]:
     return args
 
 
-def mod_edit(routes: list[dict]) -> Edit:
-    """All routes of the round in one bash call, one mod.py add per line (they edit the same file: sequential)."""
-    return Edit("mod", "\n".join(cli("mod.py", mod_args(r)) for r in routes), {},
-                "routes " + ", ".join(f"{r['source']} -> {r['destination']}" for r in routes))
+def mod_edit(routes: list[dict], remove: list[tuple[str, str]] = (), explicit: frozenset = frozenset()) -> Edit:
+    """All routes of the round in one bash call, one mod.py line each (they edit the same file: sequential): first
+    `remove` for routes the starting patch has and the target doesn't, then `add`. Routes in `explicit` already
+    exist in the starting patch, so their flags are spelled out (add keeps an existing slot's flags otherwise)."""
+    lines = [cli("mod.py", ["preset.json", "remove", a, b]) for a, b in remove]
+    for r in routes:
+        args = mod_args(r)
+        if (r["source"], r["destination"]) in explicit:
+            args += [x for x in (["--bipolar", "off"] if not r.get("bipolar") else []) +
+                     (["--power", "0"] if not r.get("power") else []) +
+                     (["--stereo", "off"] if not r.get("stereo") else [])]
+        lines.append(cli("mod.py", args))
+    what = ", ".join([f"remove {a} -> {b}" for a, b in remove] + [f"{r['source']} -> {r['destination']}" for r in routes])
+    return Edit("mod", "\n".join(lines), {}, "routes " + what)
+
+
+def start_routes(init: dict) -> list[dict]:
+    """Every used mod slot of a starting patch (live or not)."""
+    s = init["settings"]
+    out = []
+    for i, m in enumerate(s.get("modulations", [])):
+        if m.get("source") and m.get("destination"):
+            n = i + 1
+            out.append({"source": m["source"], "destination": m["destination"],
+                        "amount": float(s.get(f"modulation_{n}_amount", 0)),
+                        "bipolar": float(s.get(f"modulation_{n}_bipolar", 0)) > 0.5,
+                        "power": float(s.get(f"modulation_{n}_power", 0)),
+                        "stereo": float(s.get(f"modulation_{n}_stereo", 0)) > 0.5})
+    return out
 
 
 # --------------------------------------------------------------------------- GT wavetables
@@ -344,6 +369,15 @@ def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistak
         by_sec.setdefault(section(k), {}).setdefault(_group(k), {})[k] = float(s[k])
     routes = gt_routes(gt)
     shapes = gt_shapes(gt, init, routes)
+    # a starting patch other than init: its routes the target lacks go, its routes the target keeps are re-set with
+    # every flag; routes it already has exactly are not re-added
+    have = {(r["source"], r["destination"]): r for r in start_routes(init)}
+    want = {(r["source"], r["destination"]) for r in routes}
+    remove = sorted(k for k in have if k not in want)
+    same = lambda r, h: (abs(r["amount"] - h["amount"]) < 1e-6 and r["bipolar"] == h["bipolar"]  # noqa: E731
+                         and abs(r["power"] - h["power"]) < 1e-6 and r["stereo"] == h["stereo"])
+    routes = [r for r in routes if not ((k := (r["source"], r["destination"])) in have and same(r, have[k]))]
+    explicit = frozenset(k for k in want if k in have)
     rounds: list[Round] = []
     for sec in ORDER:
         groups = by_sec.get(sec, {})
@@ -358,12 +392,12 @@ def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistak
             continue
         edits = [set_edit(groups[g], g) for g in sorted(groups)]
         if sec == "modulation":
-            if not routes and not edits:
+            if not routes and not remove and not edits and not shapes:
                 continue
             if shapes:
                 edits.append(shape_edit(shapes))
-            if routes:
-                edits.append(mod_edit(routes))
+            if routes or remove:
+                edits.append(mod_edit(routes, remove, explicit))
         if not edits and sec != "oscillator":
             continue
         vals = {k: v for g in groups.values() for k, v in g.items()}

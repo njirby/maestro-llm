@@ -89,11 +89,8 @@ def _ord(k: int) -> str:
 
 def melody_diff(written: dict, sid: str) -> str:
     """What a transcriber hears comparing its render (its notes through the default patch) with the target: the melody
-    against the ground-truth notes, in listener words. Exact, since both note lists are known. `written` is whatever
-    the transcriber wrote to notes.json (the skill's measures-and-note-values form, or legacy seconds)."""
-    from maestro import notation
-    written, _ = notation.to_seconds(written)
-    gt = notation.to_seconds(json.loads((RUN / "oracle" / sid / "notes.json").read_text()))[0]
+    against the ground-truth notes, in listener words. Exact, since both note lists are known."""
+    gt = json.loads((RUN / "oracle" / sid / "notes.json").read_text())
     key = lambda n: (round(n["start_s"], 3), n["pitch"])
     a, b = sorted(written["notes"], key=key), sorted(gt["notes"], key=key)
     L = []

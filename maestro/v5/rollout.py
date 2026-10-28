@@ -16,6 +16,7 @@ from .agents.main import Main
 from .audio import peak_dbfs
 from .ctx import Ctx
 from .inputs import Sample
+from .start import KINDS as START_KINDS, START_FILE, start_patch
 
 SILENCE_DBFS = -60.0
 AUDIO_EXT = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus")
@@ -63,8 +64,16 @@ def run_one(sess: DawDreamerSession, sample: Sample, run_dir: Path, seed: int = 
     init_dir = run_dir / "init" / sample.id
     if init_dir.exists():
         shutil.rmtree(init_dir)
+    # a starting patch from the user (start_patch_rate): written before the first step, so it is in the init dir
+    start = None
+    start_rate = main_kw.pop("start_patch_rate", 0.0)
+    if start_rate and ctx.rng.random() < start_rate:
+        kind = ctx.rng.choice(START_KINDS)
+        start = start_patch(sample.gt_preset(), sample.init_preset(), ctx.rng, kind, sample.archetype)
+        ctx.host(START_FILE).write_text(json.dumps(start, separators=(",", ":")))
+        ctx.note(agent="maestro", event="start_patch", kind=kind)
     shutil.copytree(sess.host_path(wd), init_dir)
-    out = Main(ctx, **main_kw).run()
+    out = Main(ctx, start=start, **main_kw).run()
     out["events"] = ctx.events
     out["final_workdir"] = str(snapshot_workdir(sess.host_path(wd), ctx.oracle_host_dir))
     out["init_dir"] = str(init_dir.resolve())
