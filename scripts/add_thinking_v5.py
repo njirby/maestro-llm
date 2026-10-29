@@ -130,22 +130,35 @@ _PINNED: dict[str, str] = {}
 _PIN_LOCK = __import__("threading").Lock()
 
 
-def server_load(url: str) -> float:
-    """Requests running + waiting on a vLLM server (its /metrics); unreachable counts as fully loaded."""
+SPILL = 16   # a request leaves its pinned server when that server has this many more requests than the idlest one
+_LOADS: dict[str, tuple[float, float]] = {}
+
+
+def server_load(url: str, max_age: float = 0.0) -> float:
+    """Requests running + waiting on a vLLM server (its /metrics); unreachable counts as fully loaded. max_age: reuse
+    a reading this recent (seconds), so per-request routing doesn't poll the servers on every call."""
     import re
+    import time
     import urllib.request
+    hit = _LOADS.get(url)
+    if hit and time.time() - hit[0] < max_age:
+        return hit[1]
     try:
         txt = urllib.request.urlopen(url.rsplit("/v1", 1)[0] + "/metrics", timeout=5).read().decode()
     except Exception:
         return float("inf")
-    return sum(float(v) for v in re.findall(r"^vllm:num_requests_(?:running|waiting)\{[^}]*\} ([0-9.e+]+)", txt, re.M))
+    load = sum(float(v) for v in re.findall(r"^vllm:num_requests_(?:running|waiting)\{[^}]*\} ([0-9.e+]+)", txt, re.M))
+    _LOADS[url] = (time.time(), load)
+    return load
 
 
 def for_server(a, sid: str, route: str):
     """--url may list several servers (comma-separated, e.g. two model copies): a conversation (sample + agent) always
     goes to the same one, so that server's prefix cache holds its history. It is pinned on first sight to the server
     with the least work queued (chains run as separate processes, and a hash pinned all three concurrent main records
-    to one copy while the other sat idle: pilot20f, 03:21-03:47)."""
+    to one copy while the other sat idle: pilot20f, 03:21-03:47). A request spills to the idlest server when its
+    pinned one has SPILL more requests: a pin taken at queue-build time goes stale as other processes drain (pilot20f
+    05:24: 64 queued on :8001, :8002 idle); a lost prefix-cache hit costs a prefill, an idle copy costs half the box."""
     urls = a.url.split(",")
     if len(urls) == 1:
         return a
@@ -155,6 +168,10 @@ def for_server(a, sid: str, route: str):
             _PINNED[key] = min(urls, key=server_load)
     b = argparse.Namespace(**vars(a))
     b.url = _PINNED[key]
+    loads = {u: server_load(u, max_age=2.0) for u in urls}
+    idlest = min(urls, key=loads.get)
+    if loads[b.url] - loads[idlest] >= SPILL:
+        b.url = idlest
     return b
 
 
