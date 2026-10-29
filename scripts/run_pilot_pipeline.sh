@@ -24,23 +24,24 @@ stop_port() {
   local p; p=$(port_pid "$1"); [ -z "$p" ] && return 0
   log "stopping server on :$1 (pid $p)"; kill "$p"
   while kill -0 "$p" 2>/dev/null; do sleep 3; done
-  until [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sort -n | tail -1)" -lt 1000 ]; do sleep 3; done
 }
+gpus_free() {   # after every server is stopped (waiting per port deadlocked: :8002 still held GPUs 2,3 after :8001 stopped)
+  until [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sort -n | tail -1)" -lt 1000 ]; do sleep 3; done; }
 start_27b() {   # two TP=2 copies (GPUs 0,1 on :8001, 2,3 on :8002): +42% thinking throughput on this box
   log "starting two 27B copies on :8001 and :8002"
   GPUS=0,1 TP=2 PORT=8001 MAX_SEQS=16 nohup bash ~/ml/serve-qwen38-27b-4card.sh > outputs/serve_qwen38_27b_a.log 2>&1 &
   GPUS=2,3 TP=2 PORT=8002 MAX_SEQS=16 nohup bash ~/ml/serve-qwen38-27b-4card.sh > outputs/serve_qwen38_27b_b.log 2>&1 &
   wait_url 8001; wait_url 8002; log "27B copies up"; }
 stop_27b() { stop_port 8001; stop_port 8002
-  for w in $(pgrep -f "^VLLM::Worker"); do [ "$(ps -o ppid= -p "$w" | tr -d ' ')" = 1 ] && kill -9 "$w"; done; }
-start_omni() { log "starting Omni-Instruct on :8000"; PATH="$PWD/.venv/bin:$PATH" nohup bash scripts/serve_qwen3_omni.sh > outputs/serve_omni_instruct.log 2>&1 & wait_url 8000; log "Omni up"; }
+  for w in $(pgrep -f "^VLLM::Worker"); do [ "$(ps -o ppid= -p "$w" | tr -d ' ')" = 1 ] && kill -9 "$w"; done; gpus_free; }
+start_omni() { gpus_free; log "starting Omni-Instruct on :8000"; PATH="$PWD/.venv/bin:$PATH" nohup bash scripts/serve_qwen3_omni.sh > outputs/serve_omni_instruct.log 2>&1 & wait_url 8000; log "Omni up"; }
 
 if [ -n "$BUILD_PID" ]; then log "waiting for build pid $BUILD_PID"; while kill -0 "$BUILD_PID" 2>/dev/null; do sleep 30; done; fi
 log "build done: $(grep -cE 'validation OK.*GT gate pass' "$RUN.build.log" 2>/dev/null) rollouts pass"
 
 # ---- narration (RESUME=1: already done, skip) -----------------------------------------------------------------------
 if [ -z "${RESUME:-}" ]; then
-[ -z "$(port_pid 8001)" ] && { stop_port 8000; start_27b; }
+[ -z "$(port_pid 8001)" ] && { stop_port 8000; gpus_free; start_27b; }
 log "narration: edit modes (27B)"
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --modes self_edit,target_vs_current --url http://localhost:8001/v1 --arm text --workers 12 > "$RUN.narr_edit.log" 2>&1
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --finalize > "$RUN.finalize1.log" 2>&1
@@ -49,7 +50,7 @@ log "narration: first impressions (Omni)"
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --modes first_impression --url http://localhost:8000/v1 --workers 4 > "$RUN.narr_fi.log" 2>&1
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --finalize > "$RUN.finalize2.log" 2>&1
 log "narration report: $(tr -d '\n ' < "$RUN/narration_report.json" | head -c 400)"
-stop_port 8000; start_27b
+stop_port 8000; gpus_free; start_27b
 # narration is final: the oracle render caches (narration ablations, audibility renders) are no longer needed
 find "$RUN/oracle" -maxdepth 2 -name render_cache -type d -exec rm -rf {} +
 log "oracle render caches removed; run dir now $(du -sh "$RUN" | cut -f1)"
