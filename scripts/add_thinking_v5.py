@@ -126,15 +126,35 @@ def last_turn(run: Path, sid: str, route: str) -> tuple[str, dict]:
     raise KeyError(rid)
 
 
+_PINNED: dict[str, str] = {}
+_PIN_LOCK = __import__("threading").Lock()
+
+
+def server_load(url: str) -> float:
+    """Requests running + waiting on a vLLM server (its /metrics); unreachable counts as fully loaded."""
+    import re
+    import urllib.request
+    try:
+        txt = urllib.request.urlopen(url.rsplit("/v1", 1)[0] + "/metrics", timeout=5).read().decode()
+    except Exception:
+        return float("inf")
+    return sum(float(v) for v in re.findall(r"^vllm:num_requests_(?:running|waiting)\{[^}]*\} ([0-9.e+]+)", txt, re.M))
+
+
 def for_server(a, sid: str, route: str):
     """--url may list several servers (comma-separated, e.g. two model copies): a conversation (sample + agent) always
-    goes to the same one, so that server's prefix cache holds its history."""
+    goes to the same one, so that server's prefix cache holds its history. It is pinned on first sight to the server
+    with the least work queued (chains run as separate processes, and a hash pinned all three concurrent main records
+    to one copy while the other sat idle: pilot20f, 03:21-03:47)."""
     urls = a.url.split(",")
     if len(urls) == 1:
         return a
-    import zlib
+    key = f"{sid}/{route}"
+    with _PIN_LOCK:
+        if key not in _PINNED:
+            _PINNED[key] = min(urls, key=server_load)
     b = argparse.Namespace(**vars(a))
-    b.url = urls[zlib.crc32(f"{sid}/{route}".encode()) % len(urls)]
+    b.url = _PINNED[key]
     return b
 
 
@@ -228,6 +248,17 @@ def main():
         if len(urls) > 1:
             # interleave the queue across servers: in route order the workers would all sit on one conversation's
             # server while the other idles (each conversation sticks to one server, for its prefix cache)
+            # pin the conversations, largest first, to the server with the least work: queued there now plus what
+            # this process has already pinned to it
+            sizes: dict[str, int] = {}
+            for j in jobs:
+                sizes[j[0]] = sizes.get(j[0], 0) + 1
+            base = {u: server_load(u) for u in urls}
+            given = dict.fromkeys(urls, 0)
+            for route in sorted(sizes, key=sizes.get, reverse=True):
+                u = min(urls, key=lambda u: base[u] + given[u])
+                _PINNED.setdefault(f"{sid}/{route}", u)
+                given[_PINNED[f"{sid}/{route}"]] += sizes[route]
             lanes: dict[str, list] = {}
             for j in jobs:
                 lanes.setdefault(for_server(a, sid, j[0]).url, []).append(j)
