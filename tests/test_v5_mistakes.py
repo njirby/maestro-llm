@@ -101,3 +101,31 @@ def test_init_start_plan_unchanged():
     assert pl.start_routes(INIT) == []
     plan = pl.build_plan(gt_preset(4), INIT, random.Random(4), mistake_rate=0.0)
     assert all(" remove " not in e.cmd for r in plan.rounds for e in r.edits)
+
+
+def test_mistake_mix_shares():
+    """Realized shares over many draws match the targets: clean >= the floor, each type near its share."""
+    mix = mainmod.MistakeMix()
+    rng = random.Random(0)
+    ds = [mix.draw(rng) for _ in range(20000)]
+    clean = sum(not d["param"] and not d["code"] and not d["retranscribe"] for d in ds) / len(ds)
+    assert abs(clean - mix.clean) < 0.02
+    for k, share in (("param", mix.param), ("code", mix.code), ("retranscribe", mix.retranscribe)):
+        got = sum(bool(d[k]) for d in ds) / len(ds)
+        assert abs(got - share) < 0.02, (k, got)
+    counts = [d["param"] for d in ds if d["param"]]
+    assert 0.65 < counts.count(1) / len(counts) < 0.75
+
+
+def test_exact_param_mistakes_spread_over_rounds():
+    gt = gt_preset(2)
+    seen_rounds = set()
+    for seed in range(30):
+        plan = pl.build_plan(gt, INIT, random.Random(seed), n_mistakes=2)
+        n = sum(len(r.mistakes) for r in plan.rounds)
+        assert n == 2, n
+        seen_rounds |= {i for i, r in enumerate(plan.rounds) if r.mistakes}
+        assert all(r.fix is not None for r in plan.rounds if r.mistakes)
+    assert len(seen_rounds) >= 3   # not always the first rounds
+    plan = pl.build_plan(gt, INIT, random.Random(0), n_mistakes=0)
+    assert not any(r.mistakes for r in plan.rounds)

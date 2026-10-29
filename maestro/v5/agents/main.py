@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 import json
 import re
 import shlex
@@ -98,21 +99,57 @@ def _best_so_far(best) -> str:
     return f"Best so far: {tables}, from searcher {k}."
 
 
+@dataclass
+class MistakeMix:
+    """Injected mistakes per ROLLOUT (not per parameter: a 120-key patch must not get 3x the mistakes of a 40-key one).
+    A rollout is clean (no injected mistake) with probability `clean`; otherwise each type is drawn with probability
+    share / (1 - clean), so the overall shares match, and at least one is drawn. Injected actions are marked for loss
+    masking (Record.mark_mistake); the diagnosis and the fix are trained."""
+    clean: float = 0.35                 # main records with no injected mistake at all
+    param: float = 0.40                 # misjudged values (overshoot / undershoot / omission / spurious), heard + fixed
+    param_counts: tuple = (0.70, 0.25, 0.05)   # 1 / 2 / 3 param mistakes when drawn
+    code: float = 0.20                  # one broken edit or render command (real error text, diagnosed, rerun)
+    retranscribe: float = 0.10          # the main agent hears wrong notes late and sends the transcriber back
+    transcriber_wrong: float = 0.35     # the transcriber's own wrong first attempt (its record; independent)
+    transcriber_retries: tuple = (0.70, 0.20, 0.10)   # 1 / 2 / 3 wrong attempts in a row when it errs
+
+    def draw(self, rng) -> dict:
+        if rng.random() < self.clean:
+            return {"param": 0, "code": False, "retranscribe": False}
+        q = self._q()
+        while True:
+            d = {"param": rng.choices((1, 2, 3), weights=self.param_counts)[0] if rng.random() < q[0] else 0,
+                 "code": rng.random() < q[1], "retranscribe": rng.random() < q[2]}
+            if d["param"] or d["code"] or d["retranscribe"]:
+                return d
+
+    def _q(self) -> list[float]:
+        """Per-type draw probabilities on a non-clean rollout such that, after redrawing empty draws, each type's
+        overall share is exactly its target: q_i / (1 - prod(1 - q_j)) = share_i / (1 - clean) (fixed point)."""
+        t = [s / max(1e-9, 1.0 - self.clean) for s in (self.param, self.code, self.retranscribe)]
+        q = list(t)
+        for _ in range(200):
+            p_any = 1.0
+            for x in q:
+                p_any *= 1.0 - x
+            q = [min(1.0, ti * (1.0 - p_any)) for ti in t]
+        return q
+
+
 class Main:
-    def __init__(self, ctx: Ctx, code_mistake_rate: float = 0.08, mistake_rate: float = 0.10,
-                 render_mistake_rate: float = 0.0, retranscribe_rate: float = 0.0,
-                 transcriber_retry_weights: tuple[float, ...] = (1.0,), start: dict | None = None):
+    def __init__(self, ctx: Ctx, mix: MistakeMix | None = None, start: dict | None = None):
         """start: the user's starting patch (maestro/v5/start.py), already in the workdir as START_FILE."""
         self.ctx, self.rng, self.s = ctx, ctx.rng, ctx.sample
-        self.render_rate, self.retranscribe_rate = render_mistake_rate, retranscribe_rate
-        self.t_retry = transcriber_retry_weights
+        self.mix = mix or MistakeMix()
+        self.mplan = self.mix.draw(self.rng)
+        ctx.note(agent=AGENT, event="mistake_plan", **self.mplan)
+        self.t_retry = self.mix.transcriber_retries
         self.gt, self.init, self.notes = self.s.gt_preset(), self.s.init_preset(), self.s.notes()
         self.start_cmd = f"cp {INIT} preset.json"
         prompt = USER_PROMPT
         if start is not None:
             self.init, self.start_cmd = start, f"cp {START_FILE} preset.json"
             prompt = START_PROMPT.format(file=START_FILE)
-        self.code_rate = code_mistake_rate
         self.notes_d = {"bpm": self.s.bpm, "notes": self.notes}
         self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache", jobs=4)  # host-side only
         # only changes that can be heard get edited (the agent has no evidence for the rest; the gate doesn't need them).
@@ -132,9 +169,12 @@ class Main:
         # recomputes the same): the first oscillator step only sets what those notes support
         from maestro.sounddiff.first_impression import notes_first_impression
         fi = notes_first_impression(self.gt, self.notes_d, renderer=self.renderer)
-        self.plan: Plan = build_plan(self.gt, self.init, self.rng, mistake_rate=mistake_rate,
-                                     audible=set(heard["audible"]), impact=impact,
-                                     first_ok=first_impression_ok(fi["text"], fi.get("facts", {})))
+        self.plan: Plan = build_plan(self.gt, self.init, self.rng, audible=set(heard["audible"]), impact=impact,
+                                     first_ok=first_impression_ok(fi["text"], fi.get("facts", {})),
+                                     n_mistakes=self.mplan["param"])
+        # the one broken command (if drawn) lands on a uniformly chosen edit or render call of this rollout
+        n_calls = sum(len(r.edits) + 1 + bool(r.fix) for r in self.plan.rounds) + 1
+        self._calls, self._code_at = 0, self.rng.randrange(n_calls) if self.mplan["code"] else None
         self.rec = Record(AGENT, f"{self.s.id}.main", ctx.wd, prompt)
         self.sub: dict[str, list[dict]] = {"transcriber": [], "searcher": [], "judge": []}
         self.links: list[dict] = []
@@ -172,11 +212,18 @@ class Main:
             fh.write(json.dumps(row) + "\n")
         return sid
 
+    def _code_turn(self) -> bool:
+        """Is this edit/render call the one that gets the rollout's broken command?"""
+        hit = self._code_at is not None and self._calls >= self._code_at
+        self._calls += 1
+        return hit
+
     def edit(self, e: Edit, mistake: bool = False) -> None:
         ctx, rec = self.ctx, self.rec
-        if self.rng.random() < self.code_rate:
+        if self._code_turn():
             m = code_mistake(e, self.rng)
             if m is not None:
+                self._code_at = None
                 backup = ctx.host("preset.json").read_bytes()
                 call, out, res = ctx.bash(m.cmd)
                 if res.exit_code != 0 or "error:" in res.output:
@@ -222,12 +269,13 @@ class Main:
             raise StepFailed(f"{AGENT}: round {r.title} edits keys show.py didn't list: {missing[:8]}")
 
     def render(self, wav: str) -> None:
-        """render.py preset.json notes.json <wav>; with render_mistake_rate a broken variant runs first (for real:
+        """render.py preset.json notes.json <wav>; on the rollout's broken-command turn a broken variant runs first (for real:
         render.py checks its arguments before rendering, so a failed call writes nothing)."""
         ctx, rec, cmd = self.ctx, self.rec, f"{RENDER} preset.json notes.json {wav}"
-        if self.rng.random() < self.render_rate:
+        if self._code_turn():
             m = render_mistake(cmd, self.rng)
             if m is not None:
+                self._code_at = None
                 before = {p.name for p in ctx.host(".").iterdir()}
                 call, out, res = ctx.bash(m.cmd)
                 if res.exit_code != 0 or "error:" in res.output:
@@ -253,15 +301,16 @@ class Main:
             slot=self.slot("first_impression", target=self.gt)))
         run(rec, ctx, self.start_cmd)
 
-        # transcriber. With retranscribe_rate it ends on notes with one residual error it doesn't catch (that record
+        # transcriber. With a drawn re-transcription it ends on notes with one residual error it doesn't catch (that record
         # is kept out of training: link train=false); the main agent hears it after a later round and sends it back.
         residual, recheck_after = None, None
-        if self.retranscribe_rate and len(self.plan.rounds) >= 3 and self.rng.random() < self.retranscribe_rate:
+        if self.mplan["retranscribe"] and len(self.plan.rounds) >= 3:
             residual = self.residual_error()
             if residual:
                 recheck_after = self.rng.randint(1, len(self.plan.rounds) - 2)
         t_prompt = oc.transcription_dispatch_prompt(target, notes_path)
-        t_rec = run_transcriber(ctx, t_prompt, f"{s.id}.transcriber", retry_weights=self.t_retry,
+        t_rec = run_transcriber(ctx, t_prompt, f"{s.id}.transcriber", p_wrong=self.mix.transcriber_wrong,
+                                retry_weights=self.t_retry,
                                 final=residual[0] if residual else None)
         rec.say("First the notes.")
         call, resp = self.task("transcriber", 0, "Transcribe target melody", t_prompt, t_rec)

@@ -328,6 +328,40 @@ def gates(run: Path) -> list[tuple[str, bool, str]]:
     return out
 
 
+def mix_report(run: Path) -> dict:
+    """The realized injected-mistake mix: clean share, examples per type, and the share of supervised content masked."""
+    rows = [json.loads(l) for l in open(run / "index.jsonl")]
+    rows = [r for r in rows if "main_id" in r]
+    recs = {}
+    for f in ("main", "transcriber", "searcher", "judge"):
+        for l in open(run / f"{f}.jsonl"):
+            r = json.loads(l)
+            recs[r["id"]] = r
+    plans = [next((e for e in r["events"] if e.get("event") == "mistake_plan"), None) for r in rows]
+    ev = collections.Counter(e.get("event") for r in rows for e in r["events"])
+    kinds = collections.Counter(e.get("kind") for r in rows for e in r["events"] if e.get("event") == "code_mistake")
+    pkinds = collections.Counter(m["kind"] for r in rows for e in r["events"] if e.get("event") == "param_mistakes"
+                                 for m in e["mistakes"])
+    sup = msk = 0
+    for r in rows:
+        for rid in [r["main_id"]] + [l["record_id"] for l in r["links"]]:
+            ms, marks = recs[rid]["messages"], set(r.get("mistakes", {}).get(rid, []))
+            for i, m in enumerate(ms):
+                if m["role"] in ("assistant", "tool_call"):
+                    sup += len(m["content"])
+                    msk += len(m["content"]) if i in marks else 0
+    n = len(rows)
+    return {"rollouts": n,
+            "clean_main": sum(1 for p in plans if p and not p["param"] and not p["code"] and not p["retranscribe"]),
+            "with_param_mistakes": sum(1 for p in plans if p and p["param"]), "param_mistakes": dict(pkinds),
+            "with_broken_command": ev.get("code_mistake", 0), "broken_command_kinds": dict(kinds),
+            "retranscribed": ev.get("retranscribed", 0),
+            "transcriber_wrong_attempts": sum(1 for r in rows for e in r["events"]
+                                              if e.get("event") == "wrong_transcription" and e.get("written", True)),
+            "start_patch": ev.get("start_patch", 0),
+            "masked_share_of_supervised_chars": round(msk / max(sup, 1), 4)}
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", type=Path, required=True)
@@ -337,6 +371,9 @@ if __name__ == "__main__":
     (a.run / "causality_audit.json").write_text(json.dumps(out, indent=1, default=str))
     for g in out["gates"]:
         print(f"{'PASS' if g['pass'] else 'FAIL'}  {g['check']}: {g['detail']}")
+    out["mix"] = mix_report(a.run)
+    print("mix:", json.dumps(out["mix"]))
+    (a.run / "causality_audit.json").write_text(json.dumps(out, indent=1, default=str))
     for k in "ABCDE":
         print(k, json.dumps(out.get(k)))
     for k, v in out["examples"].items():

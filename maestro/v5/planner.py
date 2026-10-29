@@ -337,7 +337,59 @@ def gt_shapes(gt: dict, init: dict, routes: list[dict]) -> dict[int, dict]:
 _INJECT_LOCK = threading.Lock()
 
 
-def _inject(rounds: list[Round], gt: dict, init: dict, rng, per_param_rate: float, max_total: int | None) -> None:
+MISTAKE_KINDS = ("overshoot", "undershoot", "omission", "spurious")
+MISTAKE_WEIGHTS = (0.35, 0.30, 0.20, 0.15)     # v3.inject_mistakes' kind mix
+
+
+def _draw_exact(batches, n: int, rng, s_init: dict, pool: dict) -> None:
+    """Exactly n param mistakes (when the rounds allow), each on a key drawn uniformly from every eligible round
+    (>= 2 continuous keys, <= 3 mistakes per round), with v3's kinds, weights and value logic. v3.inject_mistakes
+    instead rolls keys in round and alphabetical order, so a fixed count would always land in the first rounds."""
+    used: set[str] = {k for b in batches for k in b.params}
+    tries = 0
+    while sum(len(b.mistakes or []) for b in batches) < n and tries < 50 * max(n, 1):
+        tries += 1
+        el = [b for b in batches if len(b.params) >= 2 and len(b.mistakes or []) < 3]
+        if not el:
+            return
+        b = rng.choice(el)
+        key = rng.choice(sorted(k for k in b.params if not any(m.param == k for m in (b.mistakes or []))) or [None])
+        if key is None:
+            continue
+        kind = rng.choices(MISTAKE_KINDS, weights=MISTAKE_WEIGHTS)[0]
+        true = b.params[key]
+        init_n = _normalize(key, s_init[key]) if s_init.get(key) is not None else None
+        init_n = 0.0 if init_n is None else init_n
+        mag = rng.uniform(0.03, 0.50)
+        if kind == "overshoot":
+            wrong = max(0.0, min(1.0, true + (1.0 if true < 0.5 else -1.0) * mag))
+        elif kind == "undershoot":
+            if abs(true - init_n) < 0.05:
+                continue
+            wrong = max(0.0, min(1.0, init_n + (1.0 - rng.uniform(0.10, 0.60)) * (true - init_n)))
+        elif kind == "omission":
+            wrong = init_n
+        else:   # spurious: a same-section key the target leaves alone gets moved
+            cands = [k for k in pool.get(b.subsystem, []) if k not in used]
+            if not cands:
+                continue
+            key = rng.choice(cands)
+            base = _normalize(key, s_init[key]) if s_init.get(key) is not None else 0.5
+            base = 0.5 if base is None else base
+            wrong, true = max(0.0, min(1.0, base + rng.choice([-1.0, 1.0]) * mag)), base
+        if abs(wrong - true) < 0.03:
+            continue
+        if kind == "omission":
+            b.params_applied.pop(key, None)
+        else:
+            b.params_applied[key] = wrong
+        used.add(key)
+        b.mistakes = (b.mistakes or []) + [v3.MistakeInfo(param=key, kind=kind, wrong_value=wrong, true_value=true,
+                                                          magnitude=abs(wrong - true))]
+
+
+def _inject(rounds: list[Round], gt: dict, init: dict, rng, per_param_rate: float, max_total: int | None,
+            exact: int | None = None) -> None:
     """v3.inject_mistakes on the rounds' continuous set.py keys; rewrites the affected edits and adds fixes."""
     P, s_gt, s_init = params(), gt["settings"], init["settings"]
     batches = []
@@ -352,16 +404,19 @@ def _inject(rounds: list[Round], gt: dict, init: dict, rng, per_param_rate: floa
             continue
         if k in s_gt and s_gt[k] == s_init.get(k) and vitallib.why_dead(s_gt, k) is None:
             pool.setdefault(section(k), []).append(k)
-    with _INJECT_LOCK:
-        saved = dict(v3.SUBSYSTEM_PARAM_POOL)
-        v3.SUBSYSTEM_PARAM_POOL.clear()
-        v3.SUBSYSTEM_PARAM_POOL.update(pool)
-        try:
-            v3.inject_mistakes(batches, rng, per_param_rate=per_param_rate, max_mistakes_total=max_total,
-                               init_preset_settings=s_init)
-        finally:
+    if exact is not None:
+        _draw_exact(batches, exact, rng, s_init, pool)
+    else:
+        with _INJECT_LOCK:
+            saved = dict(v3.SUBSYSTEM_PARAM_POOL)
             v3.SUBSYSTEM_PARAM_POOL.clear()
-            v3.SUBSYSTEM_PARAM_POOL.update(saved)
+            v3.SUBSYSTEM_PARAM_POOL.update(pool)
+            try:
+                v3.inject_mistakes(batches, rng, per_param_rate=per_param_rate, max_mistakes_total=max_total,
+                                   init_preset_settings=s_init)
+            finally:
+                v3.SUBSYSTEM_PARAM_POOL.clear()
+                v3.SUBSYSTEM_PARAM_POOL.update(saved)
     for r, b in zip(rounds, batches):
         if not b.mistakes:
             continue
@@ -466,7 +521,7 @@ def defer_unsupported(parts: list[Round], ok) -> list[Round]:
 
 def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistakes: int | None = None,
                audible: set[str] | None = None, impact: dict[str, float] | None = None,
-               first_ok=None) -> Plan:
+               first_ok=None, n_mistakes: int | None = None) -> Plan:
     """audible: the changed keys that can be heard (wt_rank.audible_changes); the others are never edited.
     impact: each key's audible impact (its one-key revert distance), for the within-rank order and coarse/fine split.
     first_ok: key -> bool, the first impression's support for an oscillator key (first_impression_ok); unsupported
@@ -517,5 +572,5 @@ def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistak
             parts = defer_unsupported(parts, first_ok)
         rounds += parts
     _inject([r for r in rounds if r.subsystem != "modulation" or r.gt_values], gt, init, rng,
-            mistake_rate, max_mistakes)
+            mistake_rate, max_mistakes, exact=n_mistakes)
     return Plan(gt_wavetables(gt, init), rounds, keys)

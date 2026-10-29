@@ -38,6 +38,7 @@ from maestro.dawfarm_dd import DawDreamerPool, cleanup_stale  # noqa: E402
 from maestro.v5 import narration, validate, viewer  # noqa: E402
 from maestro.v5.inputs import load_manifest, make_test_samples  # noqa: E402
 from maestro.v5.record import DATE  # noqa: E402
+from maestro.v5.agents.main import MistakeMix  # noqa: E402
 from maestro.v5.rollout import SkipSample, run_one  # noqa: E402
 from scripts import opencode_contract as oc  # noqa: E402
 
@@ -68,14 +69,12 @@ def main() -> int:
                     help="container name prefix; builds running side by side need different ones (stale cleanup "
                          "removes every container with this prefix)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--mistake-rate", type=float, default=0.10, help="per-param rate for v3 inject_mistakes")
-    ap.add_argument("--code-mistake-rate", type=float, default=0.08, help="per edit call")
-    ap.add_argument("--render-mistake-rate", type=float, default=0.0, help="per main-agent render call")
-    ap.add_argument("--retranscribe-rate", type=float, default=0.0,
-                    help="per rollout: the transcriber leaves one error (record kept out of training), the main "
-                         "agent hears it after a later round and sends it back")
-    ap.add_argument("--transcriber-retries", default="1",
-                    help="weights for 1,2,3.. wrong transcription attempts in a row, e.g. 0.7,0.2,0.1")
+    ap.add_argument("--clean-share", type=float, default=0.35, help="main rollouts with no injected mistake")
+    ap.add_argument("--param-share", type=float, default=0.40, help="rollouts with 1-3 misjudged param values")
+    ap.add_argument("--code-share", type=float, default=0.20, help="rollouts with one broken edit/render command")
+    ap.add_argument("--retranscribe-share", type=float, default=0.10,
+                    help="rollouts where the main agent hears wrong notes late and sends the transcriber back")
+    ap.add_argument("--transcriber-wrong", type=float, default=0.35, help="transcriber records with a wrong attempt")
     ap.add_argument("--start-patch-rate", type=float, default=0.0,
                     help="per rollout: the user hands a starting patch (partial or foreign, maestro/v5/start.py)")
     ap.add_argument("--no-view", action="store_true")
@@ -119,8 +118,8 @@ def main() -> int:
         "data_dir": oc.DATA_DIR, "rollout_root": "/work/rollouts", "audio_base": str(out / "audio"),
         "audios": "absolute host paths (copies under audio_base/<sample>/)",
         "init_dirs": str(out / "init"), "seed": a.seed,
-        "mistakes": {k: getattr(a, k) for k in ("mistake_rate", "code_mistake_rate", "render_mistake_rate",
-                                                "retranscribe_rate", "transcriber_retries", "start_patch_rate")},
+        "mistakes": {k: getattr(a, k) for k in ("clean_share", "param_share", "code_share", "retranscribe_share",
+                                                "transcriber_wrong", "start_patch_rate")},
         "narration": {k: getattr(a, k) for k in ("fi_url", "fi_model", "edit_arm", "edit_url", "edit_model",
                                                  "defer_narration")}, "manifest": str(a.manifest) if a.manifest else None},
         indent=1))
@@ -130,10 +129,9 @@ def main() -> int:
 
     def one(sample):
         with pool.acquire() as sess:
-            return run_one(sess, sample, out, seed=a.seed, mistake_rate=a.mistake_rate,
-                           code_mistake_rate=a.code_mistake_rate, render_mistake_rate=a.render_mistake_rate,
-                           retranscribe_rate=a.retranscribe_rate, start_patch_rate=a.start_patch_rate,
-                           transcriber_retry_weights=tuple(float(x) for x in a.transcriber_retries.split(",")))
+            return run_one(sess, sample, out, seed=a.seed, start_patch_rate=a.start_patch_rate,
+                           mix=MistakeMix(clean=a.clean_share, param=a.param_share, code=a.code_share,
+                                          retranscribe=a.retranscribe_share, transcriber_wrong=a.transcriber_wrong))
 
     try:
         with ThreadPoolExecutor(max_workers=a.workers) as ex:
