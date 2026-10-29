@@ -209,17 +209,24 @@ def audible_changes(renderer, gt: dict, start: dict, keys: list[str], notes: dic
     floor = float(distance(G, full_frames(ys["gt#2"][:n])))
     eps = max(AUDIBLE_EPS, 2 * floor)
     scores = {k: float(distance(G, full_frames(ys[f"k/{k}"][:n]))) for k in keys}
-    drop = sorted((k for k in keys if scores[k] < eps), key=scores.get)
-    # many small reverts can add up: revert them all at once, and put back the largest until the whole set is inaudible
+    # restore order when the combined check fails: switches first (a dropped *_on can be what keeps a never-planned
+    # section silent), then the largest scores
+    drop = sorted((k for k in keys if scores[k] < eps), key=lambda k: (not k.endswith("_on"), scores[k]))
+    drop.reverse()   # pop() takes from the end: switches and big scores go back first
+    # the planned final: every scalar the plan won't set keeps the start's value (keys dead in the GT are never edited,
+    # so a start patch's values for them stay), plus the dropped keys. It must render bit-identical to the GT.
+    P = pl.params()
+    untouched = [k for k, v in start["settings"].items() if k in P and k not in keys and not isinstance(v, (list, dict))
+                 and gt["settings"].get(k) != v and not k.startswith("modulation_")]
     combined = 0.0
-    while drop:
+    while True:
         p = copy.deepcopy(base)
-        for k in drop:
-            p["settings"][k] = start["settings"].get(k, pl.params()[k]["default"])
+        for k in untouched + drop:
+            p["settings"][k] = start["settings"].get(k, P[k]["default"])
         y = renderer.render({"all": p}, notes)["all"]
         m = min(n, len(y))
         combined = float(distance(full_frames(ys["gt"][:m]), full_frames(y[:m])))
-        if combined < eps:
+        if combined < eps or not drop:
             break
         drop.pop()
     return {"audible": [k for k in keys if k not in drop], "inaudible": drop, "floor": floor, "eps": eps,

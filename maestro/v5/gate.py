@@ -12,6 +12,9 @@ audio (secondary): renders through the GT notes on the rollout's session, host-s
   - mean mel_d(final, GT take) <= MEL_SCALE * floor + MEL_MARGIN_DB, floor = mean pairwise mel_d of the GT takes;
     same length
   - |rms(final) - mean rms(GT)| <= RMS_TOL_DB + rms spread of the GT takes   (catches level-only residuals)
+  a structural pass with an audio fail is re-tested once on RETEST_TAKES GT takes and RETEST_FINAL final takes: on noisy
+  patches (random phase, unison) 4 takes can put the floor well below its true value (pilot20f s0008: 4-take floor 1.62,
+  12-take ~1.9, final within the GT's own take spread)
 """
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ ABS_TOL, REL_TOL = 0.005, 0.01
 MEL_SCALE, MEL_MARGIN_DB = 1.25, 0.3
 RMS_TOL_DB = 0.5
 GT_TAKES = 4
+RETEST_TAKES, RETEST_FINAL = 12, 4
 # keys vital_facts counts as live that cannot change the render: the host sets the tempo from notes.json (SKILL.md
 # rule 7; the skill's vitallib.why_dead says so too)
 HOST_IGNORED = {"beats_per_minute"}
@@ -76,23 +80,24 @@ def structural(gt: dict, final: dict, ignore: set[str] = frozenset()) -> dict:
             "wavetable_diffs": wts, "lfo_shape_diffs": shapes, "n_live_routes": len(rg)}
 
 
-def audio(renderer, gt: dict, final: dict, notes: dict) -> dict:
+def audio(renderer, gt: dict, final: dict, notes: dict, takes: int = GT_TAKES, final_takes: int = 1) -> dict:
     """GT_TAKES renders of the GT (render-noise floor = mean pairwise mel distance; a single pair understates noisy
     patches) and one of the final; final-vs-GT = mean mel distance to the GT takes."""
     from itertools import combinations
     from maestro.sounddiff.verified import mel_d, rms_dbfs
-    names = ["gt"] + [f"gt#{k}" for k in range(2, GT_TAKES + 1)]
-    w = renderer({**{n: gt for n in names}, "final": final}, notes)
-    floor = sum(mel_d(w[a], w[b]) for a, b in combinations(names, 2)) / (GT_TAKES * (GT_TAKES - 1) / 2)
-    d = sum(mel_d(w["final"], w[n]) for n in names) / GT_TAKES
+    names = ["gt"] + [f"gt#{k}" for k in range(2, takes + 1)]
+    fins = ["final"] + [f"final#{k}" for k in range(2, final_takes + 1)]
+    w = renderer({**{n: gt for n in names}, **{f: final for f in fins}}, notes)
+    floor = sum(mel_d(w[a], w[b]) for a, b in combinations(names, 2)) / (takes * (takes - 1) / 2)
+    d = sum(mel_d(w[f], w[n]) for f in fins for n in names) / (takes * final_takes)
     r_gt = [rms_dbfs(w[n]) for n in names]
-    r_mean, r_f = sum(r_gt) / GT_TAKES, rms_dbfs(w["final"])
+    r_mean, r_f = sum(r_gt) / takes, sum(rms_dbfs(w[f]) for f in fins) / final_takes
     limit = MEL_SCALE * floor + MEL_MARGIN_DB
     rms_limit = RMS_TOL_DB + (max(r_gt) - min(r_gt))
-    ok = d <= limit and abs(r_f - r_mean) <= rms_limit and all(len(w["final"]) == len(w[n]) for n in names)
+    ok = d <= limit and abs(r_f - r_mean) <= rms_limit and all(len(w[f]) == len(w[n]) for f in fins for n in names)
     return {"pass": bool(ok), "final_vs_gt_db": round(d, 3), "gt_vs_gt_db": round(floor, 3),
             "limit_db": round(limit, 3), "rms_final_dbfs": round(r_f, 2), "rms_gt_dbfs": round(r_mean, 2),
-            "rms_diff_db": round(r_f - r_mean, 2), "rms_limit_db": round(rms_limit, 2), "gt_takes": GT_TAKES,
+            "rms_diff_db": round(r_f - r_mean, 2), "rms_limit_db": round(rms_limit, 2), "gt_takes": takes, "final_takes": final_takes,
             "len_final": len(w["final"]), "len_gt": len(w["gt"])}
 
 
@@ -121,4 +126,6 @@ def gate(renderer, gt: dict, final: dict, notes: dict, ignore: set[str] = frozen
             st["wavetables_same_in_context"] = same
             st["wavetable_diffs"] = [n for n in st["wavetable_diffs"] if n not in same]
             st["pass"] = not (st["n_param_diffs"] or st["route_diffs"] or st["wavetable_diffs"] or st["lfo_shape_diffs"])
+    if st["pass"] and not au["pass"]:
+        au = {**audio(renderer, gt, final, notes, RETEST_TAKES, RETEST_FINAL), "first_try": au}
     return {"pass": st["pass"] and au["pass"], "structural": st, "audio": au}

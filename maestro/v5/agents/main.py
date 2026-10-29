@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 import json
+import os
 import re
 import shlex
 from pathlib import Path
@@ -151,7 +152,8 @@ class Main:
             self.init, self.start_cmd = start, f"cp {START_FILE} preset.json"
             prompt = START_PROMPT.format(file=START_FILE)
         self.notes_d = {"bpm": self.s.bpm, "notes": self.notes}
-        self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache", jobs=4)  # host-side only
+        # host-side only; ORACLE_JOBS parallel renders (CPU-bound: ~1,800 renders per rollout, mostly the searchers' ranking)
+        self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache", jobs=int(os.environ.get("ORACLE_JOBS", 8)))
         # only changes that can be heard get edited (the agent has no evidence for the rest; the gate doesn't need them).
         # A canonical target (scripts/canonicalize_manifest.py) has none left vs init; a user start patch still needs
         # the check, since "no effect" is relative to the patch the agent starts from.
