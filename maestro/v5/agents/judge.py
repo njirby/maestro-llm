@@ -38,7 +38,9 @@ def run_judge(ctx: Ctx, prompt: str, rid: str, pool: list[dict[int, dict]], gt_p
         if len(picks) == 1 + MAX_ALTS:
             break
     choice = picks[0][0]
-    combos = [[e for _, e in sorted(c.items())] for c, _ in picks]
+    order = list(range(len(picks)))
+    ctx.rng.shuffle(order)       # render/listen order: the pick must not always be c1 (a positional shortcut)
+    combos = [[e for _, e in sorted(picks[i][0].items())] for i in order]
 
     rec = Record(AGENT, rid, ctx.wd, prompt)
     open_session(rec, ctx)
@@ -51,7 +53,8 @@ def run_judge(ctx: Ctx, prompt: str, rid: str, pool: list[dict[int, dict]], gt_p
     reasoning = f"{oscs} came closest to the target of the {len(combos)} combinations I rendered."
     refs = [wt_ref(e) for _, e in sorted(choice.items())]
     gt = {n: e["id"] for n, e in zip(slots, gt_tables)}
-    ctx.note(agent=AGENT, combos=[{n: e["id"] for n, e in c.items()} for c, _ in picks],
+    ctx.note(agent=AGENT, combos=[{n: e["id"] for n, e in picks[i][0].items()} for i in order],
+             choice_render=f"c{order.index(0) + 1}",
              scores=[round(sc, 2) for _, sc in picks], choice=refs,
              choice_is_gt=(wt_rank.sounds_like_target(picks[0][1]) or
                            all(n in choice and wt_rank.same_table(choice[n]["id"], t) for n, t in gt.items()))

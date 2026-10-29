@@ -54,11 +54,12 @@ def _live(g: dict, k: str) -> bool:
         and vf.why_dead(g, k) is None
 
 
-def structural(gt: dict, final: dict) -> dict:
+def structural(gt: dict, final: dict, ignore: set[str] = frozenset()) -> dict:
+    """ignore: keys whose GT change was judged inaudible (wt_rank.audible_changes); they need not match."""
     g, f = gt["settings"], final["settings"]
     params = []
     for k, v in g.items():
-        if not _live(g, k):
+        if not _live(g, k) or k in ignore:
             continue
         fv = f.get(k)
         if fv is None or abs(float(fv) - float(v)) > max(ABS_TOL, REL_TOL * abs(float(v))):
@@ -110,8 +111,10 @@ def same_in_context(renderer, gt: dict, final: dict, slots: list[int]) -> list[i
     return list(slots) if d < wt_rank.SAME_EPS else []
 
 
-def gate(renderer, gt: dict, final: dict, notes: dict) -> dict:
-    st, au = structural(gt, final), audio(renderer, gt, final, notes)
+def gate(renderer, gt: dict, final: dict, notes: dict, ignore: set[str] = frozenset()) -> dict:
+    st, au = structural(gt, final, ignore), audio(renderer, gt, final, notes)
+    if ignore:
+        st["ignored_inaudible"] = sorted(ignore)
     if st["wavetable_diffs"]:
         same = same_in_context(renderer, gt, final, st["wavetable_diffs"])
         if same:

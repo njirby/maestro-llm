@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -24,10 +25,11 @@ from maestro import notation
 from .. import gate, narration
 from ..ctx import Ctx, OracleRenderer
 from ..mistakes import code_mistake, render_mistake
-from ..planner import Edit, Plan, build_plan, vitallib, wt_ref
+from .. import wt_rank
+from ..planner import Edit, Plan, _group, build_plan, live_changed_keys, vitallib, wt_ref
 from ..record import Record, final_text
 from ..start import START_FILE
-from .common import INIT, RENDER, listen, open_session, run, skill_response  # noqa: F401  (re-export)
+from .common import INIT, RENDER, StepFailed, listen, open_session, run, skill_response  # noqa: F401  (re-export)
 from .judge import run_judge
 from .searcher import WT, run_searcher
 from .transcriber import run_transcriber
@@ -111,13 +113,20 @@ class Main:
             self.init, self.start_cmd = start, f"cp {START_FILE} preset.json"
             prompt = START_PROMPT.format(file=START_FILE)
         self.code_rate = code_mistake_rate
-        self.plan: Plan = build_plan(self.gt, self.init, self.rng, mistake_rate=mistake_rate)
+        self.notes_d = {"bpm": self.s.bpm, "notes": self.notes}
+        self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache", jobs=4)  # host-side only
+        # only changes that can be heard get edited (the agent has no evidence for the rest; the gate doesn't need them)
+        heard = wt_rank.audible_changes(self.renderer, self.gt, self.init, live_changed_keys(self.gt, self.init),
+                                        self.notes_d)
+        self.inaudible = set(heard["inaudible"])
+        ctx.note(agent=AGENT, event="audible_keys", n_changed=len(heard["scores"]), inaudible=heard["inaudible"],
+                 eps=heard["eps"], combined_inaudible_db=heard["combined_inaudible_db"])
+        self.plan: Plan = build_plan(self.gt, self.init, self.rng, mistake_rate=mistake_rate,
+                                     audible=set(heard["audible"]))
         self.rec = Record(AGENT, f"{self.s.id}.main", ctx.wd, prompt)
         self.sub: dict[str, list[dict]] = {"transcriber": [], "searcher": [], "judge": []}
         self.links: list[dict] = []
         self._slots = 0
-        self.notes_d = {"bpm": self.s.bpm, "notes": self.notes}
-        self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache", jobs=4)  # host-side only
 
     # -- helpers -----------------------------------------------------------------------------------------------
 
@@ -165,6 +174,31 @@ class Main:
                 else:  # the mutation happened to be valid: undo it, record nothing
                     ctx.host("preset.json").write_bytes(backup)
         run(rec, ctx, e.command())
+
+    def search(self, r) -> None:
+        """Look before editing (SKILL.md: show.py lists a section's keys with their current values): one show.py
+        call per group the round edits, so every key the edits use, and its current value, is in the context first."""
+        prefixes: list[str] = []
+        for e in r.edits:
+            if e.tool == "set":
+                for k in e.values:
+                    g = _group(k)
+                    prefixes.append(k if g == "global" else f"{g}_")
+            elif e.tool == "mod":
+                prefixes.append("mod")
+                # each route's destination too: a route onto an FX mix comes before the FX round lists those keys
+                prefixes += re.findall(r"mod\.py \S+ add \S+ (\S+)", e.cmd)
+            elif e.tool == "shape":
+                prefixes.append("lfo")
+        prefixes = list(dict.fromkeys(prefixes))
+        if not prefixes:
+            return
+        res = run(self.rec, self.ctx, "\n".join(f"python3 $VITAL_SKILL/scripts/show.py preset.json {p}"
+                                                 for p in prefixes))
+        listed = set(re.findall(r"^\*?\s*([a-z][a-z0-9_]*) = ", res.output, re.M))
+        missing = sorted({k for e in r.edits if e.tool == "set" for k in e.values} - listed)
+        if missing:  # a planner/search mismatch: never record an edit of a key the agent hasn't seen
+            raise StepFailed(f"{AGENT}: round {r.title} edits keys show.py didn't list: {missing[:8]}")
 
     def render(self, wav: str) -> None:
         """render.py preset.json notes.json <wav>; with render_mistake_rate a broken variant runs first (for real:
@@ -263,6 +297,7 @@ class Main:
         prev_wav, prev = None, ctx.read_json("preset.json")
         for i, r in enumerate(rounds, 1):
             nxt = rounds[i].title if i < len(rounds) else None
+            self.search(r)
             for e in r.edits:
                 self.edit(e)
             wav = f"r{i:02d}_{r.subsystem}.wav"
@@ -293,6 +328,14 @@ class Main:
                     before_wav=prev_wav, after_wav=host, before_preset=prev, after_preset=cur,
                     changed=_changed(prev, cur), subsystem=r.subsystem, notes=self.notes_d, renderer=self.renderer,
                     log=ctx.note, slot=self.slot("self_edit", before=prev, after=cur)))
+                # and where it stands against the target, naming what's next: without it the next round would start
+                # from notes that still point at this round's subsystem
+                rec.say(narration.target_vs_current(
+                    target_wav=Path(target_host), current_wav=host, before_preset=prev, current_preset=cur,
+                    gt_preset=self.gt, subsystem=r.subsystem, next_subsystem=nxt, notes=self.notes_d,
+                    renderer=self.renderer, log=ctx.note,
+                    slot=self.slot("target_vs_current", narration.delta_next(nxt), target=self.gt, before=prev,
+                                   after=cur)))
                 prev_wav, prev = host, cur
             if i == recheck_after:
                 prev_wav = self.recheck_notes(residual, i, r.subsystem, target, notes_path)
@@ -355,7 +398,7 @@ class Main:
         d.mkdir(parents=True, exist_ok=True)
         (d / "final_preset.json").write_text(json.dumps(final))
         (d / "gt_preset.json").write_text(json.dumps(self.gt))
-        g = gate.gate(self.renderer, self.gt, final, self.notes_d)
+        g = gate.gate(self.renderer, self.gt, final, self.notes_d, ignore=self.inaudible)
         takes = {"gt": (self.gt, "")} | {f"gt#{k}": (self.gt, str(k)) for k in range(2, gate.GT_TAKES + 1)}
         g["audio"]["wavs"] = {k: str(self.renderer.path_of(p, self.notes_d, v)) for k, (p, v) in
                               {**takes, "final": (final, "")}.items()}

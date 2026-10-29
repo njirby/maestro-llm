@@ -72,3 +72,44 @@ def test_same_in_context_clears_wavetable_diff():
     assert st["wavetable_diffs"] == [1]
     assert gate.same_in_context(FakeRenderer(same=True), gt, final, [1]) == [1]
     assert gate.same_in_context(FakeRenderer(same=False), gt, final, [1]) == []
+
+
+def test_structural_ignores_inaudible_keys():
+    gt, _ = _gt_final()
+    final = copy.deepcopy(gt)
+    gt["settings"]["polyphony"] = 4.0
+    final["settings"]["polyphony"] = 8.0
+    assert not gate.structural(gt, final)["pass"]
+    assert gate.structural(gt, final, ignore={"polyphony"})["pass"]
+
+
+def test_build_plan_edits_only_audible_keys():
+    import random
+    from test_v5_planner import gt_preset
+    gt = gt_preset(3)
+    keys = pl.live_changed_keys(gt, INIT)
+    keep = set(keys[::2])
+    plan = pl.build_plan(gt, INIT, random.Random(3), mistake_rate=0.0, audible=keep)
+    edited = {k for r in plan.rounds for e in r.edits if e.tool == "set" for k in e.values}
+    assert edited <= keep and plan.changed == [k for k in keys if k in keep]
+
+
+class CountingRenderer:
+    """Renders 'gt' as a tone; a key revert is audible only for keys in `loud` (a different tone)."""
+
+    def __init__(self, loud):
+        self.loud = loud
+
+    def render(self, presets, notes):
+        base = tone(220, [1, 0.5])
+        out = {}
+        for k in presets:
+            out[k] = tone(220, [1, 0.9]) if k in {f"k/{x}" for x in self.loud} else base
+        return out
+
+
+def test_audible_changes_splits_keys():
+    gt, _ = _gt_final()
+    keys = ["filter_1_cutoff", "polyphony", "osc_1_unison_blend"]
+    a = wr.audible_changes(CountingRenderer({"filter_1_cutoff"}), gt, gt, keys, {"notes": []})
+    assert a["audible"] == ["filter_1_cutoff"] and set(a["inaudible"]) == {"polyphony", "osc_1_unison_blend"}

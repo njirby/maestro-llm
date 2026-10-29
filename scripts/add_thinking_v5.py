@@ -246,7 +246,9 @@ def main():
                     "thinking": atts[-1]["thinking"] if ok else None, "tries": len(atts), "attempts": atts}
 
         with cf.ThreadPoolExecutor(a.workers) as ex, open(dst, "a") as f:
-            for rec in ex.map(one, jobs):
+            # written as each turn finishes: an interrupt then loses only the turns still in flight
+            for fut in cf.as_completed([ex.submit(one, j) for j in jobs]):
+                rec = fut.result()
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 print(f"{sid} {rec['route']:22s} step {rec['step']:2d} {rec['kind']:18s} "

@@ -361,9 +361,13 @@ def _inject(rounds: list[Round], gt: dict, init: dict, rng, per_param_rate: floa
         r.fix = set_edit(fix_vals, "correction")
 
 
-def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistakes: int | None = None) -> Plan:
+def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistakes: int | None = None,
+               audible: set[str] | None = None) -> Plan:
+    """audible: the changed keys that can be heard (wt_rank.audible_changes); the others are never edited."""
     s = gt["settings"]
     keys = live_changed_keys(gt, init)
+    if audible is not None:
+        keys = [k for k in keys if k in audible]
     by_sec: dict[str, dict[str, dict[str, float]]] = {}
     for k in keys:
         by_sec.setdefault(section(k), {}).setdefault(_group(k), {})[k] = float(s[k])

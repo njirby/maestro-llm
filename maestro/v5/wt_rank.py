@@ -170,3 +170,57 @@ def rank_subsets(renderer, gt: dict, candidates: list[dict], notes: dict = PATTE
 def sounds_like_target(score_db: float) -> bool:
     """Scores below SAME_EPS: identical to the target in its own patch, so as correct as the GT tables."""
     return score_db < SAME_EPS
+
+
+# --------------------------------------------------------------------------- which parameter changes can be heard
+
+AUDIBLE_EPS = 1e-6       # provably no effect: only a revert whose render is bit-identical to the GT's (deterministic
+                         # renders, floor 0) counts as inaudible. Small real changes, however faint, stay in the plan.
+
+
+def full_frames(y: np.ndarray) -> np.ndarray:
+    """Complex spectra of every frame of a render (hop NFFT/2): attacks and release tails included."""
+    m = y.mean(1) if y.ndim == 2 else y
+    hop = NFFT // 2
+    n = 1 + max(0, len(m) - NFFT) // hop
+    fr = np.lib.stride_tricks.sliding_window_view(m, NFFT)[::hop][:n] * np.hanning(NFFT)
+    return np.fft.rfft(fr, axis=1)
+
+
+def audible_changes(renderer, gt: dict, start: dict, keys: list[str], notes: dict) -> dict:
+    """Which of `keys` (scalars the plan would change from `start` to `gt`) can be heard: render the GT patch with each
+    key reverted to its `start` value, deterministic (random phase off), through the sample's own notes, and compare the
+    whole render with the GT's (distance(), the ear-validated metric). A revert that leaves the render identical
+    (below max(AUDIBLE_EPS, 2 x the GT's take-to-take floor), which is 0 with random phase off) provably can't affect
+    this target's sound, and the target audio carries no evidence about it: the agent never touches that key and the
+    gate doesn't require it. Every key with any measurable effect stays.
+    Returns {"audible": [...], "inaudible": [...], "floor": float, "scores": {key: dB}}."""
+    base = copy.deepcopy(gt)
+    for k in (1, 2, 3):
+        base["settings"][f"osc_{k}_random_phase"] = 0.0
+    jobs = {"gt": base, "gt#2": base}
+    for k in keys:
+        p = copy.deepcopy(base)
+        p["settings"][k] = start["settings"].get(k, pl.params()[k]["default"])
+        jobs[f"k/{k}"] = p
+    ys = renderer.render(jobs, notes)
+    n = min(len(y) for y in ys.values())
+    G = full_frames(ys["gt"][:n])
+    floor = float(distance(G, full_frames(ys["gt#2"][:n])))
+    eps = max(AUDIBLE_EPS, 2 * floor)
+    scores = {k: float(distance(G, full_frames(ys[f"k/{k}"][:n]))) for k in keys}
+    drop = sorted((k for k in keys if scores[k] < eps), key=scores.get)
+    # many small reverts can add up: revert them all at once, and put back the largest until the whole set is inaudible
+    combined = 0.0
+    while drop:
+        p = copy.deepcopy(base)
+        for k in drop:
+            p["settings"][k] = start["settings"].get(k, pl.params()[k]["default"])
+        y = renderer.render({"all": p}, notes)["all"]
+        m = min(n, len(y))
+        combined = float(distance(full_frames(ys["gt"][:m]), full_frames(y[:m])))
+        if combined < eps:
+            break
+        drop.pop()
+    return {"audible": [k for k in keys if k not in drop], "inaudible": drop, "floor": floor, "eps": eps,
+            "combined_inaudible_db": round(combined, 3), "scores": {k: round(v, 3) for k, v in scores.items()}}
