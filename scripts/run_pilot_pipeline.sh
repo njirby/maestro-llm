@@ -26,7 +26,13 @@ stop_port() {
   while kill -0 "$p" 2>/dev/null; do sleep 3; done
   until [ "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | sort -n | tail -1)" -lt 1000 ]; do sleep 3; done
 }
-start_27b() { log "starting 27B on :8001 (MAX_SEQS=${1})"; MAX_SEQS="$1" nohup bash ~/ml/serve-qwen38-27b-4card.sh > outputs/serve_qwen38_27b.log 2>&1 & wait_url 8001; log "27B up"; }
+start_27b() {   # two TP=2 copies (GPUs 0,1 on :8001, 2,3 on :8002): +42% thinking throughput on this box
+  log "starting two 27B copies on :8001 and :8002"
+  GPUS=0,1 TP=2 PORT=8001 MAX_SEQS=16 nohup bash ~/ml/serve-qwen38-27b-4card.sh > outputs/serve_qwen38_27b_a.log 2>&1 &
+  GPUS=2,3 TP=2 PORT=8002 MAX_SEQS=16 nohup bash ~/ml/serve-qwen38-27b-4card.sh > outputs/serve_qwen38_27b_b.log 2>&1 &
+  wait_url 8001; wait_url 8002; log "27B copies up"; }
+stop_27b() { stop_port 8001; stop_port 8002
+  for w in $(pgrep -f "^VLLM::Worker"); do [ "$(ps -o ppid= -p "$w" | tr -d ' ')" = 1 ] && kill -9 "$w"; done; }
 start_omni() { log "starting Omni-Instruct on :8000"; PATH="$PWD/.venv/bin:$PATH" nohup bash scripts/serve_qwen3_omni.sh > outputs/serve_omni_instruct.log 2>&1 & wait_url 8000; log "Omni up"; }
 
 if [ -n "$BUILD_PID" ]; then log "waiting for build pid $BUILD_PID"; while kill -0 "$BUILD_PID" 2>/dev/null; do sleep 30; done; fi
@@ -34,23 +40,29 @@ log "build done: $(grep -cE 'validation OK.*GT gate pass' "$RUN.build.log" 2>/de
 
 # ---- narration (RESUME=1: already done, skip) -----------------------------------------------------------------------
 if [ -z "${RESUME:-}" ]; then
-[ -z "$(port_pid 8001)" ] && { stop_port 8000; start_27b 32; }
+[ -z "$(port_pid 8001)" ] && { stop_port 8000; start_27b; }
 log "narration: edit modes (27B)"
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --modes self_edit,target_vs_current --url http://localhost:8001/v1 --arm text --workers 12 > "$RUN.narr_edit.log" 2>&1
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --finalize > "$RUN.finalize1.log" 2>&1
-stop_port 8001; start_omni
+stop_27b; start_omni
 log "narration: first impressions (Omni)"
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --modes first_impression --url http://localhost:8000/v1 --workers 4 > "$RUN.narr_fi.log" 2>&1
 $PY scripts/narrate_rollouts_v5.py --run "$RUN" --finalize > "$RUN.finalize2.log" 2>&1
 log "narration report: $(tr -d '\n ' < "$RUN/narration_report.json" | head -c 400)"
-stop_port 8000; start_27b 48
+stop_port 8000; start_27b
+# narration is final: the oracle render caches (narration ablations, audibility renders) are no longer needed
+find "$RUN/oracle" -maxdepth 2 -name render_cache -type d -exec rm -rf {} +
+log "oracle render caches removed; run dir now $(du -sh "$RUN" | cut -f1)"
 fi
-[ -z "$(port_pid 8001)" ] && start_27b 48
+[ -z "$(port_pid 8001)" ] && start_27b
+# training records: one per agent type per rollout (searchers stratified)
+$PY scripts/select_records_v5.py --run "$RUN" > "$RUN.select.log" 2>&1
+log "selection: $(tail -1 "$RUN.select.log")"
 
 # ---- per rollout: replay -> perceptions -> thinking ------------------------------------------------------------------
 SIDS=$($PY -c "import json,sys; print(' '.join(json.loads(l)['sample_id'] for l in open('$RUN/index.jsonl') if 'main_id' in json.loads(l)))")
 log "chains for: $SIDS"
-export RUN REPLAY THINK PY
+export RUN REPLAY THINK PY THINK_URL="${THINK_URL:-http://127.0.0.1:8001/v1,http://127.0.0.1:8002/v1}"
 chain() {
   s="$1"
   # resumable: a finished replay (report.json) and finished perceptions (<sid>.json + done log) are kept
@@ -61,8 +73,11 @@ chain() {
     REPLAY_DIR="$PWD/$REPLAY" RUN_DIR="$PWD/$RUN" RENDER_JOBS=8 $PY scripts/build_probe_perceptions.py "$s" > "$PROBES_DIR/$s.log" 2>&1 || { echo "[$(date +%T)] $s PERCEPTIONS FAILED"; return; }
   fi
   $PY scripts/add_thinking_v5.py --mode native --run "$RUN" --replay "$REPLAY" --sids "$s" --out "$THINK" --workers 16 \
+      --selection "$RUN/selection.json" \
       --url "${THINK_URL:-http://127.0.0.1:8001/v1}" > "$THINK/$s.log" 2>&1 || { echo "[$(date +%T)] $s THINKING FAILED"; return; }
-  echo "[$(date +%T)] $s done: replay $(python3 -c "import json;r=json.load(open('$REPLAY/$s/report.json'));print(r['matches'],'/',r['requests'],'diffs',r['diffs'])") ; $(grep '^==' "$THINK/$s.log" | tail -1)"
+  # the replay's OpenCode database is scratch once its report and requests are written
+  find "$REPLAY/$s" -path "*/oc_root/data/opencode/opencode.db*" -delete
+  echo "[$(date +%T)] $s done ($(du -sh "$REPLAY/$s" | cut -f1) replay): replay $(python3 -c "import json;r=json.load(open('$REPLAY/$s/report.json'));print(r['matches'],'/',r['requests'],'diffs',r['diffs'])") ; $(grep '^==' "$THINK/$s.log" | tail -1)"
 }
 export -f chain
 printf '%s\n' $SIDS | xargs -P "$CHAINS" -I{} bash -c 'chain {}'
@@ -73,4 +88,6 @@ $PY scripts/merge_thinking_v5.py --run "$RUN" --thinking "$THINK" --out "$OUTM" 
 grep '"main_id"' "$RUN/index.jsonl" > "$OUTM/index.jsonl"
 for s in $SIDS; do $PY -m maestro.v5.viewer "$OUTM" "$s" -o "$RUN/view/${s}_thinking.html" > /dev/null 2>&1; done
 log "merge: $(tail -1 "$OUTM.merge.log")"
+rm -rf "$RUN/_sessions"   # the builder's session workdirs; replays used the final-workdir manifests
+log "disk: run $(du -sh "$RUN" | cut -f1), replay $(du -sh "$REPLAY" | cut -f1), free $(df -h / | tail -1 | awk '{print $4}')"
 log "pipeline done"

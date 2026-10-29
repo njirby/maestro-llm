@@ -203,6 +203,8 @@ def main():
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--url", default="http://127.0.0.1:8001/v1")
     ap.add_argument("--model", default="qwen3.8-27b-uncensored")
+    ap.add_argument("--selection", type=Path, help="selection.json (scripts/select_records_v5.py): only the "
+                                                     "records kept for training get thinking")
     ap.add_argument("--mode", choices=("guess", "native"), default="guess",
                     help="guess: thinking written for the known turn, then replayed; native: one call takes the turn (B2)")
     a = ap.parse_args()
@@ -219,6 +221,9 @@ def main():
         dst = a.out / f"{sid}.jsonl"
         done = {(x["route"], x["step"]) for x in map(json.loads, open(dst))} if dst.exists() else set()
         jobs = [j for j in jobs if (j[0], j[1]) not in done]
+        if a.selection:
+            keep = set(json.loads(a.selection.read_text())["selection"].get(sid, []))
+            jobs = [j for j in jobs if j[0] == "main" or j[0] in keep]
         urls = a.url.split(",")
         if len(urls) > 1:
             # interleave the queue across servers: in route order the workers would all sit on one conversation's
