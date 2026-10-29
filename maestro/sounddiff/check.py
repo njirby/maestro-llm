@@ -226,6 +226,11 @@ def hit(text: str, delta: dict) -> bool:
 OPENER_TIC = re.compile(r"^\W*(yeah|yep|yes|okay|ok|alright|all right|right|so|well|hey|hmm+|oh|sure)\b[,.!:—-]", re.I)
 
 
+COUNTERFACTUAL = re.compile(r"like the target'?s\b(?! sound| tone| note| attack| tail| space| level| brightness)|"
+                            r"(set|setting|match|matching)\s+(it|them|the \w+)\s+(to|like)\s+the target'?s|"
+                            r"target'?s (settings|values|parameters|patch)", re.I)
+
+
 def check_delta(text: str, delta: dict) -> list[str]:
     """delta = {"mode": "self_edit"|"target_vs_current", "overall": none|subtle|clear|strong (the compared pair),
     "dirs": {dim: +1/-1/0} (self_edit: after vs before; tvc: target vs your patch now), "flags": state flags true in
@@ -233,6 +238,8 @@ def check_delta(text: str, delta: dict) -> list[str]:
     probs = _basic(text)
     if OPENER_TIC.search(text):
         probs.append("interjection opener")
+    if COUNTERFACTUAL.search(text):   # oracle knowledge phrased as hearing: the listener can't know the target's settings
+        probs.append("counterfactual: names the target's settings")
     probs += [f"state: {p}" for p in check_state(text, delta.get("flags", {}), DELTA_STATE_KEYS) if p not in probs]
     tvc = delta["mode"] == "target_vs_current"
     overall = delta["overall"]

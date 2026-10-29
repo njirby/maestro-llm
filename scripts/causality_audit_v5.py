@@ -212,12 +212,131 @@ def audit(run: Path) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- pass/fail per closed gap
+
+def gates(run: Path) -> list[tuple[str, bool, str]]:
+    """The causality plan's acceptance checks (G1-G6 + the earlier fixes), one (name, pass, detail) each."""
+    import ast as _ast
+    from maestro.v5.planner import ORDER, first_impression_ok, key_rank
+    idx = [json.loads(l) for l in open(run / "index.jsonl")]
+    rows = {r["sample_id"]: r for r in idx if "main_id" in r}
+    recs = {}
+    for f in ("main", "transcriber", "searcher", "judge"):
+        for l in open(run / f"{f}.jsonl"):
+            r = json.loads(l)
+            recs[r["id"]] = r
+    slots = collections.defaultdict(list)
+    for l in open(run / "narration_slots.jsonl"):
+        d = json.loads(l)
+        slots[d["slot"].split("/")[0]].append(d)
+    out = []
+    a = audit(run)
+    A = a["A"]
+    out.append(("provenance: set keys listed by show.py first", not A.get("set key NOT listed by show.py first"),
+                f"{A.get('set key listed by an earlier show.py', 0)} listed, "
+                f"{A.get('set key NOT listed by show.py first', 0)} not"))
+    out.append(("provenance: mod names seen first", not A.get("mod name not in context"),
+                f"{A.get('mod name seen before', 0)} seen, {A.get('mod name not in context', 0)} not"))
+    out.append(("no edits of no-effect keys", not a["B"].get("edit of a key judged INAUDIBLE"),
+                f"{a['B'].get('edit of a key judged INAUDIBLE', 0)}"))
+    picks = {k.split(" = ")[1].split(" of ")[0] for k in a["E"]}
+    out.append(("judge pick position varies", len(rows) < 3 or len(picks) > 1, json.dumps(a["E"])))
+    # G1: canonical targets leave nothing to drop
+    drops = {sid: next((e.get("inaudible", []) for e in r["events"] if e.get("event") == "audible_keys"), [])
+             for sid, r in rows.items() if not any(e.get("event") == "start_patch" for e in r["events"])}
+    out.append(("G1 no no-effect keys left (canonical targets)", not any(drops.values()),
+                f"{sum(map(len, drops.values()))} keys on {sum(bool(v) for v in drops.values())} rollouts"))
+    # G2: every injected mistake marked, nothing else
+    ev = collections.Counter(e.get("event") for r in rows.values() for e in r["events"])
+    marked_err = marked_set = marked_tx = bad_mark = 0
+    for sid, r in rows.items():
+        for rid, ids in r.get("mistakes", {}).items():
+            ms = recs[rid]["messages"]
+            for i in ids:
+                if ms[i]["role"] != "tool_call":
+                    bad_mark += 1
+                    continue
+                resp = next((ms[j]["content"] for j in range(i + 1, len(ms)) if ms[j]["role"] == "tool_response"), "")
+                if ".transcriber" in rid:
+                    marked_tx += 1
+                elif re.search(r"^(error|usage)|Traceback|error:", resp, re.M):
+                    marked_err += 1
+                else:
+                    marked_set += 1
+    n_param_rounds = ev.get("param_mistakes", 0)
+    # a re-check transcriber hears notes it didn't write (no action to mask): count only written wrong attempts
+    written_wrong = sum(1 for r in rows.values() for e in r["events"] if e.get("event") == "wrong_transcription"
+                        and e.get("written", True)) - (0 if any("written" in e for r in rows.values()
+                                                                 for e in r["events"]) else ev.get("retranscribed", 0))
+    ev["wrong_transcription"] = written_wrong
+    ok2 = (marked_err == ev.get("code_mistake", 0) and marked_tx == ev.get("wrong_transcription", 0)
+           and marked_set >= n_param_rounds and bad_mark == 0)
+    out.append(("G2 injected mistakes marked", ok2,
+                f"broken cmds {marked_err}/{ev.get('code_mistake', 0)}, wrong transcriptions "
+                f"{marked_tx}/{ev.get('wrong_transcription', 0)}, param-mistake edits {marked_set} for "
+                f"{n_param_rounds} rounds, non-call marks {bad_mark}"))
+    # G3: every Next is an evidenced inference; no counterfactual phrasing anywhere
+    texts = [ca for sid in slots for d in slots[sid] for ca in [notes_text(d)]]
+    nexts = [l for t in texts for l in t.splitlines() if l.startswith("- Next:")]
+    old_style = [l for l in nexts if "lives." not in l]
+    cf = re.compile(r"like the target'?s (settings|values|patch)|setting them like the target", re.I)
+    narr = run / "narrations.jsonl"
+    narr_txt = [json.loads(l).get("text", "") for l in open(narr)] if narr.exists() else []
+    n_cf = sum(bool(cf.search(t)) for t in texts + narr_txt)
+    out.append(("G3 Next lines are evidenced inferences", not old_style and nexts != [],
+                f"{len(nexts)} Next lines, {len(old_style)} not cue-based"))
+    out.append(("G3 no counterfactual phrasing", n_cf == 0, f"{n_cf} in {len(texts)} notes + {len(narr_txt)} narrations"))
+    # G4: round family order, and key order within every set.py call
+    order_bad = key_bad = calls = 0
+    for sid, r in rows.items():
+        ms = recs[r["main_id"]]["messages"]
+        seq = []
+        for m in ms:
+            if m["role"] != "tool_call" or "set.py" not in m["content"]:
+                continue
+            keys = re.findall(r"\b([a-z][a-z0-9_]+)=", json.loads(m["content"])["arguments"]["command"])
+            keys = [k for k in keys if k in pl.params()]
+            if not keys:
+                continue
+            calls += 1
+            ranks = [key_rank(k) for k in keys]
+            key_bad += ranks != sorted(ranks)
+            seq.append(ORDER.index(pl.section(keys[0])))
+        order_bad += any(b < a for a, b in zip(seq, seq[1:]) if not (a == ORDER.index("global") or b == a))
+    out.append(("G4 rounds follow the family order", order_bad == 0, f"{order_bad} rollouts out of order"))
+    out.append(("G4 keys follow the within-family order", key_bad == 0, f"{key_bad} of {calls} set.py calls"))
+    # G5: first-step oscillator edits are supported by the first impression
+    unsup = 0
+    for sid, r in rows.items():
+        fi = next((d for d in slots[sid] if d["mode"] == "first_impression"), None)
+        if fi is None:
+            continue
+        n = fi["notes"]
+        n = _ast.literal_eval(n) if isinstance(n, str) and n.startswith("{") else n
+        ok = first_impression_ok(n["text"], n.get("facts", {}))
+        ms = recs[r["main_id"]]["messages"]
+        for m in ms:
+            if m["role"] == "user" and "<audio>" in m["content"] and ms.index(m) > 3:
+                break   # the first render's listen: the first step is over
+            if m["role"] == "tool_call" and "set.py" in m["content"]:
+                keys = re.findall(r"\b(osc_\d_[a-z0-9_]+)=", json.loads(m["content"])["arguments"]["command"])
+                unsup += sum(not ok(k) for k in keys)
+    out.append(("G5 first oscillator step backed by the first impression", unsup == 0, f"{unsup} unsupported keys"))
+    # G6: stopping earned
+    fc = [next((e["overall"] for e in r["events"] if e.get("event") == "final_closeness"), None) for r in rows.values()]
+    out.append(("G6 last notes say it basically matches", all(c in ("none", "subtle") for c in fc), json.dumps(fc)))
+    return out
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", type=Path, required=True)
     a = ap.parse_args()
     out = audit(a.run)
+    out["gates"] = [{"check": n, "pass": ok, "detail": d} for n, ok, d in gates(a.run)]
     (a.run / "causality_audit.json").write_text(json.dumps(out, indent=1, default=str))
+    for g in out["gates"]:
+        print(f"{'PASS' if g['pass'] else 'FAIL'}  {g['check']}: {g['detail']}")
     for k in "ABCDE":
         print(k, json.dumps(out.get(k)))
     for k, v in out["examples"].items():

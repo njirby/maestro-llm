@@ -33,9 +33,51 @@ sys.path.insert(0, str(SKILL_DIR / "scripts"))
 import vitallib  # noqa: E402  (the skill's own library: params, liveness, wavetable index)
 
 S = "$VITAL_SKILL/scripts"
-ORDER = ("oscillator", "envelope", "filter", "modulation", "fx", "global")
+# Family order (SKILL.md rule 3): static tone before its shape in time. Oscillators, then the filter (brightness), then
+# the amp envelope (note shape), then modulation (movement), then effects, then global (level last). Syntorial and
+# practitioner consensus; see docs/wavetable_search_heuristic.md's sibling docs/tuning_order.md.
+ORDER = ("oscillator", "filter", "envelope", "modulation", "fx", "global")
 FX_UNITS = tuple(vitallib.FX)
+# effects in tuning order: those that rewrite the spectrum first, the ones that smear detail (delay, reverb) last
+FX_TUNE = ("distortion", "eq", "compressor", "chorus", "flanger", "phaser", "delay", "reverb")
 _GATES = re.compile(r"(_on|_type|_model|_style|_sync|_destination|_unison_voices)$")
+
+# Within-family order (coarse, high-impact, discrete first; weakly identifiable fine-tuning last), first match wins.
+# Ties within a rank go by measured audible impact (the key's one-key revert distance), biggest first.
+KEY_ORDER = [
+    (r"_on$", 0),
+    # oscillators: pitch locked first, then balance, thickness, shaping; placement last
+    (r"^osc_\d_(transpose|tune)$", 1), (r"^osc_\d_level$", 2), (r"^osc_\d_unison_voices$", 3),
+    (r"^osc_\d_unison_detune$", 4), (r"^osc_\d_(unison_blend|stereo_spread|detune_range)$", 5),
+    (r"^osc_\d_distortion_type$", 6), (r"^osc_\d_distortion_", 7), (r"^osc_\d_spectral_morph_type$", 8),
+    (r"^osc_\d_spectral_morph_", 9), (r"^osc_\d_", 10),
+    # filters: mode before amount, cutoff, resonance, drive, then the rest
+    (r"^filter_\w+_(model|style)$", 1), (r"^filter_\w+_cutoff$", 2), (r"^filter_\w+_resonance$", 3),
+    (r"^filter_\w+_drive$", 4), (r"^filter_\w+_keytrack$", 5), (r"^filter_", 6),
+    # envelopes: what you hear at note start and end, then while held; curves last
+    (r"^env_\d_attack$", 1), (r"^env_\d_release$", 2), (r"^env_\d_sustain$", 3), (r"^env_\d_decay$", 4),
+    (r"^env_\d_(delay|hold)$", 5), (r"^env_\d_", 6),
+    # LFOs / random: rate first, then everything else
+    (r"^(lfo|random)_\d_(sync|sync_type|tempo|frequency)$", 1), (r"^(lfo|random)_\d_", 2),
+    # effects: mode, mix, character, then their filters / tempo
+    (r"^\w+_(type|model|style|mode)$", 1), (r"_(dry_wet|mix)$", 2),
+    (r"_(drive|time|size|decay|feedback|frequency|rate|depth|delay|amount|ratio|threshold|attack|release)$", 3),
+    # global: voice behaviour first, master volume last
+    (r"^(portamento|legato|polyphony|voice)", 1), (r"^volume$", 9),
+]
+_KEY_ORDER = [(re.compile(rx), rank) for rx, rank in KEY_ORDER]
+_IMPACT = threading.local()       # per build_plan call: {key: audible impact} for the tie-break and the split
+COARSE_SHARE = 0.8                # a round's coarse step: the biggest-impact keys carrying >= 80% of its impact
+SPLIT_MIN_KEYS = 6                # rounds smaller than this are never split
+
+
+def key_rank(key: str) -> int:
+    return next((rank for rx, rank in _KEY_ORDER if rx.search(key)), 8)
+
+
+def key_sort(key: str) -> tuple:
+    impact = getattr(_IMPACT, "v", None) or {}
+    return key_rank(key), -(impact.get(key) or 0.0), key
 
 
 @lru_cache(maxsize=1)
@@ -106,7 +148,7 @@ def cli(script: str, args: list[str]) -> str:
 
 
 def set_edit(values: dict[str, float], note: str = "") -> Edit:
-    keys = sorted(values, key=lambda k: (not _GATES.search(k), k))
+    keys = sorted(values, key=key_sort)
     return Edit("set", cli("set.py", ["preset.json"] + [f"{k}={fmt_value(k, values[k])}" for k in keys]),
                 {k: parsed(k, values[k]) for k in keys}, note)
 
@@ -361,9 +403,75 @@ def _inject(rounds: list[Round], gt: dict, init: dict, rng, per_param_rate: floa
         r.fix = set_edit(fix_vals, "correction")
 
 
+def split_round(r: Round, impact: dict[str, float]) -> list[Round]:
+    """Coarse then fine: when a set-only round has a long tail of small-impact keys, the coarse step takes the
+    biggest-impact keys carrying >= COARSE_SHARE of the round's impact (plus every gate/mode key), the fine step the
+    rest, after a listen that shows the remaining gap. Impact = the key's measured one-key revert distance."""
+    keys = [k for e in r.edits if e.tool == "set" for k in e.values]
+    if len(keys) < SPLIT_MIN_KEYS or any(e.tool != "set" for e in r.edits) or not impact:
+        return [r]
+    tot = sum(impact.get(k) or 0.0 for k in keys)
+    if tot <= 0:
+        return [r]
+    coarse, acc = set(), 0.0
+    for k in sorted(keys, key=lambda k: -(impact.get(k) or 0.0)):
+        if acc >= COARSE_SHARE * tot:
+            break
+        coarse.add(k)
+        acc += impact.get(k) or 0.0
+    coarse |= {k for k in keys if key_rank(k) <= 1}
+    fine = [k for k in keys if k not in coarse]
+    if len(fine) < 2:
+        return [r]
+    by = lambda ks: {g: {k: r.gt_values[k] for k in ks if _group(k) == g}  # noqa: E731
+                     for g in dict.fromkeys(_group(k) for k in ks)}
+    mk = lambda title, ks: Round(r.subsystem, title, [set_edit(v, g) for g, v in by(ks).items() if v],  # noqa: E731
+                                 {k: r.gt_values[k] for k in ks})
+    return [mk(r.title, [k for k in keys if k in coarse]), mk(f"{r.title.split(':')[0]}: fine", fine)]
+
+
+def first_impression_ok(fi_text: str, facts: dict):
+    """Which oscillator keys the first impression (the only evidence before the first listen) supports. Keys it
+    doesn't support wait for the oscillator's fine step, after a listen whose notes show their dimension."""
+    low = fi_text.lower()
+    wide = facts.get("wide") or re.search(r"thick|detuned|chorus|wide|lush", low)
+    grit = not facts.get("no_dist", True) or re.search(r"grit|buzz|distort|bite|crunch", low)
+    tone = re.search(r"- tone:.*\b(bright|dark|rich|pure|thin|hollow|metallic|smooth|buzzy|overtones)", low)
+    rules = [(r"_(on|transpose|tune|level)$", True),            # the part, its register, its loudness: always heard
+             (r"_unison_|_stereo_spread$|_detune_range$", wide), (r"_distortion_", grit),
+             (r"_spectral_morph_", tone), (r"_pan$", facts.get("wide") or facts.get("narrow"))]
+
+    def ok(key: str) -> bool:
+        return bool(next((v for rx, v in rules if re.search(rx, key)), False))
+    return ok
+
+
+def defer_unsupported(parts: list[Round], ok) -> list[Round]:
+    """The first oscillator step keeps only keys the first impression supports; the rest join the fine step (created
+    right after it if the round wasn't split)."""
+    first = parts[0]
+    keep = {k: v for k, v in first.gt_values.items() if ok(k)}
+    moved = {k: v for k, v in first.gt_values.items() if not ok(k)}
+    if not moved or not keep:
+        return parts
+    def mk(title, vals):
+        groups = {g: {k: vals[k] for k in vals if _group(k) == g} for g in dict.fromkeys(_group(k) for k in vals)}
+        return Round(first.subsystem, title, [set_edit(v, g) for g, v in groups.items() if v], vals)
+    out = [mk(first.title, keep)]
+    if len(parts) > 1:
+        out.append(mk(parts[1].title, {**moved, **parts[1].gt_values}))
+        return out + parts[2:]
+    return out + [mk(f"{first.title.split(':')[0]}: fine", moved)]
+
+
 def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistakes: int | None = None,
-               audible: set[str] | None = None) -> Plan:
-    """audible: the changed keys that can be heard (wt_rank.audible_changes); the others are never edited."""
+               audible: set[str] | None = None, impact: dict[str, float] | None = None,
+               first_ok=None) -> Plan:
+    """audible: the changed keys that can be heard (wt_rank.audible_changes); the others are never edited.
+    impact: each key's audible impact (its one-key revert distance), for the within-rank order and coarse/fine split.
+    first_ok: key -> bool, the first impression's support for an oscillator key (first_impression_ok); unsupported
+    oscillator keys move to the oscillator's fine step."""
+    _IMPACT.v = impact or {}
     s = gt["settings"]
     keys = live_changed_keys(gt, init)
     if audible is not None:
@@ -386,8 +494,8 @@ def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistak
     for sec in ORDER:
         groups = by_sec.get(sec, {})
         if sec == "fx":
-            # one round per FX unit pair at most (rule 3: one subsystem per listen; FX units are a chain)
-            units = sorted(groups, key=lambda g: FX_UNITS.index(g) if g in FX_UNITS else 99)
+            # one round per FX unit pair at most (rule 3: one subsystem per listen), in tuning order (FX_TUNE)
+            units = sorted(groups, key=lambda g: FX_TUNE.index(g) if g in FX_TUNE else 99)
             for i in range(0, len(units), 2):
                 chunk = units[i:i + 2]
                 vals = {k: v for g in chunk for k, v in groups[g].items()}
@@ -398,14 +506,16 @@ def build_plan(gt: dict, init: dict, rng, mistake_rate: float = 0.10, max_mistak
         if sec == "modulation":
             if not routes and not remove and not edits and not shapes:
                 continue
-            if shapes:
-                edits.append(shape_edit(shapes))
-            if routes or remove:
-                edits.append(mod_edit(routes, remove, explicit))
+            # what moves what, and how much, first; then the sources' rates and envelopes; their shapes last
+            edits = ([mod_edit(routes, remove, explicit)] if routes or remove else []) + edits + \
+                    ([shape_edit(shapes)] if shapes else [])
         if not edits and sec != "oscillator":
             continue
         vals = {k: v for g in groups.values() for k, v in g.items()}
-        rounds.append(Round(sec, sec, edits, vals))
+        parts = split_round(Round(sec, sec, edits, vals), impact or {})
+        if sec == "oscillator" and first_ok is not None:
+            parts = defer_unsupported(parts, first_ok)
+        rounds += parts
     _inject([r for r in rounds if r.subsystem != "modulation" or r.gt_values], gt, init, rng,
             mistake_rate, max_mistakes)
     return Plan(gt_wavetables(gt, init), rounds, keys)

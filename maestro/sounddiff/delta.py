@@ -390,6 +390,24 @@ SUB_LABEL = {"osc": "the oscillators", "env": "the envelopes (note shape)", "fil
              "lfo": "the LFOs", "fx": "the effects", "mod": "the modulation routing"}
 
 
+# which heard differences live in which subsystem (maestro/sounddiff/facts.py SUB_DIMS, in dim_moves' dimensions)
+NEXT_DIMS = {"osc": ("overtones", "brightness", "noise", "width", "level"), "filter": ("brightness", "overtones"),
+             "env": ("attack", "sustain", "tail", "level"), "lfo": ("movement",), "mod": ("movement",),
+             "fx": ("space", "tail", "width", "distortion", "movement")}
+CUE_WORDS = {"brightness": "the brightness difference", "overtones": "the difference in overtones",
+             "noise": "the difference in noise", "width": "the stereo-width difference", "level": "the level difference",
+             "attack": "the attack difference", "sustain": "the difference in how long the notes hold",
+             "tail": "the difference in ring-out", "movement": "the difference in movement",
+             "space": "the difference in space", "distortion": "the difference in distortion"}
+
+
+def next_cue(nxt: str, moves: dict) -> str | None:
+    """The biggest heard difference (in these notes) that the next subsystem can account for, in words; None if the
+    notes show none of its dimensions differing (then the Next line is left out: the move wouldn't be evidenced)."""
+    differ = [(moves[d][1], d) for d in NEXT_DIMS.get(nxt, ()) if d in moves and moves[d][0] in (1, -1)]
+    return CUE_WORDS[max(differ)[1]] if differ else None
+
+
 def notes_target_vs_current(target, before, after, notes, *, renderer, next_subsystem: str | None = None) -> dict:
     t, c0, c1 = _load(target), _load(before), _load(after)
     notes = clean_notes(notes)
@@ -435,7 +453,11 @@ def notes_target_vs_current(target, before, after, notes, *, renderer, next_subs
         if overall:
             L += _move_lines(moves, C, T, tvc=True)
             if nxt:
-                L.append(f"- Next: {SUB_LABEL[nxt]}: setting them like the target's audibly closes part of the gap.")
+                cue = next_cue(nxt, moves)
+                if cue:   # only an inference a listener can make: a heard difference that lives in that subsystem
+                    L.append(f"- Next: {SUB_LABEL[nxt]}: that's where {cue} lives.")
+                else:
+                    nxt = None
     dirs = {d: v[0] for d, v in moves.items() if v[0] is not None and d in
             ("brightness", "level", "space", "width", "movement", "distortion", "attack", "sustain", "tail")}
     check = {"mode": "target_vs_current", "overall": overall or "none", "dirs": dirs, "trajectory": traj,

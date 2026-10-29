@@ -35,6 +35,9 @@ class Sample:
     bpm: float
     clip: dict = field(default_factory=dict)
     target_rms_dbfs: float | None = None
+    canonical: bool = False             # scripts/canonicalize_manifest.py: every change from init is audible
+    canonical_reset: list = field(default_factory=list)
+    impact: dict = field(default_factory=dict)  # key -> audible impact (one-key revert distance), canonical rows
 
     def gt_preset(self) -> dict:
         return json.loads(Path(self.gt_preset_path).read_text())

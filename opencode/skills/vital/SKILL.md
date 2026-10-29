@@ -159,9 +159,12 @@ Enum labels for any switch/selector: `show.py preset.json KEY` (e.g. `delay_temp
    Glide is the exception: `portamento_time` alone sets it (-10 = none; `portamento_on` changes nothing).
 2. **Mode before amount.** `osc_N_distortion_type`, `osc_N_spectral_morph_type`,
    `distortion_filter_order` at index 0 make their amounts dead.
-3. **One subsystem per round, then render and listen.** Order: oscillator/wavetable →
-   amp envelope → filter → LFO/modulation → FX → macros. Never change two subsystems before a
-   listen — you cannot tell which change did what.
+3. **One subsystem per round, then render and listen.** Order: oscillator/wavetable → filter →
+   amp envelope → LFO/modulation → FX → macros: the static tone before its shape in time, effects
+   last. Never change two subsystems before a listen — you cannot tell which change did what. List
+   the section first (`show.py preset.json <prefix>`), then set the biggest, coarsest things before
+   the fine ones: pitch before level before unison before shaping; filter mode, cutoff, resonance,
+   then the rest; attack and release before sustain and decay; an effect's mix before its character.
 4. **Render sounds unchanged ⇒ the edit didn't take.** Run `show.py` on the section: gate off,
    enum mode None, route amount 0, destination in an off section, nothing routed into the
    filter, osc level 0, table silent at frame 0. Fix the cause before trying another value.

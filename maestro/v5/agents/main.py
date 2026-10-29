@@ -26,8 +26,8 @@ from .. import gate, narration
 from ..ctx import Ctx, OracleRenderer
 from ..mistakes import code_mistake, render_mistake
 from .. import wt_rank
-from ..planner import Edit, Plan, _group, build_plan, live_changed_keys, vitallib, wt_ref
-from ..record import Record, final_text
+from ..planner import Edit, Plan, _group, build_plan, first_impression_ok, live_changed_keys, vitallib, wt_ref
+from ..record import MISTAKES, Record, final_text
 from ..start import START_FILE
 from .common import INIT, RENDER, StepFailed, listen, open_session, run, skill_response  # noqa: F401  (re-export)
 from .judge import run_judge
@@ -115,14 +115,26 @@ class Main:
         self.code_rate = code_mistake_rate
         self.notes_d = {"bpm": self.s.bpm, "notes": self.notes}
         self.renderer = OracleRenderer(ctx.sess, ctx.oracle_host_dir / "render_cache", jobs=4)  # host-side only
-        # only changes that can be heard get edited (the agent has no evidence for the rest; the gate doesn't need them)
-        heard = wt_rank.audible_changes(self.renderer, self.gt, self.init, live_changed_keys(self.gt, self.init),
-                                        self.notes_d)
+        # only changes that can be heard get edited (the agent has no evidence for the rest; the gate doesn't need them).
+        # A canonical target (scripts/canonicalize_manifest.py) has none left vs init; a user start patch still needs
+        # the check, since "no effect" is relative to the patch the agent starts from.
+        keys = live_changed_keys(self.gt, self.init)
+        if self.s.canonical and start is None:
+            heard = {"audible": keys, "inaudible": [], "eps": wt_rank.AUDIBLE_EPS, "combined_inaudible_db": 0.0,
+                     "scores": {k: None for k in keys}}
+        else:
+            heard = wt_rank.audible_changes(self.renderer, self.gt, self.init, keys, self.notes_d)
         self.inaudible = set(heard["inaudible"])
         ctx.note(agent=AGENT, event="audible_keys", n_changed=len(heard["scores"]), inaudible=heard["inaudible"],
                  eps=heard["eps"], combined_inaudible_db=heard["combined_inaudible_db"])
+        impact = self.s.impact if (self.s.canonical and start is None) else heard["scores"]
+        # what the first listen will establish (the first impression's verified notes: cached renders, the narration
+        # recomputes the same): the first oscillator step only sets what those notes support
+        from maestro.sounddiff.first_impression import notes_first_impression
+        fi = notes_first_impression(self.gt, self.notes_d, renderer=self.renderer)
         self.plan: Plan = build_plan(self.gt, self.init, self.rng, mistake_rate=mistake_rate,
-                                     audible=set(heard["audible"]))
+                                     audible=set(heard["audible"]), impact=impact,
+                                     first_ok=first_impression_ok(fi["text"], fi.get("facts", {})))
         self.rec = Record(AGENT, f"{self.s.id}.main", ctx.wd, prompt)
         self.sub: dict[str, list[dict]] = {"transcriber": [], "searcher": [], "judge": []}
         self.links: list[dict] = []
@@ -160,7 +172,7 @@ class Main:
             fh.write(json.dumps(row) + "\n")
         return sid
 
-    def edit(self, e: Edit) -> None:
+    def edit(self, e: Edit, mistake: bool = False) -> None:
         ctx, rec = self.ctx, self.rec
         if self.rng.random() < self.code_rate:
             m = code_mistake(e, self.rng)
@@ -169,25 +181,34 @@ class Main:
                 call, out, res = ctx.bash(m.cmd)
                 if res.exit_code != 0 or "error:" in res.output:
                     rec.step([call], [out])
+                    rec.mark_mistake()
                     rec.say(m.diagnosis)
                     ctx.note(agent=AGENT, event="code_mistake", kind=m.kind)
                 else:  # the mutation happened to be valid: undo it, record nothing
                     ctx.host("preset.json").write_bytes(backup)
         run(rec, ctx, e.command())
+        if mistake:   # this edit carries injected wrong/omitted/spurious values: context, never a trained action
+            rec.mark_mistake()
 
     def search(self, r) -> None:
         """Look before editing (SKILL.md: show.py lists a section's keys with their current values): one show.py
         call per group the round edits, so every key the edits use, and its current value, is in the context first."""
         prefixes: list[str] = []
+        # every key the round means to set (gt_values) as well as what its edits carry: an injected omission leaves a
+        # key out of the edit, and the correction that puts it back must not use a key the agent hasn't seen
+        keys = list(r.gt_values) + [k for e in r.edits if e.tool == "set" for k in e.values]
+        for k in dict.fromkeys(keys):
+            g = _group(k)
+            prefixes.append(k if g == "global" else f"{g}_")
         for e in r.edits:
-            if e.tool == "set":
-                for k in e.values:
-                    g = _group(k)
-                    prefixes.append(k if g == "global" else f"{g}_")
-            elif e.tool == "mod":
+            if e.tool == "mod":
                 prefixes.append("mod")
-                # each route's destination too: a route onto an FX mix comes before the FX round lists those keys
-                prefixes += re.findall(r"mod\.py \S+ add \S+ (\S+)", e.cmd)
+                # each route's source and destination too: sources appear in the skill only as ranges (env_1..6), and
+                # a route onto an FX mix comes before the FX round lists those keys
+                for src, dst in re.findall(r"mod\.py \S+ add (\S+) (\S+)", e.cmd):
+                    if re.fullmatch(r"(lfo|env|random)_\d", src):
+                        prefixes.append(f"{src}_")
+                    prefixes.append(dst)
             elif e.tool == "shape":
                 prefixes.append("lfo")
         prefixes = list(dict.fromkeys(prefixes))
@@ -196,7 +217,7 @@ class Main:
         res = run(self.rec, self.ctx, "\n".join(f"python3 $VITAL_SKILL/scripts/show.py preset.json {p}"
                                                  for p in prefixes))
         listed = set(re.findall(r"^\*?\s*([a-z][a-z0-9_]*) = ", res.output, re.M))
-        missing = sorted({k for e in r.edits if e.tool == "set" for k in e.values} - listed)
+        missing = sorted(set(keys) - listed)
         if missing:  # a planner/search mismatch: never record an edit of a key the agent hasn't seen
             raise StepFailed(f"{AGENT}: round {r.title} edits keys show.py didn't list: {missing[:8]}")
 
@@ -211,6 +232,7 @@ class Main:
                 call, out, res = ctx.bash(m.cmd)
                 if res.exit_code != 0 or "error:" in res.output:
                     rec.step([call], [out])
+                    rec.mark_mistake()
                     rec.say(m.diagnosis)
                     ctx.note(agent=AGENT, event="code_mistake", kind=m.kind)
                 else:  # it rendered after all: remove what it wrote, record nothing
@@ -298,8 +320,9 @@ class Main:
         for i, r in enumerate(rounds, 1):
             nxt = rounds[i].title if i < len(rounds) else None
             self.search(r)
+            bad = {_group(m.key) for m in r.mistakes}
             for e in r.edits:
-                self.edit(e)
+                self.edit(e, mistake=e.tool == "set" and any(_group(k) in bad for k in e.values))
             wav = f"r{i:02d}_{r.subsystem}.wav"
             self.render(wav)
             host = Path(listen(rec, ctx, wav))
@@ -340,6 +363,15 @@ class Main:
             if i == recheck_after:
                 prev_wav = self.recheck_notes(residual, i, r.subsystem, target, notes_path)
 
+        # stopping is earned: the agent only wraps up when its last listen says it basically matches the target
+        # (the verified target-vs-current notes; cached renders). Otherwise the rollout is dropped, never "done".
+        from maestro.sounddiff.delta import notes_target_vs_current
+        close = notes_target_vs_current(self.gt, prev, ctx.read_json("preset.json"), self.notes_d,
+                                        renderer=self.renderer)["overall"]
+        ctx.note(agent=AGENT, event="final_closeness", overall=close)
+        if close in ("clear", "strong"):
+            raise StepFailed(f"{AGENT}: not converged before the final verdict (last notes: {close})")
+
         # final check
         run(rec, ctx, "python3 $VITAL_SKILL/scripts/show.py preset.json")
         self.render("final.wav")
@@ -348,7 +380,9 @@ class Main:
         main = rec.finish(narration.final_verdict(target_wav=Path(target_host), final_wav=Path(final_host),
                                                   final_preset=ctx.read_json("preset.json"), gt_preset=self.gt,
                                                   notes=self.notes_d, renderer=self.renderer, log=ctx.note))
-        return {"main": main, **self.sub, "links": self.links, "gate": self.gt_gate()}
+        ids = [main["id"]] + [l["record_id"] for l in self.links]
+        mistakes = {i: MISTAKES.pop(i) for i in ids if i in MISTAKES}
+        return {"main": main, **self.sub, "links": self.links, "gate": self.gt_gate(), "mistakes": mistakes}
 
     def residual_error(self, tries: int = 10):
         """One wrong pitch or one note off the grid that leaves the note order intact (so "the Nth note" is the one

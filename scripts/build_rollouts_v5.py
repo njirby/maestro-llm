@@ -172,6 +172,7 @@ def main() -> int:
                     for fh in files.values():
                         fh.flush()
                     index.write(json.dumps({"sample_id": s.id, "main_id": r["main"]["id"], "links": r["links"],
+                                                "mistakes": r.get("mistakes", {}),
                                             "workdir": f"/work/rollouts/{s.id}", "init_dir": r["init_dir"],
                                             "final_workdir": r["final_workdir"],
                                             "validation_errors": errs, "gate": gate, "events": r["events"],
